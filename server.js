@@ -7,11 +7,13 @@ const quill = require('./server/quill');
 const auth = require('./server/auth');
 const wsStore = require('./server/workspace');
 const storage = require('./server/storage');
+const scheduler = require('./server/scheduler');
 
 const ROOT = path.join(storage.APP_DIR, 'public');
 const PORT = Number(process.env.PORT) || 4173;
 const HOST = process.env.HOST || '127.0.0.1';
 const MAX_JSON = 4 * 1024 * 1024;
+let schedulerEvery = null;
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -60,7 +62,7 @@ async function handleApi(req, res, urlPath) {
 
   /* --- Sign-in --- */
   // HQ_TEST_DATE (YYYY-MM-DD) fixes "today" for offer and review checks in test workspaces.
-  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null });
+  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null, scheduler: auth.configured() ? { runsOn: 'server', everyMs: schedulerEvery, now: scheduler.now(), testClock: scheduler.testClock() } : { runsOn: 'browser' } });
   if (urlPath === '/api/auth/login' && method === 'POST') {
     const body = await readJsonBody(req);
     const r = auth.login(req, body.password, deviceOf(req));
@@ -106,13 +108,34 @@ async function handleApi(req, res, urlPath) {
     }
   }
 
-  /* --- Shared workspace + images: owner only --- */
-  if (urlPath.startsWith('/api/workspace') || urlPath.startsWith('/api/assets')) {
+  // Which commit this deployment runs (Vercel sets VERCEL_GIT_COMMIT_SHA). Lets the smoke test refuse an older deployment.
+  if (urlPath === '/api/version' && method === 'GET') return sendJson(res, 200, { commit: process.env.VERCEL_GIT_COMMIT_SHA || null, environment: process.env.VERCEL_ENV || null });
+
+  /* --- Shared workspace, images and the demo scheduler: owner only --- */
+  if (urlPath.startsWith('/api/workspace') || urlPath.startsWith('/api/assets') || urlPath.startsWith('/api/publish') || urlPath.startsWith('/api/test/')) {
     if (!auth.configured()) return sendJson(res, 503, { error: 'The shared workspace isn’t set up on this server.' });
     if (!signedIn) return sendJson(res, 401, { error: 'Sign in to the shared workspace.', code: 'signed_out' });
   }
+  /* --- Demo publishing (simulated accounts; the server runs due posts on its own timer too) --- */
+  if (urlPath === '/api/publish/run' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const changed = await scheduler.runDue({ jobId: typeof body.jobId === 'string' ? body.jobId : null, force: !!body.jobId });
+    return sendJson(res, 200, { changed, now: scheduler.now() });
+  }
+  if (urlPath === '/api/publish/receipts' && method === 'GET') return sendJson(res, 200, { posts: scheduler.posts().map((p) => p.receipt), now: scheduler.now() });
+  if (urlPath === '/api/test/clock' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const t = scheduler.advance(body.advanceMs);
+    // Time passing runs the scheduler, as its own timer would. run:false leaves it to the timer (to prove unattended runs).
+    const changed = body.run === false ? [] : await scheduler.runDue();
+    return sendJson(res, 200, { now: t, changed });
+  }
+  if (urlPath === '/api/test/publisher-fault' && method === 'POST') {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, { fault: scheduler.setFault(body.mode) });
+  }
   if (urlPath === '/api/workspace' && method === 'GET') return sendJson(res, 200, wsStore.snapshot());
-  if (urlPath === '/api/workspace/rev' && method === 'GET') return sendJson(res, 200, { rev: wsStore.snapshot().rev });
+  if (urlPath === '/api/workspace/rev' && method === 'GET') return sendJson(res, 200, { rev: wsStore.snapshot().rev, now: scheduler.now() });
   let m = /^\/api\/workspace\/jobs\/([a-z0-9_]+)$/.exec(urlPath);
   if (m && method === 'GET') {
     const job = wsStore.getJob(m[1]);
@@ -196,5 +219,9 @@ http
     console.log(`Nexai AI Marketing HQ running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
     console.log(`Quill caption provider: ${info.label}${info.model ? ` (${info.model}${info.effort ? `, effort ${info.effort}` : ''})` : ''}`);
     console.log(auth.configured() ? `Shared workspace: on (owner sign-in required). Data folder: ${storage.dataDir()}` : 'Shared workspace: off (run npm run set-password to turn it on). Local demo mode only.');
+    if (auth.configured()) {
+      schedulerEvery = scheduler.start();
+      console.log(schedulerEvery ? `Demo scheduler: on, every ${schedulerEvery / 1000} s while this server runs (simulated accounts only).` : 'Demo scheduler: timer off (HQ_SCHEDULER_MS=0); due posts run when HQ asks.');
+    }
     if (auth.configured() && HOST !== '127.0.0.1' && HOST !== 'localhost') console.log('Warning: plain HTTP on your network. Use only on a Wi-Fi network you trust.');
   });

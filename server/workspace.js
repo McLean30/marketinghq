@@ -65,7 +65,20 @@ function validateBundle(id, b) {
     const graphic = b.tasks.find((t) => t.type === 'graphic');
     if (!(a.copyVersion >= 1 && a.copyVersion <= copy.versions.length && a.graphicVersion >= 1 && a.graphicVersion <= graphic.versions.length)) bad('approval refers to a version that does not exist');
   }
+  const pubs = b.job.publications;
+  if (pubs !== undefined) {
+    if (!Array.isArray(pubs) || pubs.length > 200) bad('publications');
+    const copy = b.tasks.find((t) => t.type === 'copy');
+    const graphic = b.tasks.find((t) => t.type === 'graphic');
+    pubs.forEach((p, i) => {
+      if (!p || p.n !== i + 1 || !/^pub_[a-z0-9_]{4,60}$/.test(p.id) || !PUB_STATUS.includes(p.status) || !Array.isArray(p.events)) bad('publication record');
+      if (!(p.copyVersion >= 1 && p.copyVersion <= copy.versions.length && p.graphicVersion >= 1 && p.graphicVersion <= graphic.versions.length)) bad('publication refers to a version that does not exist');
+      if (!Number.isFinite(p.scheduledFor)) bad('publication time');
+    });
+  }
 }
+const PUB_STATUS = ['scheduled', 'publishing', 'published', 'cancelled', 'held', 'attention', 'replaced'];
+const FINAL = ['published', 'cancelled', 'replaced'];
 
 /** Earlier versions and approvals may never be changed or removed. */
 function checkAppendOnly(prev, next) {
@@ -82,6 +95,18 @@ function checkAppendOnly(prev, next) {
   const pr = prev.job.reviews || [];
   const nr = next.job.reviews || [];
   if (nr.length < pr.length || pr.some((x, i) => JSON.stringify(x) !== JSON.stringify(nr[i]))) throw new WsError(422, 'This save would rewrite the review history, so it was refused.');
+  // Publications: never removed; their history only grows; published, cancelled and replaced are final; receipts are kept.
+  const pp = prev.job.publications || [];
+  const np = next.job.publications || [];
+  if (np.length < pp.length) throw new WsError(422, 'This save would remove a publication record, so it was refused.');
+  pp.forEach((p, i) => {
+    const q = np[i];
+    const refuse = () => { throw new WsError(422, `This save would rewrite publication #${p.n}’s history, so it was refused.`); };
+    if (q.id !== p.id || q.copyVersion !== p.copyVersion || q.graphicVersion !== p.graphicVersion || q.platform !== p.platform) refuse();
+    if (q.events.length < p.events.length || p.events.some((ev, k) => JSON.stringify(ev) !== JSON.stringify(q.events[k]))) refuse();
+    if (FINAL.includes(p.status) && JSON.stringify(p) !== JSON.stringify(q)) refuse();
+    if (p.receipt && JSON.stringify(p.receipt) !== JSON.stringify(q.receipt)) refuse();
+  });
 }
 
 function putJob(id, baseRev, bundle, device) {

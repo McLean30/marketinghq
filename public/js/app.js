@@ -5,11 +5,12 @@ import * as P from './photo.js';
 import * as PL from './plan.js';
 import * as PF from './profile.js';
 import * as AG from './agents.js';
+import * as PB from './publishing.js';
 
 const $main = document.getElementById('main');
 const $sheet = document.getElementById('sheet-root');
 const $toast = document.getElementById('toast');
-const ui = { revision: {}, editing: {}, calMonth: null, calPlatform: 'All', lightbox: null, viewVersion: {} };
+const ui = { revision: {}, editing: {}, calMonth: null, calPlatform: 'All', lightbox: null, viewVersion: {}, pub: {} };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmtDate = (iso, opts = { weekday: 'short', day: 'numeric', month: 'short' }) =>
@@ -163,7 +164,7 @@ function jobRow(job) {
   return `<li><a class="job-row" href="#/job/${job.id}">
     <span class="job-top"><span class="plat plat-${platSlug(job.platform)}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate)}</span></span>
     <span class="job-title">${esc(jobTitle(job))}</span>
-    <span class="job-sub">${pill(st)}
+    <span class="job-sub">${pill(st)}${pubPill(job)}
       <span class="mini">Caption: ${esc(S.STATUS_LABEL[S.taskStatus(copy)])}</span>
       <span class="mini">Graphic: ${esc(S.STATUS_LABEL[S.taskStatus(graphic)])}</span></span>
   </a></li>`;
@@ -334,15 +335,15 @@ function renderJob(id) {
   const canApprove = st === 'ready_for_review' || st === 'needs_reapproval';
   const cv = copy.versions.length, gv = graphic.versions.length;
   let approveText;
-  if (st === 'approved') approveText = `Approved caption v${job.approval.copyVersion} with graphic v${job.approval.graphicVersion}. Scheduled on your private calendar for ${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long' })}.`;
+  if (st === 'approved') approveText = `Approved caption v${job.approval.copyVersion} with graphic v${job.approval.graphicVersion}. On your private calendar for ${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long' })}. Approval doesn’t publish or schedule anything.`;
   else if (st === 'needs_reapproval') approveText = `Approved earlier as caption v${job.approval.copyVersion} + graphic v${job.approval.graphicVersion}. The pair has changed since, so it needs fresh approval.`;
-  else if (canApprove) approveText = `Approving caption v${cv} with graphic v${gv} puts this post on the private calendar. Nothing is published.`;
+  else if (canApprove) approveText = `Approving caption v${cv} with graphic v${gv} puts this post on the private calendar. Nothing is published or scheduled: that’s a separate step.`;
   else approveText = 'Approval opens when both the caption and graphic are ready.';
   return `
   <nav class="crumbs"><a href="#/">← HQ</a></nav>
   <div id="sync-slot">${syncNotice(job.id)}</div>
   <header class="job-head">
-    <div class="job-head-top"><span class="plat plat-${platSlug(job.platform)}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>${pill(st)}</div>
+    <div class="job-head-top"><span class="plat plat-${platSlug(job.platform)}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>${pill(st)}${pubPill(job)}</div>
     <h1>${esc(jobTitle(job))}</h1>
     ${job.planId ? `<p class="plan-link" data-testid="plan-link">Part of <a href="#/week/${job.planId}">${esc(PL.fmtWeek(S.getPlan(job.planId)?.weekStart || job.targetDate))}</a> · ${esc(job.planDay.dayName)} · ${esc(job.platform)}. Audience: ${esc(job.planDay.audience)}.</p>` : ''}
     <details class="brief-detail" data-key="brief-${job.id}"><summary>Your brief</summary><p>${esc(job.brief)}</p></details>
@@ -357,29 +358,169 @@ function renderJob(id) {
   <div class="approve-bar" data-status="${st}">
     <p>${esc(approveText)}</p>
     ${st === 'approved' ? `<a class="btn" href="#/calendar">View calendar</a>` : `<button class="btn btn-primary" data-approve="${job.id}" ${canApprove ? '' : 'disabled'}>${st === 'needs_reapproval' ? 'Approve changed pair' : 'Approve pair'}</button>`}
+  </div>
+  ${publishPanel(job)}`;
+}
+
+/* ---------- Demo publishing ---------- */
+function pubPill(job) {
+  const p = PB.currentPub(job);
+  if (!p || p.status === 'replaced') return '';
+  return `<span class="pill pub-pill pub-${p.status}" data-testid="pub-pill">${esc(PB.PUB_LABEL[p.status])}</span>`;
+}
+
+function schedulerNote() {
+  const info = S.schedulerInfo();
+  if (info.runsOn === 'browser') {
+    return `<p class="scheduler-note" data-testid="scheduler-note"><strong>How the demo scheduler runs here:</strong> in this browser. Scheduled demo posts are sent only while HQ is open in this browser (any page). If HQ is closed when one is due, it isn’t sent late: it waits for your decision when you come back. Sign in to a shared workspace to have the HQ server send them on its own.</p>`;
+  }
+  const clock = info.testClock ? ` <span class="test-clock" data-testid="test-clock">Test clock: server time ${esc(PB.fmtLondon(S.now()))}.</span>` : '';
+  return info.everyMs
+    ? `<p class="scheduler-note" data-testid="scheduler-note"><strong>How the demo scheduler runs here:</strong> on the HQ server, every ${Math.round(info.everyMs / 1000) === 1 ? 'second' : `${Math.round(info.everyMs / 1000)} seconds`}, even when no device has HQ open, for as long as the server is running on your computer. A post more than 15 minutes late (for example, the server was off) waits for your decision instead of going out late.${clock}</p>`
+    : `<p class="scheduler-note" data-testid="scheduler-note"><strong>How the demo scheduler runs here:</strong> the HQ server’s timer is off, so due posts are sent when HQ asks the server (while HQ is open).${clock}</p>`;
+}
+
+/** What will be (or was) published: platform, demo account, exact caption, full graphic and the versions. */
+function pubPreview(job, copyN, graphicN, account, { heading = 'What will be published' } = {}) {
+  const { copy, graphic } = S.jobTasks(job);
+  const cv = copy.versions[copyN - 1];
+  const gv = graphic.versions[graphicN - 1];
+  if (!cv || !gv) return '';
+  return `<figure class="pub-preview" data-testid="pub-preview">
+    <figcaption class="pub-dest"><span class="pub-kicker">${esc(heading)}</span>
+      <span class="plat plat-${platSlug(job.platform)}">${esc(job.platform)}</span>
+      <span class="demo-acct" data-testid="pub-account">${esc(PB.accountLabel(account))}</span></figcaption>
+    <p class="pub-caption" data-testid="pub-caption">${esc(cv.content.text)}</p>
+    <div class="pub-graphic" data-testid="pub-graphic">${graphicMarkup(graphic, gv, { title: `Graphic v${gv.n}` })}</div>
+    <p class="pub-versions" data-testid="pub-versions">Caption v${copyN} · Graphic v${graphicN}${job.approval && job.approval.copyVersion === copyN && job.approval.graphicVersion === graphicN ? ` · approved ${esc(fmtTime(job.approval.at))}` : ''}</p>
+  </figure>`;
+}
+
+function timeForm(job, u) {
+  const r = PB.fromLondon(u.date, u.time);
+  let reading = '';
+  if (r.ms) reading = `<span data-testid="tz-reading">${esc(PB.fmtLondon(r.ms))}</span>`;
+  else if (r.error === 'ambiguous') {
+    reading = `<span class="tz-warn" role="alert" data-testid="tz-ambiguous">${esc(r.message)}</span>
+      <span class="tz-options" role="radiogroup" aria-label="Which ${esc(u.time)}?">${r.options.map((o, i) => `<label class="tz-opt"><input type="radio" name="tz-pick-${job.id}" value="${o.ms}" data-pub-pick="${job.id}" ${u.pick === o.ms ? 'checked' : ''}> ${esc(u.time)} ${o.abbr} (${i === 0 ? 'first time, before the clocks go back' : 'second time, after the clocks go back'})</label>`).join('')}</span>`;
+  } else if (r.error && u.time && u.date) reading = `<span class="tz-warn" role="alert" data-testid="tz-error">${esc(r.message)}</span>`;
+  return `<form class="pub-time" data-pub-time="${job.id}" novalidate>
+    <div class="pub-time-row">
+      <label>Date<input type="date" id="pt-date-${job.id}" value="${esc(u.date)}" data-pub-field="date" data-job="${job.id}" required></label>
+      <label>Time<input type="time" id="pt-time-${job.id}" value="${esc(u.time)}" data-pub-field="time" data-job="${job.id}" step="60" required></label>
+    </div>
+    <p class="tz-note" data-testid="tz-note">Time zone: Europe/London (GMT in winter, BST in summer). ${reading}</p>
+    ${u.error ? `<p class="form-error" role="alert" data-testid="pub-error">${esc(u.error)}</p>` : ''}
+    <div class="row-actions"><button class="btn btn-primary" type="submit">Continue</button><button class="btn btn-ghost" type="button" data-pub-back="${job.id}">Back</button></div>
+  </form>`;
+}
+
+function confirmBox(job, u, account, versions) {
+  const at = u.ms ? PB.fmtLondon(u.ms) : '';
+  const what = { 'now-confirm': 'Publish now (demo)', 'schedule-confirm': `Schedule (demo) for ${at}`, 'reschedule-confirm': `Reschedule (demo) to ${at}`, 'release-confirm': 'Publish now anyway (demo)', 'cancel-confirm': 'Cancel this scheduled demo post' }[u.step];
+  const btn = { 'now-confirm': 'Confirm: publish now (demo)', 'schedule-confirm': 'Confirm: schedule (demo)', 'reschedule-confirm': 'Confirm new time', 'release-confirm': 'Confirm: publish anyway (demo)', 'cancel-confirm': 'Yes, cancel it' }[u.step];
+  return `<div class="confirm-box" role="group" aria-labelledby="cf-${job.id}" data-testid="publish-confirm">
+    <p id="cf-${job.id}"><strong>Check before you confirm</strong></p>
+    <dl class="confirm-list">
+      <div><dt>Action</dt><dd data-testid="confirm-action">${esc(what)}</dd></div>
+      <div><dt>Destination</dt><dd data-testid="confirm-destination">${esc(job.platform)}: ${esc(PB.accountLabel(account))}</dd></div>
+      <div><dt>Content</dt><dd data-testid="confirm-versions">Caption v${versions.copy} and graphic v${versions.graphic}, exactly as shown${u.step === 'cancel-confirm' ? '' : '. Later edits won’t be picked up'}</dd></div>
+    </dl>
+    <p class="mini">${u.step === 'cancel-confirm' ? 'It won’t be published, now or at its time. The record stays in the history.' : `Simulated: nothing is sent to ${esc(job.platform)}. The demo publisher returns a receipt.`}</p>
+    <div class="row-actions"><button class="btn ${u.step === 'cancel-confirm' ? 'btn-danger' : 'btn-primary'}" data-pub-confirm="${job.id}" data-testid="confirm-publish" ${u.busy ? 'disabled' : ''}>${esc(btn)}</button><button class="btn btn-ghost" type="button" data-pub-back="${job.id}">${u.step === 'cancel-confirm' ? 'Keep it' : 'Back'}</button></div>
   </div>`;
 }
 
+function pubCard(job, p, u) {
+  const lastEv = p.events.at(-1);
+  const when = PB.fmtLondon(p.scheduledFor);
+  const body = {
+    scheduled: () => `<p data-testid="pub-when"><strong>${p.action === 'now' ? 'Publishing now (demo)' : `Scheduled (demo) for ${esc(when)}`}</strong></p>`,
+    publishing: () => lastEv?.type === 'no_response'
+      ? `<p role="alert" data-testid="pub-no-response"><strong>No confirmation yet.</strong> ${esc(lastEv.text)}</p><div class="row-actions"><button class="btn btn-primary" data-pub-retry="${job.id}" ${S.isPubBusy(job.id) ? 'disabled' : ''}>Retry now</button></div>`
+      : '<p><strong>Sending to the demo publisher…</strong></p>',
+    published: () => `<p data-testid="pub-receipt"><strong>Published (demo)</strong> ${esc(PB.fmtLondon(p.publishedAt))}. Receipt <code>${esc(p.receipt?.id)}</code></p><p class="mini">Demo post address (not a real page): <code>${esc(p.receipt?.postUrl)}</code></p>`,
+    held: () => `<p role="alert" data-testid="pub-held"><strong>Held for your decision.</strong> ${esc(p.holdReason)}</p>`,
+    attention: () => `<p role="alert" data-testid="pub-attention"><strong>${esc(p.attentionReason)}</strong> A queued post never picks up a different version. Review the new version, approve it, then schedule it again.</p>`,
+    cancelled: () => `<p data-testid="pub-cancelled"><strong>Cancelled.</strong> It won’t be published${p.action === 'schedule' ? ` (it was set for ${esc(when)})` : ''}.</p>`,
+  }[p.status]?.() || '';
+  const actions = [];
+  if (!u.step) {
+    if (p.status === 'scheduled' && p.action === 'schedule') actions.push(`<button class="btn" data-pub-step="reschedule" data-job="${job.id}">Reschedule</button>`, `<button class="btn btn-ghost" data-pub-step="cancel-confirm" data-job="${job.id}">Cancel scheduled post</button>`);
+    if (p.status === 'held') actions.push(`<button class="btn btn-primary" data-pub-step="release-confirm" data-job="${job.id}">Publish now anyway (demo)</button>`, `<button class="btn" data-pub-step="reschedule" data-job="${job.id}">Reschedule</button>`, `<button class="btn btn-ghost" data-pub-step="cancel-confirm" data-job="${job.id}">Cancel</button>`);
+    if (p.status === 'attention') actions.push(`<button class="btn btn-ghost" data-pub-step="cancel-confirm" data-job="${job.id}">Dismiss: cancel this publication</button>`);
+  }
+  const versions = { copy: p.copyVersion, graphic: p.graphicVersion };
+  return `<div class="pub-card pub-${p.status}" data-testid="pub-card" data-status="${p.status}" data-pub="${p.id}">
+    <p class="pub-card-head">${esc(PB.PUB_LABEL[p.status])} · #${p.n} · ${esc(p.platform)}</p>
+    ${body}
+    <p class="mini" data-testid="pub-authorised">Authorised: caption v${p.copyVersion} and graphic v${p.graphicVersion} for ${esc(PB.accountLabel(p.account))}${p.action === 'schedule' ? ` at ${esc(when)}` : ''}.</p>
+    ${actions.length ? `<div class="row-actions">${actions.join('')}</div>` : ''}
+    ${u.step === 'reschedule' ? timeForm(job, u) : ''}
+    ${['reschedule-confirm', 'release-confirm', 'cancel-confirm'].includes(u.step) ? confirmBox(job, u, p.account, versions) : ''}
+    <details class="pub-authorised" data-key="pa-${p.id}" ${p.status === 'scheduled' || p.status === 'held' ? 'open' : ''}><summary>What you authorised</summary>${pubPreview(job, p.copyVersion, p.graphicVersion, p.account, { heading: 'Authorised for publication' })}</details>
+  </div>`;
+}
+
+function publishPanel(job) {
+  const st = S.jobStatus(job);
+  const pubs = PB.publications(job);
+  if (st !== 'approved' && !pubs.length) return '';
+  const account = PB.accountFor(job.platform);
+  const u = ui.pub[job.id] || {};
+  const latest = PB.currentPub(job);
+  const queued = latest && ['scheduled', 'publishing'].includes(latest.status);
+  const published = pubs.some((p) => p.status === 'published');
+  const canStart = st === 'approved' && account && !queued && !published && latest?.status !== 'held';
+  let start = '';
+  if (canStart) {
+    const { copy, graphic } = S.jobTasks(job);
+    const versions = { copy: copy.versions.length, graphic: graphic.versions.length };
+    start = `<div class="pub-start" data-testid="pub-start">
+      ${pubPreview(job, versions.copy, versions.graphic, account)}
+      ${!u.step ? `<div class="row-actions pub-actions"><button class="btn btn-primary" data-pub-step="now-confirm" data-job="${job.id}" data-testid="publish-now">Publish now (demo)</button><button class="btn" data-pub-step="schedule" data-job="${job.id}" data-testid="schedule">Schedule (demo)</button></div>
+        <p class="mini">Approval alone never publishes. Each of these asks you to confirm the destination and action first.</p>` : ''}
+      ${u.step === 'schedule' ? timeForm(job, u) : ''}
+      ${['now-confirm', 'schedule-confirm'].includes(u.step) ? confirmBox(job, u, account, versions) : ''}
+    </div>`;
+  }
+  const history = pubs.length ? `<details class="pub-history" data-key="ph-${job.id}" data-testid="pub-history"><summary>Publication history (${pubs.length})</summary><ol>
+    ${pubs.map((p) => `<li data-testid="pub-history-item"><p><strong>#${p.n} ${esc(PB.PUB_LABEL[p.status])}</strong> · ${esc(PB.accountLabel(p.account))} · caption v${p.copyVersion} + graphic v${p.graphicVersion}${p.action === 'schedule' ? ` · for ${esc(PB.fmtLondon(p.scheduledFor))}` : ' · publish now'}${p.receipt ? ` · receipt <code>${esc(p.receipt.id)}</code>` : ''}</p>
+      <ul>${p.events.map((ev) => `<li><time>${esc(PB.fmtLondon(ev.at, { short: true }))}</time> ${esc(ev.text)}</li>`).join('')}</ul></li>`).join('')}</ol></details>` : '';
+  return `<section class="panel publish-panel" aria-labelledby="pub-h-${job.id}" data-testid="publish-panel">
+    <h2 id="pub-h-${job.id}">Publishing <span class="demo-tag">Demo accounts only</span></h2>
+    ${!account ? `<p>Demo publishing covers LinkedIn, Facebook and Google Business Profile. ${esc(job.platform)} isn’t included in this milestone.</p>` : ''}
+    ${latest && latest.status !== 'replaced' ? pubCard(job, latest, queued || latest.status === 'held' || latest.status === 'attention' ? u : {}) : ''}
+    ${start}
+    ${schedulerNote()}
+    ${history}
+  </section>`;
+}
+
 /* ---------- Calendar ---------- */
+function calInfo(j) {
+  const cs = PB.calendarState(j, S.jobStatus(j));
+  return { ...cs, date: cs.at ? PB.londonParts(cs.at).date : j.targetDate };
+}
 function renderCalendar() {
-  const jobs = S.getState().jobs.filter((j) => j.approval);
+  const jobs = S.getState().jobs.filter((j) => j.approval || (j.publications || []).length);
   if (!ui.calMonth) {
-    const upcoming = jobs.map((j) => j.targetDate).sort()[0];
+    const upcoming = jobs.map((j) => calInfo(j).date).sort()[0];
     ui.calMonth = (upcoming || isoLocal(new Date())).slice(0, 7);
   }
   const [y, m] = ui.calMonth.split('-').map(Number);
   const first = new Date(y, m - 1, 1);
   const days = new Date(y, m, 0).getDate();
   const lead = (first.getDay() + 6) % 7; // Monday first
-  const visible = jobs.filter((j) => j.targetDate.startsWith(ui.calMonth) && (ui.calPlatform === 'All' || j.platform === ui.calPlatform));
+  const visible = jobs.filter((j) => calInfo(j).date.startsWith(ui.calMonth) && (ui.calPlatform === 'All' || j.platform === ui.calPlatform));
   const byDay = {};
-  visible.forEach((j) => (byDay[j.targetDate] ||= []).push(j));
+  visible.forEach((j) => (byDay[calInfo(j).date] ||= []).push(j)); // one entry per post, on its scheduled day if it has one
   const today = isoLocal(new Date());
   const entry = (j) => {
-    const st = S.jobStatus(j);
-    return `<a class="cal-entry plat-b-${platSlug(j.platform)}" href="#/job/${j.id}" data-testid="cal-entry">
+    const ci = calInfo(j);
+    return `<a class="cal-entry plat-b-${platSlug(j.platform)}" href="#/job/${j.id}" data-testid="cal-entry" data-job="${j.id}" data-cal-state="${ci.kind}">
       <span class="plat plat-${platSlug(j.platform)}">${j.platform}</span><span class="cal-title">${esc(jobTitle(j))}</span>
-      ${st === 'approved' ? '<span class="tag tag-ok">Approved</span>' : '<span class="tag tag-warn">Needs re-approval</span>'}</a>`;
+      <span class="tag tag-${ci.kind}">${esc(ci.label)}</span></a>`;
   };
   const cells = [];
   for (let i = 0; i < lead; i++) cells.push('<div class="cal-cell pad" aria-hidden="true"></div>');
@@ -392,7 +533,14 @@ function renderCalendar() {
   return `
   <header class="cal-head">
     <h1>Content calendar</h1>
-    <p class="mini">Private. Approved posts only. Nothing here is published or scheduled on a live account.</p>
+    <p class="mini">Private. Approved posts and their demo publications. Nothing here reaches a live account: every destination is a simulated demo account.</p>
+    <ul class="cal-legend" aria-label="What the labels mean">
+      <li><span class="tag tag-approved">Approved</span> content signed off; not queued anywhere</li>
+      <li><span class="tag tag-scheduled">Scheduled (demo)</span> you confirmed a time (Europe/London); open the post to reschedule or cancel</li>
+      <li><span class="tag tag-published">Published (demo)</span> sent to the simulated publisher, with a receipt</li>
+      <li><span class="tag tag-attention">Needs attention</span> held or stopped; open the post to see why</li>
+    </ul>
+    ${schedulerNote()}
   </header>
   <div class="cal-controls">
     <div class="month-nav"><button class="icon-btn" data-month="-1" aria-label="Previous month">‹</button><h2>${monthName}</h2><button class="icon-btn" data-month="1" aria-label="Next month">›</button></div>
@@ -406,7 +554,8 @@ function renderCalendar() {
     ${agendaDays.length ? agendaDays.map((iso) => `<section class="agenda-day"><h3>${fmtDate(iso, { weekday: 'long', day: 'numeric', month: 'long' })}</h3>
       ${byDay[iso].map((j) => {
         const gt = S.getTask(j.taskIds.graphic);
-        const g = gt.versions[j.approval.graphicVersion - 1];
+        const gp = PB.currentPub(j);
+        const g = gt.versions[((gp && gp.status !== 'replaced' ? gp.graphicVersion : j.approval?.graphicVersion) || gt.versions.length) - 1];
         return `<div class="agenda-item">${g ? `<span class="thumb">${graphicMarkup(gt, g)}</span>` : ''}${entry(j)}</div>`;
       }).join('')}</section>`).join('') : `<p class="empty">No approved posts in ${monthName}${ui.calPlatform !== 'All' ? ` for ${ui.calPlatform}` : ''}.</p>`}
   </div>`;
@@ -1176,7 +1325,7 @@ let lastSig = '';
 function signature() {
   const s = S.getState();
   const w = S.ws;
-  return [S.currentProfile()?.id, S.agentState('reviewer'), s.jobs.map((j) => `${(j.reviews || []).length}${S.isReviewing(j.id) ? 'r' : ''}`).join(), S.ws.testDate, (s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
+  return [s.jobs.map((j) => (j.publications || []).map((p) => `${p.status}${p.events.length}${p.scheduledFor}`).join(';')).join(), S.isPubBusy && s.jobs.some((j) => S.isPubBusy(j.id)), S.currentProfile()?.id, S.agentState('reviewer'), s.jobs.map((j) => `${(j.reviews || []).length}${S.isReviewing(j.id) ? 'r' : ''}`).join(), S.ws.testDate, (s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
 }
 
 function render() {
@@ -1232,6 +1381,20 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) S.po
 let submitLock = false;
 document.addEventListener('submit', (e) => {
   const f = e.target;
+  if (f.dataset.pubTime) {
+    e.preventDefault();
+    const id = f.dataset.pubTime;
+    const u = ui.pub[id];
+    if (!u) return;
+    const r = PB.fromLondon(u.date, u.time);
+    const ms = r.ms || (r.error === 'ambiguous' ? u.pick : null);
+    if (!ms) u.error = r.error === 'ambiguous' ? `Choose whether you mean ${u.time} BST or ${u.time} GMT.` : r.message;
+    else if (ms <= S.now() + 60000) u.error = 'That time has already passed (or is less than a minute away) in London. Choose a later time, or use Publish now.';
+    else { u.ms = ms; u.error = ''; u.step = u.step === 'reschedule' ? 'reschedule-confirm' : 'schedule-confirm'; }
+    render();
+    document.querySelector(`[data-testid="${u.error ? 'pub-error' : 'publish-confirm'}"]`)?.scrollIntoView({ block: 'center' });
+    return;
+  }
   if (f.id === 'profile-form') {
     e.preventDefault();
     if (ui.profileSaving || profileReadOnly()) return;
@@ -1394,6 +1557,63 @@ document.addEventListener('click', (e) => {
     return;
   }
   if (t.dataset.cancelRev) { t.disabled = true; S.cancelFailedRevision(t.dataset.cancelRev).then((res) => { if (res.ok) toast('Revision cancelled. Caption unchanged.'); else if (res.error) toast(res.error); render(); }); return; }
+  if (t.dataset.pubStep) {
+    const id = t.dataset.job;
+    const step = t.dataset.pubStep;
+    const job = S.getJob(id);
+    const p = PB.currentPub(job);
+    const u = { step };
+    if (step === 'schedule') {
+      const start = job.targetDate > S.today() ? job.targetDate : PB.londonParts(S.now() + 3600000).date;
+      Object.assign(u, { date: start, time: '09:00' });
+    }
+    if (step === 'reschedule') Object.assign(u, { date: PB.londonParts(p.scheduledFor).date, time: PB.londonParts(p.scheduledFor).time, pubId: p.id });
+    if (step.endsWith('-confirm') && p && step !== 'now-confirm') u.pubId = p.id;
+    ui.pub[id] = u;
+    render();
+    document.querySelector(`[data-pub-time="${id}"] input, [data-testid="publish-confirm"]`)?.scrollIntoView({ block: 'center' });
+    return;
+  }
+  if (t.dataset.pubBack) {
+    const id = t.dataset.pubBack;
+    const u = ui.pub[id];
+    if (u?.step === 'schedule-confirm') u.step = 'schedule';
+    else if (u?.step === 'reschedule-confirm') u.step = 'reschedule';
+    else delete ui.pub[id];
+    render();
+    return;
+  }
+  if (t.dataset.pubConfirm) {
+    const id = t.dataset.pubConfirm;
+    const u = ui.pub[id];
+    if (!u || u.busy) return; // a double tap confirms once
+    u.busy = true;
+    t.disabled = true;
+    const job = S.getJob(id);
+    const run = {
+      'now-confirm': () => S.authorisePublication(id, { action: 'now' }),
+      'schedule-confirm': () => S.authorisePublication(id, { action: 'schedule', scheduledFor: u.ms }),
+      'reschedule-confirm': () => S.reschedulePublication(id, u.pubId, u.ms),
+      'release-confirm': () => S.releaseHeldPublication(id, u.pubId),
+      'cancel-confirm': () => S.cancelPublication(id, u.pubId),
+    }[u.step];
+    const done = { 'now-confirm': 'Sent to the demo publisher.', 'schedule-confirm': `Scheduled (demo) for ${u.ms ? PB.fmtLondon(u.ms) : ''}.`, 'reschedule-confirm': `Rescheduled (demo) to ${u.ms ? PB.fmtLondon(u.ms) : ''}.`, 'release-confirm': 'Sent to the demo publisher.', 'cancel-confirm': 'Cancelled. It won’t be published.' }[u.step];
+    run().then((res) => {
+      if (res.ok && !res.existing) { delete ui.pub[id]; toast(done); }
+      else if (res.existing) { delete ui.pub[id]; toast(`Already ${PB.PUB_LABEL[res.existing.status].toLowerCase()}: nothing new was queued.`); }
+      else if (res.busy) return;
+      else if (res.conflict) { delete ui.pub[id]; toast('Not saved: this post changed on another device. Load the latest version and check it.'); }
+      else { u.busy = false; u.error = res.error || 'That didn’t save. Try again.'; toast(u.error); }
+      render();
+    });
+    void job;
+    return;
+  }
+  if (t.dataset.pubRetry) {
+    t.disabled = true;
+    S.retryPublication(t.dataset.pubRetry).then((res) => { if (res.error) toast(res.error); render(); });
+    return;
+  }
   if (t.dataset.approve) {
     t.disabled = true;
     S.approveJob(t.dataset.approve).then((res) => {
@@ -1505,6 +1725,23 @@ document.addEventListener('click', (e) => {
     return;
   }
   if (t.dataset.plat) { ui.calPlatform = t.dataset.plat; render(); }
+});
+
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (!el.dataset?.pubField) return;
+  const u = ui.pub[el.dataset.job];
+  if (!u) return;
+  u[el.dataset.pubField] = el.value;
+  u.pick = null;
+  u.error = '';
+  render();
+});
+document.addEventListener('change', (e) => {
+  const el = e.target;
+  if (!el.dataset?.pubPick) return;
+  const u = ui.pub[el.dataset.pubPick];
+  if (u) { u.pick = Number(el.value); u.error = ''; render(); }
 });
 
 // Opening a workspace from an HQ card: the same artwork carries across (View Transitions where supported).

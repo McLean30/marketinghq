@@ -3,9 +3,11 @@
 # Runs against the Vercel Preview deployment of one exact commit and reports a check named
 # "Vercel preview smoke test" on that commit (it shows on any pull request containing it).
 #
-# - Runs on every push: it finds the Vercel Preview deployment that Vercel's GitHub integration records for
-#   that exact commit, waits for it to finish (up to 20 minutes) and tests that deployment's own URL. A new
-#   commit gets a new deployment and a fresh result; an older deployment can't stand in for it.
+# - Runs on every push: it waits (up to 20 minutes) for Vercel to finish deploying that exact commit and tests
+#   that deployment. Vercel reports it either as a GitHub Deployment (with its URL) or as a "Vercel" commit status
+#   (deployment id only). For the latter the URL comes from the Vercel API when a read-only VERCEL_TOKEN secret is
+#   set, otherwise from the branch URL, accepted only once the deployment reports this exact commit at
+#   /api/version. A new commit gets a fresh result; an older deployment can't stand in for it.
 # - Manual run (Actions → Vercel preview smoke test → Run workflow) takes a commit SHA and does the same.
 #   (GitHub only offers manual runs for workflows on the default branch.)
 # - Results: pass → success; fail → failure; blocked (preview protection / no access) → action_required,
@@ -20,8 +22,11 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: Commit SHA to test (its own Vercel Preview deployment is found and waited for)
+        description: Commit SHA to test (its own Vercel deployment is found and waited for)
         required: true
+      branch:
+        description: Branch the commit was deployed from (used for the branch URL when no VERCEL_TOKEN is set)
+        required: false
 
 permissions:
   contents: read
@@ -43,55 +48,88 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Find the commit's Vercel Preview deployment and wait for it
+      - name: Find the commit's Vercel deployment and wait for it
         id: dep
         uses: actions/github-script@v7
         env:
           INPUT_SHA: ${{ inputs.sha || github.sha }}
+          BRANCH: ${{ inputs.branch || github.ref_name }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         with:
           script: |
             const { owner, repo } = context.repo;
-            let sha, state, url, depId, env;
-            {
-              sha = (process.env.INPUT_SHA || '').trim();
-              if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error('Give a commit SHA.');
-              sha = (await github.rest.repos.getCommit({ owner, repo, ref: sha })).data.sha;
-              const deadline = Date.now() + 20 * 60 * 1000;
-              while (true) {
-                const deps = (await github.rest.repos.listDeployments({ owner, repo, sha, per_page: 30 })).data
-                  .filter((d) => /preview/i.test(d.environment))
-                  .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-                if (deps.length) {
-                  const d = deps[0];
-                  const st = (await github.rest.repos.listDeploymentStatuses({ owner, repo, deployment_id: d.id, per_page: 1 })).data[0];
-                  depId = d.id; env = d.environment; state = st ? st.state : 'pending';
-                  url = st ? (st.environment_url || st.target_url) : '';
-                  if (['success', 'failure', 'error', 'inactive'].includes(state)) break;
-                }
-                if (Date.now() > deadline) {
-                  if (!depId) {
-                    // Nothing recorded as a GitHub deployment: note any Vercel commit status for the report.
-                    const st = (await github.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha })).data.statuses.find((x) => /vercel/i.test(x.context));
-                    core.info(st ? `Vercel commit status: ${st.state} (${st.context}) ${st.target_url}` : 'No Vercel deployment or commit status was recorded on GitHub for this commit.');
-                    core.setOutput('vercel_status', st ? `${st.context}: ${st.state}` : 'none');
-                  }
-                  state = depId ? (state || 'missing') : 'missing';
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            let sha = (process.env.INPUT_SHA || '').trim();
+            if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error('Give a commit SHA.');
+            sha = (await github.rest.repos.getCommit({ owner, repo, ref: sha })).data.sha;
+            let state = 'missing', url = '', depId = '', env = '', source = '', note = '', verify = false;
+            // Vercel reports each commit's deployment either as a GitHub Deployment or as a "Vercel" commit status.
+            const deadline = Date.now() + 20 * 60 * 1000;
+            while (true) {
+              const deps = (await github.rest.repos.listDeployments({ owner, repo, sha, per_page: 30 })).data
+                .filter((d) => /preview|production/i.test(d.environment)).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              if (deps.length) {
+                const d = deps[0];
+                const st = (await github.rest.repos.listDeploymentStatuses({ owner, repo, deployment_id: d.id, per_page: 1 })).data[0];
+                if (st && ['success', 'failure', 'error', 'inactive'].includes(st.state)) {
+                  state = st.state; url = st.environment_url || st.target_url || ''; depId = String(d.id); env = d.environment; source = 'GitHub deployment';
                   break;
                 }
-                core.info(`Waiting for the Vercel Preview deployment of ${sha.slice(0, 7)} (${state || 'not found yet'})…`);
-                await new Promise((r) => setTimeout(r, 20000));
               }
+              const vs = (await github.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha })).data.statuses.find((x) => /^vercel$/i.test(x.context));
+              if (vs && vs.state !== 'pending') {
+                state = vs.state; source = 'Vercel commit status';
+                const m = /vercel\.com\/([^/]+)\/([^/]+)\/([A-Za-z0-9]+)/.exec(vs.target_url || '');
+                if (state === 'success' && m) {
+                  const [, team, project, id] = m;
+                  depId = id;
+                  if (process.env.VERCEL_TOKEN) {
+                    const r = await fetch(`https://api.vercel.com/v13/deployments/dpl_${id}?slug=${team}`, { headers: { Authorization: `Bearer ${process.env.VERCEL_TOKEN}` } });
+                    const j = await r.json().catch(() => ({}));
+                    if (r.ok && j.url) {
+                      if (j.meta?.githubCommitSha && j.meta.githubCommitSha !== sha) { state = 'failure'; note = `Vercel says deployment ${id} is for ${j.meta.githubCommitSha}, not ${sha}.`; }
+                      url = `https://${j.url}`; env = j.target || 'preview'; source = 'Vercel API (exact deployment)';
+                    } else note = `The Vercel API didn't return deployment ${id} (HTTP ${r.status}).`;
+                  }
+                  if (!url) {
+                    // No token: use the branch URL, and only accept it if the deployment itself reports this exact commit.
+                    const slug = (process.env.BRANCH || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+                    const host = `${project}-git-${slug}-${team}`;
+                    if (slug && host.length <= 63) { url = `https://${host}.vercel.app`; env = 'preview'; source = 'branch URL, checked against /api/version'; verify = true; }
+                    else { state = 'missing'; note = `Vercel deployed this commit (deployment ${id}) but didn't publish its URL to GitHub, and the branch URL can't be derived (${host.length} characters, over Vercel's 63-character limit). Add a read-only VERCEL_TOKEN repository secret so the check can look the URL up.`; }
+                  }
+                }
+                break;
+              }
+              if (Date.now() > deadline) { note = 'Vercel recorded no finished deployment for this commit on GitHub within 20 minutes.'; break; }
+              core.info(`Waiting for Vercel to finish deploying ${sha.slice(0, 7)}…`);
+              await sleep(20000);
             }
+            if (verify && state === 'success') {
+              // The branch URL follows the branch's newest deployment; wait until it serves this commit.
+              let served = null;
+              for (let i = 0; i < 12; i++) {
+                const r = await fetch(`${url}/api/version`, { headers: process.env.BYPASS ? { 'x-vercel-protection-bypass': process.env.BYPASS } : {} }).catch(() => null);
+                served = r && r.ok ? (await r.json().catch(() => ({}))).commit : null;
+                if (served === sha) break;
+                await sleep(15000);
+              }
+              if (served !== sha) { state = 'missing'; note = `The branch URL ${url} ${served ? `serves ${served.slice(0, 7)}, not this commit` : 'didn’t report its commit'}, so it can't stand in for this commit's deployment. Add a read-only VERCEL_TOKEN repository secret for an exact lookup.`; url = ''; }
+            }
+            core.info(`Deployment: ${state} via ${source || 'nothing'} ${url} ${note}`);
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const check = await github.rest.checks.create({
               owner, repo, head_sha: sha, name: 'Vercel preview smoke test', status: 'in_progress', details_url: runUrl,
               output: { title: 'Testing the Vercel preview', summary: `Commit ${sha}\nPreview: ${url || 'not available'}` },
             });
             core.setOutput('sha', sha);
-            core.setOutput('state', state || 'missing');
-            core.setOutput('url', url || '');
-            core.setOutput('deployment_id', String(depId || ''));
-            core.setOutput('environment', env || '');
+            core.setOutput('state', state);
+            core.setOutput('url', url);
+            core.setOutput('deployment_id', depId);
+            core.setOutput('environment', env);
+            core.setOutput('source', source);
+            core.setOutput('note', note);
             core.setOutput('check_id', String(check.data.id));
             core.setOutput('run_url', runUrl);
 
@@ -101,6 +139,7 @@ jobs:
           SHA: ${{ steps.dep.outputs.sha }}
         run: |
           if git cat-file -e "${SHA}:public/js/review.js" 2>/dev/null; then echo "reviewer=1" >> "$GITHUB_OUTPUT"; else echo "reviewer=0" >> "$GITHUB_OUTPUT"; fi
+          if git cat-file -e "${SHA}:public/js/publishing.js" 2>/dev/null; then echo "publishing=1" >> "$GITHUB_OUTPUT"; else echo "publishing=0" >> "$GITHUB_OUTPUT"; fi
 
       - uses: actions/setup-node@v4
         if: steps.dep.outputs.state == 'success'
@@ -119,6 +158,8 @@ jobs:
           PREVIEW_URL: ${{ steps.dep.outputs.url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           EXPECT_REVIEWER: ${{ steps.expect.outputs.reviewer }}
+          EXPECT_PUBLISHING: ${{ steps.expect.outputs.publishing }}
+          EXPECT_SHA: ${{ steps.dep.outputs.sha }}
           SMOKE_RESULT: smoke-result.json
           SMOKE_SHOTS: smoke-shots
         run: |
@@ -144,7 +185,8 @@ jobs:
           DEP_ID: ${{ steps.dep.outputs.deployment_id }}
           ENVIRONMENT: ${{ steps.dep.outputs.environment }}
           RUN_URL: ${{ steps.dep.outputs.run_url }}
-          VERCEL_STATUS: ${{ steps.dep.outputs.vercel_status }}
+          SOURCE: ${{ steps.dep.outputs.source }}
+          NOTE: ${{ steps.dep.outputs.note }}
         with:
           script: |
             const fs = require('fs');
@@ -153,8 +195,8 @@ jobs:
             let result;
             if (e.STATE !== 'success') {
               result = e.STATE === 'missing'
-                ? { status: 'blocked', summary: `Vercel didn't record a Preview deployment for this commit on GitHub within 20 minutes (Vercel commit status: ${process.env.VERCEL_STATUS || 'none'}), so the preview could not be tested. Check that the Vercel GitHub integration is connected to this repository.`, steps: [] }
-                : { status: 'fail', summary: `The Vercel Preview deployment finished with “${e.STATE}”.`, steps: [] };
+                ? { status: 'blocked', summary: `The preview for this commit could not be tested. ${e.NOTE || 'No deployment was found.'}`, steps: [] }
+                : { status: 'fail', summary: `The Vercel deployment finished with “${e.STATE}”. ${e.NOTE}`, steps: [] };
             } else {
               try { result = JSON.parse(fs.readFileSync('smoke-result.json', 'utf8')); }
               catch { result = { status: 'fail', summary: 'The smoke test did not produce a result.', steps: [] }; }
@@ -166,7 +208,7 @@ jobs:
               owner, repo, check_run_id: Number(e.CHECK_ID), status: 'completed', conclusion, details_url: e.RUN_URL,
               output: {
                 title: `${title}: ${result.summary}`.slice(0, 250),
-                summary: `**${title}.** ${result.summary}\n\n- Commit: \`${e.SHA}\`\n- Preview URL: ${e.URL || 'none'}\n- Deployment: ${e.DEP_ID || 'none'} (${e.ENVIRONMENT || 'n/a'})\n- Run: ${e.RUN_URL}`,
+                summary: `**${title}.** ${result.summary}\n\n- Commit: \`${e.SHA}\`\n- Preview URL: ${e.URL || 'none'}\n- Deployment: ${e.DEP_ID || 'none'} (${e.ENVIRONMENT || 'n/a'}), found via ${e.SOURCE || 'nothing'}\n- Run: ${e.RUN_URL}`,
                 text: lines || 'No browser steps ran.',
               },
             });

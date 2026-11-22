@@ -8,6 +8,7 @@ import { setAssetBackend } from './photo.js';
 import { loadSeed, profileImpact } from './profile.js';
 import { runChecks, reviewFreshness } from './review.js';
 import { londonToday } from './plan.js';
+import * as PB from './publishing.js';
 
 const KEY = 'nexai-hq:v1';
 const MODE_KEY = 'nexai-hq:mode';
@@ -57,7 +58,11 @@ export const ws = {
   updates: {}, // jobId -> { changes, entry } : newer version on the server, not yet loaded (job is open)
   conflicts: {}, // jobId -> { action, changes, entry } : a save of yours that the server refused
   focusJob: null,
+  clockOffset: 0, // shared mode: server time minus this device's time (the server decides when posts are due)
+  scheduler: { runsOn: 'browser' },
 };
+/** "Now" for publishing decisions: the server's clock in the shared workspace, this browser's otherwise. */
+export const now = () => Date.now() + (ws.mode === 'shared' ? ws.clockOffset : 0);
 
 /* ---------- Quill provider ---------- */
 export let quill = { provider: 'demo', model: null, label: 'Local demo templates', checked: false };
@@ -157,6 +162,10 @@ export function describeChanges(mine, theirs) {
   const a0 = mine?.job.approval;
   const a1 = theirs.job.approval;
   if (a1 && JSON.stringify(a0) !== JSON.stringify(a1)) out.push(`Approved caption v${a1.copyVersion} with graphic v${a1.graphicVersion}`);
+  for (const p of theirs.job.publications || []) {
+    const old = (mine?.job.publications || []).find((x) => x.id === p.id);
+    if (!old || old.status !== p.status || old.scheduledFor !== p.scheduledFor) out.push(`${p.platform} publication #${p.n}: ${PB.PUB_LABEL[p.status]}${p.status === 'scheduled' ? ` for ${PB.fmtLondon(p.scheduledFor)}` : ''}${p.receipt && !old?.receipt ? ` (receipt ${p.receipt.id})` : ''}`);
+  }
   if (!out.length) out.push('Job details updated');
   return out;
 }
@@ -194,6 +203,7 @@ export async function commit(jobId, mutate, { background = false, strict = true,
     const before = clone(state);
     const result = mutate();
     if (result === false) return { ok: true, noop: true };
+    syncPubs(jobId);
     try {
       saveLocal(strict && !background);
     } catch (e) {
@@ -221,6 +231,7 @@ async function commitShared(jobId, mutate, background, action) {
     const before = bundleOf(jobId);
     const result = mutate();
     if (result === false) return { ok: true, noop: true };
+    syncPubs(jobId);
     const bundle = bundleOf(jobId);
     notify();
     let res;
@@ -233,6 +244,7 @@ async function commitShared(jobId, mutate, background, action) {
     if (res.ok) {
       ws.synced[jobId] = { rev: res.data.rev, updatedAt: res.data.updatedAt, updatedBy: deviceKind() };
       ws.rev = Math.max(ws.rev, res.data.wsRev);
+      if (ws.updates[jobId] && ws.updates[jobId].entry.rev <= res.data.rev) delete ws.updates[jobId]; // that "newer version" was ours
       return { ok: true, result };
     }
     if (res.status === 409) {
@@ -284,6 +296,8 @@ export async function init() {
     ws.authConfigured = !!r.data.authConfigured;
     ws.signedIn = !!r.data.signedIn;
     ws.testDate = r.data.testDate || null;
+    ws.scheduler = r.data.scheduler || { runsOn: 'browser' };
+    if (ws.scheduler.now) ws.clockOffset = ws.scheduler.now - Date.now();
   } catch {
     ws.authConfigured = false;
   }
@@ -343,18 +357,18 @@ export async function signOut() {
 }
 
 /** Fetch the server workspace. Jobs open on screen are not swapped under you: you get a notice instead. */
-async function pullWorkspace(initial = false) {
+async function pullWorkspace(initial = false, applyId = null) {
   const r = await api('api/workspace');
   if (!r.ok) return false;
   const snap = r.data;
   for (const e of snap.jobs) {
     const known = ws.synced[e.id];
     if (known && known.rev >= e.rev) continue;
-    if (!initial && known && e.id === ws.focusJob && !ws.conflicts[e.id]) {
+    if (locks.has(e.id)) continue; // a save of ours is in flight; its result decides (it may be this very version)
+    if (!initial && known && e.id === ws.focusJob && e.id !== applyId && !ws.conflicts[e.id] && !onlyPublishingChanged(bundleOf(e.id), e.bundle)) {
       ws.updates[e.id] = { changes: describeChanges(bundleOf(e.id), e.bundle), entry: e };
       continue;
     }
-    if (locks.has(e.id)) continue; // a save of ours is in flight; its result decides
     applyBundle(e.bundle);
     ws.synced[e.id] = { rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy };
   }
@@ -373,12 +387,20 @@ async function pullWorkspace(initial = false) {
   return true;
 }
 
+/** Changes made by the demo scheduler (publication status, receipts, log) are safe to show at once on an open job. */
+function onlyPublishingChanged(mine, theirs) {
+  if (!mine) return false;
+  const strip = (b) => JSON.stringify({ job: { ...b.job, publications: undefined }, tasks: b.tasks });
+  return strip(mine) === strip(theirs);
+}
+
 let polling = false;
 export async function poll() {
   if (ws.mode !== 'shared' || polling) return;
   polling = true;
   try {
     const r = await api('api/workspace/rev');
+    if (r.ok && r.data.now) ws.clockOffset = r.data.now - Date.now();
     if (r.ok && r.data.rev !== ws.rev) await pullWorkspace();
   } catch { /* offline: status already set */ } finally {
     polling = false;
@@ -458,6 +480,7 @@ export const STATUS_LABEL = {
 
 /** Resolve agent work whose time has come (simulated outputs, AI requests). */
 export function tick(now = Date.now()) {
+  dispatchLocal();
   for (const task of state.tasks.slice()) {
     if (!task.pending) continue;
     if (task.pending.engine === 'ai') { dispatchAi(task.id, now); continue; }
@@ -535,7 +558,7 @@ export async function approveJob(jobId) {
     if (t.copy.versions.length !== shown.copyVersion || t.graphic.versions.length !== shown.graphicVersion) return false;
     j.approval = { ...shown, at: Date.now() };
     j.approvals = [...(j.approvals || []), j.approval];
-    log(j.id, 'manager', `Approved caption v${shown.copyVersion} with graphic v${shown.graphicVersion}. Added to the private calendar.`);
+    log(j.id, 'manager', `Approved caption v${shown.copyVersion} with graphic v${shown.graphicVersion}. Added to the private calendar. Nothing is published or scheduled until you choose to.`);
     return true;
   }, { action: 'approve' });
 }
@@ -971,4 +994,114 @@ async function assetsPresent(ids) {
   const out = [];
   for (const id of ids) if (await getLocalAsset(id).catch(() => null)) out.push(id);
   return out;
+}
+
+
+/* ---------- Demo publishing and scheduling ---------- */
+// Approval only puts a post on the calendar. Publishing needs a separate, explicit confirmation of the destination and
+// action. The record names the exact versions you authorised (see publishing.js for the rules).
+const liveBundle = (jobId) => ({ job: getJob(jobId), tasks: state.tasks.filter((t) => t.jobId === jobId) });
+function syncPubs(jobId) {
+  const job = getJob(jobId);
+  if (job?.publications?.length) PB.syncPublications(liveBundle(jobId), now(), deviceKind());
+}
+export const schedulerInfo = () => (ws.mode === 'shared' ? { runsOn: 'server', ...ws.scheduler } : { runsOn: 'browser' });
+
+// Demo mode: the simulated publisher keeps its own records in this browser, apart from HQ's data, like a remote service.
+const PUB_KEY = 'nexai-hq:demo-publisher';
+const FAULT_KEY = 'nexai-hq:demo-publisher-fault';
+const readPub = () => { try { return JSON.parse(lsGet(PUB_KEY) || '{}'); } catch { return {}; } };
+const localPublisher = PB.makePublisher({
+  store: {
+    get: (id) => readPub()[id] || null,
+    put: (id, rec) => { const all = readPub(); all[id] = rec; localStorage.setItem(PUB_KEY, JSON.stringify(all)); },
+  },
+  now: () => now(),
+  takeFault: () => { const f = lsGet(FAULT_KEY); if (f) { try { localStorage.removeItem(FAULT_KEY); } catch { /* ignore */ } } return f; },
+});
+export const localReceipts = () => Object.values(readPub()).map((r) => r.receipt);
+
+function runLocal(jobId, force) {
+  return commit(jobId, () => PB.runDue(liveBundle(jobId), { now: now(), profileData: currentProfile()?.data, publisher: localPublisher, by: deviceKind(), force }) || false, { background: true });
+}
+let dispatching = false;
+function dispatchLocal() {
+  if (ws.mode !== 'local' || dispatching || !ws.ready) return;
+  const t = now();
+  const due = state.jobs.filter((j) => (j.publications || []).some((p) => (p.status === 'scheduled' && p.scheduledFor <= t) || (p.status === 'publishing' && t - (p.lastAttemptAt || 0) >= PB.RETRY_MS)));
+  if (!due.length) return;
+  dispatching = true;
+  Promise.all(due.map((j) => runLocal(j.id, false))).finally(() => { dispatching = false; });
+}
+
+/** Send what's due for this job now: in demo mode here, in the shared workspace on the HQ server. */
+async function runPublications(jobId) {
+  if (ws.mode === 'local') return runLocal(jobId, true);
+  const r = await api('api/publish/run', { method: 'POST', body: JSON.stringify({ jobId }) }).catch((e) => ({ ok: false, data: { error: e.message } }));
+  await pullWorkspace(false, jobId);
+  return r.ok ? { ok: true } : { ok: false, error: r.data.error || 'The HQ server didn’t run the publication.' };
+}
+
+const pubBusy = new Set();
+async function pubCommit(jobId, fn, action) {
+  if (pubBusy.has(jobId)) return { ok: false, busy: true }; // a double tap is one action
+  if (ws.mode === 'shared' && ws.updates[jobId]) {
+    ws.conflicts[jobId] = { action, changes: ws.updates[jobId].changes, entry: ws.updates[jobId].entry };
+    delete ws.updates[jobId];
+    notify();
+    return { ok: false, conflict: true };
+  }
+  pubBusy.add(jobId);
+  try {
+    let out = {};
+    const res = await commit(jobId, () => {
+      if (!getJob(jobId)) return false;
+      out = fn(liveBundle(jobId), now()) || {};
+      return out.error || out.existing ? false : true;
+    }, { action });
+    if (!res.ok) return res;
+    if (out.error) return { ok: false, error: out.error };
+    if (out.existing) return { ok: true, existing: out.existing };
+    return { ok: true, pub: out.pub };
+  } finally {
+    pubBusy.delete(jobId);
+  }
+}
+export const isPubBusy = (jobId) => pubBusy.has(jobId);
+
+/** "Publish now (demo)" or "Schedule (demo)", after you confirmed the destination, versions and time. */
+export async function authorisePublication(jobId, { action, scheduledFor }) {
+  const res = await pubCommit(jobId, (b, t) => {
+    const out = PB.authorise(b, { action, scheduledFor, now: t, by: deviceKind() });
+    if (out.pub) log(jobId, 'manager', action === 'now' ? `Publish now (demo) confirmed for ${b.job.platform}.` : `Scheduled (demo) for ${PB.fmtLondon(scheduledFor)} on ${b.job.platform}.`);
+    return out;
+  }, 'publish');
+  if (res.ok && res.pub && action === 'now') await runPublications(jobId);
+  return res;
+}
+export const reschedulePublication = (jobId, pubId, scheduledFor) => pubCommit(jobId, (b, t) => {
+  const p = (b.job.publications || []).find((x) => x.id === pubId);
+  const out = p ? PB.reschedule(p, { scheduledFor, now: t, by: deviceKind() }) : { error: 'Publication not found.' };
+  if (out.pub) log(jobId, 'manager', `Rescheduled (demo) to ${PB.fmtLondon(scheduledFor)}.`);
+  return out;
+}, 'reschedule');
+export const cancelPublication = (jobId, pubId) => pubCommit(jobId, (b, t) => {
+  const p = (b.job.publications || []).find((x) => x.id === pubId);
+  const out = p ? PB.cancel(p, { now: t, by: deviceKind() }) : { error: 'Publication not found.' };
+  if (out.pub) log(jobId, 'manager', `Scheduled demo post #${p.n} cancelled.`);
+  return out;
+}, 'cancel-publication');
+export async function releaseHeldPublication(jobId, pubId) {
+  const res = await pubCommit(jobId, (b, t) => {
+    const p = (b.job.publications || []).find((x) => x.id === pubId);
+    return p ? PB.releaseHeld(p, { now: t, by: deviceKind() }) : { error: 'Publication not found.' };
+  }, 'release');
+  if (res.ok && res.pub) await runPublications(jobId);
+  return res;
+}
+/** Ask the publisher again about a post that got no answer. Safe: the publisher dedupes by publication id. */
+export async function retryPublication(jobId) {
+  if (pubBusy.has(jobId)) return { ok: false, busy: true };
+  pubBusy.add(jobId);
+  try { return await runPublications(jobId); } finally { pubBusy.delete(jobId); }
 }

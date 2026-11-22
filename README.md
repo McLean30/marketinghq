@@ -1,4 +1,4 @@
-# Nexai AI Marketing HQ (milestone 7)
+# Nexai AI Marketing HQ (milestone 8)
 
 Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer). Review both together, request revisions with feedback, approve the pair, and see it on the private content calendar.
 
@@ -56,11 +56,34 @@ Limits: images live only in this browser, so they don't sync between devices, an
 
 ## Deploying a preview (for example Vercel)
 
-**Vercel preview smoke test.** `.github/workflows/vercel-preview-smoke.yml` runs on every push, waits for that commit’s Vercel Preview deployment to finish, and reports a **"Vercel preview smoke test"** check on that exact commit. It opens the deployment's own URL in a browser, checks `GET /` and `GET /index.html` both serve HQ, that the app scripts, styles, character art and starting business profile load, and that an unknown `/api` route still returns an error rather than the homepage. It then confirms the full HQ dashboard renders (all four agent cards with artwork, New brief, Plan a content week), and opens Vektor's workspace, the Brand & Quality Reviewer and the Business profile. It fails on a 5xx, an uncaught startup error, a blank app or a workspace that won't open. If preview protection or missing access stops it reaching HQ, the result is *Blocked* (action required), never a pass. Add Vercel's *Protection Bypass for Automation* secret as the repository secret `VERCEL_AUTOMATION_BYPASS_SECRET`; protection stays on. You can also run it from the Actions tab with a commit SHA. Locally: `PREVIEW_URL=… npm run test:smoke`; `npm run test:smoke-selftest` checks its pass/fail/blocked verdicts.
+**Vercel preview smoke test.** `.github/workflows/vercel-preview-smoke.yml` runs on every push, waits for that commit’s Vercel Preview deployment to finish, and reports a **"Vercel preview smoke test"** check on that exact commit. It opens the deployment's own URL in a browser, checks `GET /` and `GET /index.html` both serve HQ, that the app scripts, styles, character art and starting business profile load, and that an unknown `/api` route still returns an error rather than the homepage. It then confirms the full HQ dashboard renders (all four agent cards with artwork, New brief, Plan a content week), and opens Vektor's workspace, the Brand & Quality Reviewer and the Business profile. From Milestone 8 it also creates one post in the test browser (local templates), approves it and checks the demo publishing controls, the Europe/London schedule form and the confirmation render, then backs out without confirming. It refuses a deployment whose `/api/version` reports a different commit. It fails on a 5xx, an uncaught startup error, a blank app or a workspace that won't open. If preview protection or missing access stops it reaching HQ, the result is *Blocked* (action required), never a pass. Add Vercel's *Protection Bypass for Automation* secret as the repository secret `VERCEL_AUTOMATION_BYPASS_SECRET`; protection stays on. Vercel reports this project's deployments as a "Vercel" commit status rather than a GitHub Deployment, so the check finds the URL one of two ways. With a read-only `VERCEL_TOKEN` repository secret, it asks the Vercel API for that exact deployment (recommended). Without it, it uses the branch URL, accepted only once it serves this exact commit. Branch URLs over 63 characters can't be derived, so for long branch names such as `claude/milestone-8-publishing-scheduling` the token is needed, and without it the check reports *Blocked*. You can also run it from the Actions tab with a commit SHA. Locally: `PREVIEW_URL=… npm run test:smoke`; `npm run test:smoke-selftest` checks its pass/fail/blocked verdicts.
 
 With no settings the server runs in **browser demo mode**: HQ opens, jobs live in the browser, and captions use local templates. It doesn't read or write its data folder at start-up, so a read-only serverless filesystem is fine. The shared workspace (owner sign-in, durable server saves) switches on only when `HQ_OWNER_PASSWORD_HASH` is set. That needs a persistent, writable `HQ_DATA_DIR`, which serverless functions don't provide, so run the shared workspace on a machine you control. `npm run test:preview` checks this boot path, including a bundled build.
 
 **Vercel build.** Vercel's zero-config `node` preset compiles `server.js` into one server function and routes `/` and every unmatched path to it, so the function needs `public/` beside it. `vercel.json` adds it with `includeFiles: "public/**"`. Without that, `GET /` returns 404 while `GET /index.html` (served from Vercel's static copy) still works. `npm run test:vercel-build` runs the same build locally from Git-tracked files and checks the function's files and responses.
+
+## Demo publishing and scheduling (milestone 8)
+
+Every destination is a **simulated demo account** (Nexai Digital's LinkedIn company page, Facebook page and Google Business Profile listing, all labelled *demo account, simulated*). Nothing is sent to LinkedIn, Facebook or Google. No keys, OAuth connections or Metricool actions are used; those are reserved for Milestone 11. Instagram and X have no demo account yet.
+
+- **Approval never publishes.** Approving a post puts it on the private calendar as **Approved** and nothing more. Once approved, the post screen offers **Publish now (demo)** and **Schedule (demo)** with a preview of exactly what goes out: platform, labelled demo account, the exact caption, the full graphic and the approved version numbers. It's sized to read comfortably on a phone.
+- **A separate confirmation is required.** It names the action, the destination, the versions and, for scheduling, the date and time in **Europe/London**, shown as GMT or BST. A time skipped when the clocks go forward (01:00–01:59 on the last Sunday in March) is refused. A time that happens twice when they go back (01:00–01:59 on the last Sunday in October) must be chosen explicitly: BST (first) or GMT (second). Past times are refused.
+- **The calendar shows each post once**, on its scheduled day, labelled **Approved**, **Scheduled (demo)**, **Published (demo)** or **Needs attention**. Open a scheduled post to inspect what you authorised, reschedule it or cancel it.
+- **A queued post never picks up a different version.** If the caption or graphic changes (or a revision is requested), the queued publication stops and says why. Approve the new version, then schedule it again. Approving alone queues nothing.
+- **An expired offer is held.** Just before sending, Calibre's offer rule checks the authorised caption against the business profile for the scheduled London date. If the caption quotes an offer that isn't live, the post is **held for your decision**: publish anyway, reschedule or cancel.
+- **A missed time is held.** If a scheduled post is more than 15 minutes late (nothing was running to send it), it waits for your decision instead of going out late.
+- **Delivery is idempotent.** Each publication has an id that the simulated publisher uses as an idempotency key. A double tap, a refresh, a retry or a second device can't publish twice. If the publisher accepted a post but the answer was lost, **Retry** returns the original receipt. Every publication keeps its destination, authorised versions, scheduled time, outcome, receipt and a timestamped history on the post.
+
+**Where the scheduler runs (shown on the post screen and the calendar):**
+
+| Setup | Scheduler | Unattended? |
+|---|---|---|
+| Vercel preview, or any server with no settings (browser demo mode) | In your browser. Due posts are sent while HQ is open in that browser. If HQ is closed at the due time, the post waits for your decision. | **No.** HQ must be open. |
+| Shared workspace on your own computer (`npm run start:env` with an owner password) | On the HQ server, every 15 s (`HQ_SCHEDULER_MS`), whether or not any device has HQ open, for as long as the server process runs. | **Yes, while the server runs.** Verified by `npm run test:m8`, which closes every browser and checks the server's timer sends the post. |
+
+The demo publisher's records live in `data/demo-publisher.json` in the shared workspace, or in browser storage (`nexai-hq:demo-publisher`) in demo mode. Neither ever leaves the machine.
+
+**Try one scheduled demo post:** approve a LinkedIn, Facebook or Google Business Profile post, tap **Schedule (demo)**, pick a time a few minutes ahead, tap **Continue**, check the confirmation, then **Confirm: schedule (demo)**. Keep HQ open (on the Vercel preview), or leave the server running (shared workspace). At the time, it changes to **Published (demo)** with a receipt; the calendar and the post history update.
 
 ## Business profile and Brand & Quality Reviewer (milestone 7)
 
@@ -136,6 +159,7 @@ npm run test:m4      # Milestone 4 shared workspace: desktop + iPhone-emulation 
 npm run test:m5      # Milestone 5 weekly planning: template plan, edits, forced failure + retry, approvals, second browser, AI-path (mock) on phone (own server on :4178)
 npm run test:m6      # Milestone 6 redesign: phone/desktop framing, keyboard, state-driven motion, reduced motion; saves design/previews/ (own server on :4179)
 npm run test:m7      # Milestone 7: profile versions, expired-offer review on a fixed test date, phone controls (own server on :4181)
+npm run test:m8      # Milestone 8: demo publishing and scheduling with a test clock (servers on :4182 shared, :4183 demo mode)
 npm run test:preview # Preview/serverless boot: no settings, read-only filesystem, source entry + esbuild bundle
 npm run test:vercel-build # Vercel CLI build (node preset) from tracked files: function includes public/, boots, serves / and /index.html
 npm run test:api     # Anthropic SDK path against a local stub API with a dummy key (no network, no cost)

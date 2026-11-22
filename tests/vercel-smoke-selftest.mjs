@@ -53,12 +53,29 @@ const stubs = [
     if (p.startsWith('/data/')) { res.writeHead(404, { 'content-type': 'text/plain' }); res.end('Not found'); return; }
     fetch(`http://127.0.0.1:4197${req.url}`).then(async (r) => { res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || '' }); res.end(Buffer.from(await r.arrayBuffer())); });
   }),
+  // An older deployment answering for the commit under test (reports a different commit).
+  await stub(4207, (req, res) => {
+    if (req.url.startsWith('/api/version')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"commit":"0000000000000000000000000000000000000000"}'); return; }
+    fetch(`http://127.0.0.1:4197${req.url}`).then(async (r) => { res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || '' }); res.end(Buffer.from(await r.arrayBuffer())); });
+  }),
+  // A build where approving a post shows no publishing controls.
+  await stub(4208, (req, res) => {
+    fetch(`http://127.0.0.1:4197${req.url}`).then(async (r) => {
+      let body = Buffer.from(await r.arrayBuffer());
+      if (req.url.startsWith('/css/app.css')) body = Buffer.concat([body, Buffer.from('\n[data-testid="publish-panel"]{display:none!important}')]);
+      res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || '' }); res.end(body);
+    });
+  }),
   await stub(4202, (req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(indexHtml.replace('<script type="module" src="js/app.js"></script>', '<script>throw new Error("Startup exploded")</script>')); }), // startup error
 ];
 try {
   console.log('\n== Smoke test verdicts against local stand-ins ==');
-  let r = await run('http://127.0.0.1:4197/', { EXPECT_REVIEWER: '1' });
-  assert(r.code === 0 && /RESULT: PASS/.test(r.out) && /Vektor's workspace opened/.test(r.out) && /Business profile opened/.test(r.out), 'Working app (fixed code, preview conditions) → pass');
+  let r = await run('http://127.0.0.1:4197/', { EXPECT_REVIEWER: '1', EXPECT_PUBLISHING: '1', EXPECT_SHA: 'a'.repeat(40) });
+  assert(r.code === 0 && /RESULT: PASS/.test(r.out) && /Vektor's workspace opened/.test(r.out) && /Business profile opened/.test(r.out) && /publishing controls rendered/.test(r.out), 'Working app (preview conditions), including a post’s publishing controls → pass');
+  r = await run('http://127.0.0.1:4207/', { EXPECT_SHA: 'a'.repeat(40) });
+  assert(r.code === 1 && /older or different deployment/.test(r.out), 'Deployment reporting a different commit → fail');
+  r = await run('http://127.0.0.1:4208/', { EXPECT_PUBLISHING: '1' });
+  assert(r.code === 1 && /publishing controls didn’t appear/.test(r.out), 'Approved post with no publishing controls → fail');
   r = await run('http://127.0.0.1:4198/');
   assert(r.code === 1 && /RESULT: FAIL: Homepage returned HTTP 500 \(serverless function crashed\)/.test(r.out), 'Crashed function (Milestone 7 failure) → fail');
   r = await run('http://127.0.0.1:4199/');

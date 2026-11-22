@@ -43,7 +43,7 @@ export function runChecks({ job, copyVersion, graphicVersion, profile, brand, da
 
   // 1. Offer wording must match an offer that's live on the post date.
   const offers = (data.offers || []).filter((o) => o.wording);
-  const offenders = offers.filter((o) => !offerState(o, date).live && norm(caption).includes(norm(o.wording)));
+  const offenders = expiredOffers(caption, data, date);
   checks.push({ id: 'offers', label: 'Offer wording is current', kind: 'rule', result: offenders.length ? 'fail' : 'pass', detail: `${offers.length} offer${offers.length === 1 ? '' : 's'} in ${profile.id} checked for ${fmt(date)}` });
   for (const o of offenders) {
     add({ check: 'offers', status: 'fail', title: 'Expired offer wording in the caption', quote: o.wording, where: `Caption v${cv}, ${lineOf(lines, o.wording)}`,
@@ -111,6 +111,11 @@ export function runChecks({ job, copyVersion, graphicVersion, profile, brand, da
   add({ check: 'visual', status: 'human', title: 'Check the image yourself', where: `Graphic v${gv}`, why: `Brand rule (${profile.id}): ${(data.brand?.imagery || 'realistic commercial maintenance imagery').replace(/\.\s*$/, '')}.`, fixer: 'owner', fix: 'Look at the graphic below. If the setting isn’t right, ask Prism for a new photo layout.' });
 
   return { checks, findings };
+}
+
+/** Offers quoted in `caption` that aren't live on `date` (the same rule the review uses). Also run before dispatch. */
+export function expiredOffers(caption, data, date) {
+  return (data?.offers || []).filter((o) => o.wording && !offerState(o, date).live && norm(caption).includes(norm(o.wording)));
 }
 
 /** Is this review still about the current caption and graphic? */

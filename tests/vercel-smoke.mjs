@@ -5,11 +5,15 @@
 // Optional env:
 //   VERCEL_AUTOMATION_BYPASS_SECRET  Vercel "Protection Bypass for Automation" secret (keeps protection on)
 //   EXPECT_REVIEWER=0                skip the Brand & Quality Reviewer and Business profile (only for pre-Milestone 7 commits)
+//   EXPECT_PUBLISHING=1              also open a post and check the demo publishing controls (Milestone 8+)
+//   EXPECT_SHA=<commit>              refuse a deployment that reports a different commit (/api/version)
 //   SMOKE_RESULT=path.json           where to write { status: pass|fail|blocked, summary, steps }
 //   SMOKE_SHOTS=dir                  where to save screenshots
 //
 // Exit codes: 0 pass, 1 fail, 2 blocked (couldn't reach HQ: protection/sign-in/no access). Blocked is never a pass.
-// Demo mode only: any request to a paid AI endpoint is refused and fails the test. Nothing is created or published.
+// Demo mode only: any request to a paid AI endpoint is refused and fails the test. Nothing is published: the publishing
+// check creates one post in the test browser's own storage (local demo templates), approves it, opens the controls and
+// backs out of the confirmation without confirming.
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
@@ -19,6 +23,8 @@ const { chromium } = require('playwright');
 const URL_IN = (process.env.PREVIEW_URL || '').trim();
 const BYPASS = (process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '').trim();
 const EXPECT_REVIEWER = process.env.EXPECT_REVIEWER !== '0';
+const EXPECT_PUBLISHING = process.env.EXPECT_PUBLISHING === '1';
+const EXPECT_SHA = (process.env.EXPECT_SHA || '').trim();
 const RESULT = process.env.SMOKE_RESULT || '';
 const SHOTS = process.env.SMOKE_SHOTS || '';
 const steps = [];
@@ -105,6 +111,13 @@ try {
     if (r.status !== 200 || !re.test(r.type)) throw new Failed(`GET /${p} returned ${r.status} (${r.type || 'no content type'}).`);
   }
   step(true, 'App scripts, styles, character art and the starting business profile all load');
+  if (EXPECT_SHA) {
+    const v = await get('api/version');
+    let served = null;
+    try { served = JSON.parse(v.body).commit; } catch { /* older build without /api/version */ }
+    if (served && served !== EXPECT_SHA) throw new Failed(`This deployment runs commit ${served.slice(0, 7)}, not ${EXPECT_SHA.slice(0, 7)}: it is an older or different deployment.`);
+    step(true, served ? `Deployment reports commit ${served.slice(0, 7)} (the commit under test)` : 'Deployment doesn’t report its commit (VERCEL_GIT_COMMIT_SHA not exposed); the workflow matched it to the commit');
+  }
   const api = await get('api/__smoke-unknown-route');
   if (api.status < 400 || /text\/html/.test(api.type) || /<html|<!doctype/i.test(api.body)) throw new Failed(`An unknown API route returned ${api.status} ${api.type} instead of an error (it served ${/<html|<!doctype/i.test(api.body) ? 'the homepage HTML' : 'a non-error response'}).`);
   step(true, `Unknown API route returned an error (${api.status}, ${api.type.split(';')[0]}), not the homepage`);
@@ -146,12 +159,49 @@ try {
     if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'business-profile.png') });
   }
 
+  if (EXPECT_PUBLISHING) {
+    // 4. Open a post and check the demo publishing controls render (no confirmation is given).
+    const q = await page.evaluate(async () => (await fetch('api/quill/status').then((r) => r.json()).catch(() => ({}))));
+    if (q.provider && q.provider !== 'demo') throw new Blocked('Quill is configured for live AI on this deployment, so the smoke test can’t create a post without a paid request.');
+    await page.goto(new URL('#/', page.url()).toString());
+    await page.waitForSelector('#brief-form');
+    await page.fill('#brief', 'Smoke test: LinkedIn post for UK commercial maintenance directors about job sheets.');
+    await page.selectOption('#platform', 'LinkedIn');
+    await page.click('#brief-form button[type=submit]');
+    const jobId = await page.waitForFunction(() => JSON.parse(localStorage.getItem('nexai-hq:v1') || '{"jobs":[]}').jobs[0]?.id, null, { timeout: 15000 }).then((h) => h.jsonValue()).catch(() => null);
+    if (!jobId) throw new Failed('A new post couldn’t be created in demo mode.');
+    await page.goto(new URL(`#/job/${jobId}`, page.url()).toString());
+    try { await page.waitForSelector('[data-approve]:not([disabled])', { timeout: 30000 }); } catch { throw new Failed('The post’s caption and graphic never became ready for review.'); }
+    await page.click('[data-approve]');
+    try { await page.waitForSelector('[data-testid="publish-panel"] [data-testid="publish-now"]', { timeout: 10000 }); } catch { throw new Failed('After approval, the publishing controls didn’t appear.'); }
+    const prev = await page.locator('[data-testid="pub-start"] [data-testid="pub-preview"]').innerText();
+    if (!/demo account, simulated/.test(prev) || !/Caption v1 · Graphic v1/.test(prev) || !(await page.locator('[data-testid="pub-start"] [data-testid="pub-graphic"] svg, [data-testid="pub-start"] [data-testid="pub-graphic"] img').count())) throw new Failed('The publishing preview is missing the demo account, versions or graphic.');
+    const queued = await page.evaluate((id) => (JSON.parse(localStorage.getItem('nexai-hq:v1')).jobs.find((j) => j.id === id).publications || []).length, jobId);
+    if (queued) throw new Failed('Approving the post queued a publication.');
+    step(true, 'Post approved: Publish now (demo) and Schedule (demo) shown with the demo account, exact caption, full graphic and versions; nothing queued');
+    await page.click('[data-testid="schedule"]');
+    await page.waitForSelector('[data-testid="tz-note"]');
+    const tz = await page.locator('[data-testid="tz-note"]').innerText();
+    if (!/Europe\/London/.test(tz) || !/(GMT|BST)/.test(tz)) throw new Failed(`The schedule form doesn’t show Europe/London time with GMT/BST (“${tz.slice(0, 80)}”).`);
+    await page.click('[data-pub-time] button[type=submit]');
+    await page.waitForSelector('[data-testid="publish-confirm"]', { timeout: 5000 }).catch(() => {});
+    const conf = await page.locator('[data-testid="publish-confirm"]').innerText().catch(() => '');
+    if (!/Schedule \(demo\) for .* (GMT|BST)/.test(conf) || !/demo account, simulated/.test(conf)) throw new Failed('The separate confirmation step didn’t show the action, time and destination.');
+    if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'publishing-confirm.png'), fullPage: true });
+    await page.click('[data-pub-back]');
+    await page.click('[data-pub-back]');
+    const note = await page.locator('[data-testid="scheduler-note"]').first().innerText();
+    const sent = await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('nexai-hq:demo-publisher') || '{}')).length);
+    if (sent) throw new Failed('Something reached the demo publisher without a confirmation.');
+    step(true, `Schedule (demo) form and confirmation render (${tz.match(/(GMT|BST)/)[0]}); backed out without confirming. Scheduler: ${/in this browser/.test(note) ? 'runs in this browser while HQ is open' : 'runs on the HQ server'}`);
+  }
+
   if (pageErrors.length) throw new Failed(`Uncaught error in the app: ${pageErrors[0]}`);
   if (serverErrors.length) throw new Failed(`Server errors during the test: ${serverErrors.join(', ')}`);
   if (paid.length) throw new Failed(`The app tried to call a paid AI endpoint during the smoke test (${paid[0]}).`);
   step(true, 'No uncaught errors, no 5xx responses, no paid AI calls');
   await browser.close();
-  finish('pass', `HQ rendered and ${EXPECT_REVIEWER ? 'Vektor, the Brand & Quality Reviewer and Business profile' : 'Vektor’s workspace'} opened on the preview.`);
+  finish('pass', `HQ rendered and ${EXPECT_REVIEWER ? 'Vektor, the Brand & Quality Reviewer and Business profile' : 'Vektor’s workspace'} opened on the preview${EXPECT_PUBLISHING ? '; a post’s demo publishing controls rendered' : ''}.`);
 } catch (e) {
   if (SHOTS && page) await page.screenshot({ path: path.join(SHOTS, 'failure.png') }).catch(() => {});
   await browser.close();
