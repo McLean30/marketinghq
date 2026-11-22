@@ -16,7 +16,9 @@
     "test:m5": "node tests/week-m5.mjs",
     "test:m6": "node tests/agents-m6.mjs",
     "test:m7": "node tests/review-m7.mjs",
-    "test:preview": "node tests/preview-boot.mjs"
+    "test:preview": "node tests/preview-boot.mjs",
+    "test:smoke": "node tests/vercel-smoke.mjs",
+    "test:smoke-selftest": "node tests/vercel-smoke-selftest.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0"
