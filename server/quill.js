@@ -17,7 +17,7 @@ const EFFORT = (process.env.QUILL_EFFORT || 'medium').trim().toLowerCase();
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 if (!/^claude-[a-z0-9-]+$/.test(MODEL)) throw new Error(`QUILL_MODEL "${MODEL}" is not a valid Claude model ID (e.g. claude-sonnet-5-5).`);
 if (!EFFORTS.includes(EFFORT)) throw new Error(`QUILL_EFFORT must be one of ${EFFORTS.join(', ')}.`);
-const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X'];
+const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X', 'Google Business Profile'];
 
 function resolveProvider() {
   const forced = (process.env.QUILL_PROVIDER || '').toLowerCase();
@@ -71,7 +71,7 @@ Rules:
 - Use the operational detail in the brief. Write about the reader's situation, not about Nexai.
 - Give the reader something genuinely useful. Avoid hard selling and calls to buy.
 - Never invent results, statistics, percentages, client names, testimonials or quotes. If a number would help, leave a clearly marked placeholder in square brackets for the team to fill in.
-- Platform conventions: LinkedIn - line breaks between short paragraphs, end with 3 to 5 relevant hashtags on their own line. Instagram - conversational, up to 8 relevant hashtags at the end. Facebook - conversational, at most 2 hashtags. X - under 280 characters including at most 2 hashtags.
+- Platform conventions: LinkedIn - line breaks between short paragraphs, end with 3 to 5 relevant hashtags on their own line. Instagram - conversational, up to 8 relevant hashtags at the end. Facebook - conversational, at most 2 hashtags. X - under 280 characters including at most 2 hashtags. Google Business Profile - a short, practical update of 80 to 200 words in plain text with no hashtags; it may end with one low-key line inviting questions, never a sales pitch.
 
 ${WRITING_PROCESS}
 
@@ -183,3 +183,74 @@ async function generate(body) {
 }
 
 module.exports = { generate, providerInfo, QuillError, buildUserMessage, SYSTEM_PROMPT, validate };
+
+
+/* ---------- Vektor: weekly plan (one explicit request) ---------- */
+const PLAN_SYSTEM = `You are Vektor, Marketing Manager for Nexai Digital's internal marketing team.
+Plan a week of organic social posts for owners, managing directors and operations directors of UK commercial maintenance and building services firms.
+Use natural British English. Each post must give the reader something practical they can use. No hard sell, no invented statistics, results, clients or quotes.
+For every day you're given (date and platform are fixed), return:
+- audience: who this post speaks to, specifically (one short phrase)
+- angle: the single idea of the post (one sentence)
+- takeaway: one practical thing the reader can do (one sentence)
+- visual: a brief for the designer describing a realistic UK commercial maintenance photo to use (one or two sentences, no text in the image)
+Vary the angles across the week so posts don't repeat each other, and fit each to its platform. Return exactly one entry per day, in the same order.`;
+
+const PLAN_SCHEMA = {
+  type: 'object',
+  properties: {
+    days: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { audience: { type: 'string' }, angle: { type: 'string' }, takeaway: { type: 'string' }, visual: { type: 'string' } },
+        required: ['audience', 'angle', 'takeaway', 'visual'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['days'],
+  additionalProperties: false,
+};
+
+function validatePlanRequest(body) {
+  if (!body || typeof body !== 'object') return { error: 'Request body must be JSON.' };
+  const { brief, weekStart, days } = body;
+  if (typeof brief !== 'string' || brief.trim().length < 12 || brief.length > 4000) return { error: 'Brief is missing or too long.' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart || '') || new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 1) return { error: 'Week must begin on a Monday.' };
+  if (!Array.isArray(days) || days.length < 1 || days.length > 7) return { error: 'Plan days are missing.' };
+  for (const d of days) if (!/^\d{4}-\d{2}-\d{2}$/.test(d?.date || '') || !PLATFORMS.includes(d?.platform) || typeof d?.dayName !== 'string') return { error: 'Invalid plan day.' };
+  return { value: { brief: brief.trim(), weekStart, days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName.slice(0, 12) })) } };
+}
+
+async function planWeek(body) {
+  if (PROVIDER === 'demo') throw new QuillError('No AI provider is configured on the server.', { status: 503, retryable: false, code: 'not_configured' });
+  const { value, error } = validatePlanRequest(body);
+  if (error) throw new QuillError(error, { status: 400, retryable: false, code: 'invalid' });
+  if (PROVIDER === 'mock') return { days: await mock.planWeek(value), provider: 'mock', model: 'mock-vektor' };
+  const user = `Week beginning ${value.weekStart} (Europe/London).\n\nBrief from the Nexai team:\n"""\n${value.brief}\n"""\n\nDays to plan, in order:\n${value.days.map((d, i) => `${i + 1}. ${d.dayName} ${d.date}: ${d.platform}`).join('\n')}`;
+  let response;
+  try {
+    response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 16000,
+      output_config: { effort: EFFORT, format: { type: 'json_schema', schema: PLAN_SCHEMA } },
+      system: PLAN_SYSTEM,
+      messages: [{ role: 'user', content: user }],
+    });
+  } catch (e) {
+    if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) throw new QuillError('The Anthropic API rejected the server credentials. Check ANTHROPIC_API_KEY on the server.', { retryable: false, code: 'auth' });
+    if (e instanceof Anthropic.RateLimitError) throw new QuillError('The Anthropic API is rate limiting requests. Wait a moment, then try again.', { code: 'rate_limit' });
+    if (e instanceof Anthropic.APIConnectionError) throw new QuillError('Could not reach the Anthropic API.', { code: 'connection' });
+    if (e instanceof Anthropic.APIError) throw new QuillError(`The Anthropic API returned an error (${e.status ?? 'unknown'}).`, { code: 'api_error' });
+    throw new QuillError('Planning failed unexpectedly.', { code: 'unknown' });
+  }
+  if (response.stop_reason === 'refusal') throw new QuillError(`${MODEL} declined this request. Reword the brief.`, { retryable: false, code: 'refusal' });
+  let parsed;
+  try { parsed = JSON.parse(response.content.filter((b) => b.type === 'text').map((b) => b.text).join('')); } catch { throw new QuillError('The plan could not be read. Try again.', { code: 'parse' }); }
+  if (!Array.isArray(parsed.days) || parsed.days.length !== value.days.length) throw new QuillError('The plan came back with the wrong number of days. Try again.', { code: 'shape' });
+  const clip = (x) => String(x || '').trim().slice(0, 400);
+  return { days: parsed.days.map((d) => ({ audience: clip(d.audience), angle: clip(d.angle), takeaway: clip(d.takeaway), visual: clip(d.visual) })), provider: 'anthropic', model: response.model || MODEL };
+}
+
+module.exports.planWeek = planWeek;

@@ -21,9 +21,9 @@ export const AGENTS = {
   designer: { id: 'designer', name: 'Prism', role: 'Creative Designer', taskType: 'graphic', label: 'Graphic' },
 };
 
-export const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X'];
+export const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X', 'Google Business Profile'];
 
-const empty = () => ({ jobs: [], tasks: [], log: [], brand: {} });
+const empty = () => ({ jobs: [], tasks: [], log: [], brand: {}, plans: [] });
 const clone = (x) => (x == null ? x : JSON.parse(JSON.stringify(x)));
 const uid = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -46,6 +46,7 @@ export const ws = {
   status: 'ok', // 'ok' | 'offline' | 'signed_out'
   rev: 0,
   synced: {}, // jobId -> { rev, updatedAt, updatedBy }
+  planSynced: {}, // planId -> rev
   brandRev: 0,
   updates: {}, // jobId -> { changes, entry } : newer version on the server, not yet loaded (job is open)
   conflicts: {}, // jobId -> { action, changes, entry } : a save of yours that the server refused
@@ -230,6 +231,12 @@ async function commitShared(jobId, mutate, background, action) {
     }
     if (res.status === 409) {
       const current = res.data.current;
+      if (action === 'create' && current) {
+        applyBundle(current.bundle);
+        ws.synced[jobId] = { rev: current.rev, updatedAt: current.updatedAt, updatedBy: current.updatedBy };
+        notify();
+        return { ok: true, existed: true };
+      }
       if (background && current) {
         applyBundle(current.bundle);
         ws.synced[jobId] = { rev: current.rev, updatedAt: current.updatedAt, updatedBy: current.updatedBy };
@@ -286,6 +293,7 @@ export async function setMode(mode) {
   ws.updates = {};
   ws.conflicts = {};
   ws.synced = {};
+  ws.planSynced = {};
   if (mode === 'shared') {
     state = empty();
     await pullWorkspace(true);
@@ -334,6 +342,13 @@ async function pullWorkspace(initial = false) {
     ws.synced[e.id] = { rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy };
   }
   state.brand = { ...(snap.brand.data || {}) };
+  for (const e of snap.plans || []) {
+    if ((ws.planSynced[e.id] || 0) >= e.rev || planLocks.has(e.id)) continue;
+    const i = state.plans.findIndex((p) => p.id === e.id);
+    if (i >= 0) state.plans[i] = e.plan; else state.plans.push(e.plan);
+    ws.planSynced[e.id] = e.rev;
+  }
+  state.plans.sort((a, b) => b.createdAt - a.createdAt);
   ws.brandRev = snap.brand.rev;
   ws.rev = snap.rev;
   notify();
@@ -353,13 +368,17 @@ export async function poll() {
 }
 
 /* ---------- Domain actions ---------- */
-export async function createJob({ brief, platform, targetDate }) {
+export async function createJob({ id, brief, platform, targetDate, title, planId, planDay }) {
+  if (id && getJob(id)) return { ok: true, existed: true, job: getJob(id) };
   const now = Date.now();
-  const job = { id: uid('job'), brief: brief.trim(), platform, targetDate, createdAt: now, delegatedAt: now + DELEGATE_MS, taskIds: {}, approval: null, approvals: [] };
+  const job = { id: id || uid('job'), brief: brief.trim(), platform, targetDate, createdAt: now, delegatedAt: now + DELEGATE_MS, taskIds: {}, approval: null, approvals: [] };
+  if (title) job.title = title;
+  if (planId) { job.planId = planId; job.planDay = planDay; }
   const res = await commit(job.id, () => {
+    if (getJob(job.id)) return false;
     const tasks = ['copywriter', 'designer'].map((agentId) => {
       const task = {
-        id: uid('task'),
+        id: id ? `task_${job.id.slice(4)}${agentId === 'copywriter' ? 'c' : 'g'}` : uid('task'),
         jobId: job.id,
         agent: agentId,
         type: AGENTS[agentId].taskType,
@@ -377,7 +396,7 @@ export async function createJob({ brief, platform, targetDate }) {
     log(job.id, 'manager', 'Delegated the caption to Quill and the graphic to Prism.');
     return job;
   }, { action: 'create' });
-  return res.ok ? { ok: true, job } : res;
+  return res.ok ? { ok: true, job: getJob(job.id) || job, existed: !!res.existed || !!res.noop } : res;
 }
 
 export function taskStatus(task, now = Date.now()) {
@@ -679,4 +698,122 @@ export async function importCommit(bundles, brandData) {
   if (!r.ok) throw new Error(r.data.error || 'Import failed.');
   await pullWorkspace(true);
   return r.data;
+}
+
+
+/* ---------- Vektor's weekly plans ---------- */
+const planLocks = new Map();
+export const getPlan = (id) => (state.plans || []).find((p) => p.id === id);
+export const allPlans = () => state.plans || [];
+export const planJobs = (plan) => plan.days.filter((d) => d.jobId).map((d) => ({ day: d, job: getJob(d.jobId) }));
+
+/** Persist a change to a plan. Conflicts re-apply the change on top of the latest plan (plans hold no versions). */
+export async function commitPlan(planId, mutate) {
+  if (!state.plans) state.plans = [];
+  if (ws.mode === 'local') {
+    const before = clone(state.plans);
+    const r = mutate();
+    if (r === false) return { ok: true, noop: true };
+    try { saveLocal(true); } catch (e) { state.plans = before; notify(); return { ok: false, error: e.message }; }
+    notify();
+    return { ok: true };
+  }
+  const prev = planLocks.get(planId) || Promise.resolve();
+  const run = prev.then(async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = clone(getPlan(planId));
+      const r = mutate();
+      if (r === false) return { ok: true, noop: true };
+      notify();
+      let res;
+      try {
+        res = await api(`api/workspace/plans/${planId}`, { method: 'PUT', body: JSON.stringify({ baseRev: ws.planSynced[planId] || 0, plan: getPlan(planId) }) });
+      } catch (e) {
+        restorePlan(planId, before);
+        return { ok: false, error: e.message };
+      }
+      if (res.ok) { ws.planSynced[planId] = res.data.rev; ws.rev = Math.max(ws.rev, res.data.wsRev); return { ok: true }; }
+      if (res.status === 409 && res.data.current) {
+        restorePlan(planId, res.data.current.plan);
+        ws.planSynced[planId] = res.data.current.rev;
+        continue;
+      }
+      restorePlan(planId, before);
+      return { ok: false, error: res.data.error || `Saving the plan failed (${res.status}).` };
+    }
+    return { ok: false, error: 'This plan kept changing on another device. Reload and try again.' };
+  });
+  const guard = run.catch(() => {});
+  planLocks.set(planId, guard);
+  try { return await run; } finally { if (planLocks.get(planId) === guard) planLocks.delete(planId); }
+}
+function restorePlan(planId, plan) {
+  state.plans = state.plans.filter((p) => p.id !== planId);
+  if (plan) state.plans.push(clone(plan));
+  state.plans.sort((a, b) => b.createdAt - a.createdAt);
+  notify();
+}
+
+export async function createPlan({ weekStart, brief, method, days, model }) {
+  const plan = { id: uid('plan'), weekStart, brief: brief.trim(), method, model: model || null, status: 'draft', createdAt: Date.now(), days };
+  const res = await commitPlan(plan.id, () => { if (getPlan(plan.id)) return false; state.plans.unshift(plan); return true; });
+  return res.ok ? { ok: true, plan: getPlan(plan.id) } : res;
+}
+
+/** One explicit, paid request: Vektor drafts the week with the server's configured AI provider. */
+export async function requestAiPlan(brief, weekStart, days) {
+  let r;
+  try {
+    r = await fetch('api/vektor/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify({ brief, weekStart, days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName })) }) });
+  } catch {
+    return { ok: false, error: 'Can’t reach the HQ server. Nothing was charged; try again when connected.' };
+  }
+  let data = {};
+  try { data = await r.json(); } catch { /* ignore */ }
+  return r.ok ? { ok: true, ...data } : { ok: false, error: data.error || `Planning failed (${r.status}).` };
+}
+
+function postBrief(plan, d) {
+  return `${plan.brief}\n\nThis post: ${d.dayName} ${d.date}, ${d.platform}.\nAudience: ${d.audience}\nAngle: ${d.angle}\nPractical takeaway: ${d.takeaway}\nVisual brief (for the designer): ${d.visual}`;
+}
+
+const confirming = new Set();
+/**
+ * Create one linked job per included day. Safe to repeat: job ids are fixed on the plan before any job is created,
+ * so a double tap, a refresh half-way through or a second device finishing the plan can never duplicate a post.
+ */
+export async function confirmPlan(planId) {
+  if (confirming.has(planId)) return { ok: false, busy: true };
+  confirming.add(planId);
+  try {
+    if (!getPlan(planId)) return { ok: false, error: 'Plan not found.' };
+    const r1 = await commitPlan(planId, () => {
+      const p = getPlan(planId);
+      if (p.status === 'confirmed') return false;
+      let changed = false;
+      p.days.forEach((d, i) => { if (d.include && !d.jobId) { d.jobId = `job_${p.id.slice(5)}d${i}`; changed = true; } });
+      if (p.status === 'draft') { p.status = 'creating'; p.confirmedAt = Date.now(); changed = true; }
+      return changed;
+    });
+    if (!r1.ok) return r1;
+    const plan = getPlan(planId);
+    const failed = [];
+    for (const d of plan.days) {
+      if (!d.jobId || getJob(d.jobId)) continue;
+      const res = await createJob({
+        id: d.jobId,
+        brief: postBrief(plan, d),
+        platform: d.platform,
+        targetDate: d.date,
+        title: `${d.dayName}: ${d.angle}`,
+        planId,
+        planDay: { dayName: d.dayName, date: d.date, audience: d.audience, angle: d.angle, takeaway: d.takeaway, visual: d.visual },
+      });
+      if (!res.ok) failed.push({ day: d.dayName, error: res.error || 'Not saved' });
+    }
+    if (!failed.length) await commitPlan(planId, () => { const p = getPlan(planId); if (p.status === 'confirmed') return false; p.status = 'confirmed'; return true; });
+    return failed.length ? { ok: false, failed } : { ok: true };
+  } finally {
+    confirming.delete(planId);
+  }
 }

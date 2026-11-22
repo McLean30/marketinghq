@@ -1,4 +1,4 @@
-# Nexai AI Marketing HQ (milestone 4)
+# Nexai AI Marketing HQ (milestone 5)
 
 Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer). Review both together, request revisions with feedback, approve the pair, and see it on the private content calendar.
 
@@ -54,6 +54,22 @@ From a job, open **Photo layout** from the Graphic panel, or from Prism's worksp
 
 Limits: images live only in this browser, so they don't sync between devices, and clearing site data removes them. The headline font (Chakra Petch) loads from Google Fonts; offline, both preview and export fall back to the same system font. Only local rendering is used: no image-generation API and no publishing.
 
+## Vektor's weekly planning (milestone 5)
+
+**Plan a content week** (HQ, or Vektor's workspace → Content weeks): choose a week beginning Monday and write one brief. Dates are UK calendar dates (Europe/London), and Nexai's schedule is fixed:
+
+| Day | Channel |
+|---|---|
+| Monday, Friday | LinkedIn |
+| Tuesday, Thursday | Facebook |
+| Wednesday | Google Business Profile |
+
+- **Two planning methods, both labelled on the plan.** *Create template plan*: instant and free, built from your brief with Nexai's standard week structure, no AI. *Draft with AI (1 request)*: one explicit request to the server's configured provider (`QUILL_MODEL`, default Claude Sonnet 5.5). It's only offered when AI is set up and you're signed in.
+- **Editable before anything is written.** Each day shows the platform, audience, angle, practical takeaway and visual brief. Edit any of them, or untick a day to leave it out.
+- **Confirming** creates one linked job per included day. Quill writes the caption using that day's angle, audience and takeaway; Prism starts the graphic, with the visual brief shown in the Graphic panel and the Photo layout studio. Each post keeps its own feedback, versions and approval. Approved posts appear on the calendar once, through the existing approval flow. Nothing is published.
+- **The week view** lists what needs your attention, with links straight to each post: failed captions, posts ready to review, revised captions, posts that still need a photo, and a missing official logo.
+- **Safe to repeat.** Job ids are fixed on the plan before any job is created, so a double tap, a refresh part-way through or a second device can't duplicate a post. If creation is interrupted, *Finish creating posts* completes only what's missing. A caption request interrupted by a refresh is offered for Retry, never resent automatically. One failed caption doesn't affect the others; retry just that one.
+
 ## Shared private workspace (milestone 4)
 
 One workspace for your laptop and phone: jobs, captions, graphic versions, original photos, the reusable logo, feedback, approvals and the calendar are stored on the HQ server, not in one browser.
@@ -80,6 +96,7 @@ One workspace for your laptop and phone: jobs, captions, graphic versions, origi
 npm run test:m2      # Milestone 2 UI suite, desktop + phone, deterministic mock provider (starts its own server on :4174)
 npm run test:m3      # Milestone 3 Photo layout suite (desktop, phone-sized and iPhone 13; starts its own server on :4176)
 npm run test:m4      # Milestone 4 shared workspace: desktop + iPhone-emulation browsers, server restart, signed-out access, import (own server on :4177)
+npm run test:m5      # Milestone 5 weekly planning: template plan, edits, forced failure + retry, approvals, second browser, AI-path (mock) on phone (own server on :4178)
 npm run test:api     # Anthropic SDK path against a local stub API with a dummy key (no network, no cost)
 npm start   # then, in a second terminal:
 npm run test:e2e   # Milestone 1 desktop + phone suite, demo mode on :4173
@@ -110,5 +127,6 @@ The mock provider (`QUILL_PROVIDER=mock`, `server/quill-mock.js`) returns canned
 - `server/quill.js`: provider selection, prompt, Anthropic SDK call, error mapping. `server/quill-mock.js`: test fixture.
 - `public/js/store.js`: jobs, linked tasks, versions, feedback, approvals, persistence, caption request dispatch and retry.
 - `public/js/app.js`: views (HQ stage, agent workspace, review, Photo layout studio, calendar, full-screen graphic viewer).
+- `public/js/plan.js`: Europe/London week dates, Nexai's schedule, template planner.
 - `public/js/photo.js`: Photo layout renderer (shared by preview and PNG export), upload processing, IndexedDB image store.
 - `public/css/app.css`: tokens, responsive layout, reduced-motion handling.

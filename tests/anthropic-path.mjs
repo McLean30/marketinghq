@@ -18,6 +18,12 @@ const stub = http.createServer((req, res) => {
     seen.push({ url: req.url, headers: req.headers, body: JSON.parse(body || '{}') });
     if (mode === 'auth') { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } })); }
     if (mode === 'refusal') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ id: 'msg_stub', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [], stop_reason: 'refusal', stop_details: { type: 'refusal', category: null, explanation: 'stub' }, usage: { input_tokens: 1, output_tokens: 0 } })); }
+    const parsed = seen.at(-1).body;
+    if (/You are Vektor/.test(parsed.system || '')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const days = Array.from({ length: 5 }, (_, i) => ({ audience: `Audience ${i}`, angle: `Angle ${i}`, takeaway: `Takeaway ${i}`, visual: `Visual ${i}` }));
+      return res.end(JSON.stringify({ id: 'msg_plan', type: 'message', role: 'assistant', model: parsed.model, stop_reason: 'end_turn', stop_sequence: null, content: [{ type: 'text', text: JSON.stringify({ days }) }], usage: { input_tokens: 10, output_tokens: 10 } }));
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       id: 'msg_stub', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', stop_sequence: null,
@@ -58,6 +64,16 @@ try {
   const msg = req.body.messages[0].content;
   assert(msg.includes(brief) && msg.includes('Platform: LinkedIn') && msg.includes('Old caption v1') && msg.includes('Cut it to under 100 words.'), 'Revision prompt includes brief, platform, current caption and exact feedback');
   assert(req.headers.authorization === 'Bearer dummy-test-key-not-real', 'Server-env key sent by the server (SDK 1.x uses Authorization: Bearer)');
+
+  const planDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map((dayName, i) => ({ dayName, date: `2026-11-2${3 + i}`, platform: ['LinkedIn', 'Facebook', 'Google Business Profile', 'Facebook', 'LinkedIn'][i] }));
+  r = await fetch(`http://127.0.0.1:${APP_PORT}/api/vektor/plan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ brief, weekStart: '2026-11-23', days: planDays }) });
+  const plan = await r.json();
+  const preq = seen.at(-1).body;
+  assert(r.status === 200 && plan.provider === 'anthropic' && plan.days.length === 5 && plan.days[2].angle === 'Angle 2', 'Vektor plan: one request, five days parsed');
+  assert(preq.model === 'claude-sonnet-5-5' && preq.output_config.effort === 'medium' && preq.output_config.format.type === 'json_schema' && !('fallbacks' in preq), 'Vektor plan uses the configured model and effort, structured output, no fallback');
+  assert(/Wednesday 2026-11-25: Google Business Profile/.test(preq.messages[0].content) && preq.messages[0].content.includes(brief), 'Vektor plan prompt carries the brief and the fixed schedule');
+  r = await fetch(`http://127.0.0.1:${APP_PORT}/api/vektor/plan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ brief, weekStart: '2026-11-24', days: planDays }) });
+  assert(r.status === 400, 'Vektor plan rejects a week that doesn’t start on Monday');
 
   mode = 'refusal';
   r = await post({ kind: 'draft', brief, platform: 'LinkedIn' });

@@ -13,6 +13,7 @@ const ASSET_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png' };
 const MAX_ASSET = 15 * 1024 * 1024;
 
 let ws = readJson(FILE, { version: 1, rev: 0, jobs: {}, brand: { rev: 0, data: {} } });
+ws.plans = ws.plans || {};
 const persist = () => writeAtomic(FILE, JSON.stringify(ws));
 
 class WsError extends Error {
@@ -23,7 +24,8 @@ const entry = (id, e) => ({ id, rev: e.rev, updatedAt: e.updatedAt, updatedBy: e
 
 function snapshot() {
   const jobs = Object.entries(ws.jobs).map(([id, e]) => entry(id, e)).sort((a, b) => b.bundle.job.createdAt - a.bundle.job.createdAt);
-  return { rev: ws.rev, jobs, brand: ws.brand };
+  const plans = Object.entries(ws.plans).map(([id, e]) => ({ id, rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy, plan: e.plan })).sort((a, b) => b.plan.createdAt - a.plan.createdAt);
+  return { rev: ws.rev, jobs, brand: ws.brand, plans };
 }
 
 const getJob = (id) => (ws.jobs[id] ? entry(id, ws.jobs[id]) : null);
@@ -69,6 +71,35 @@ function putJob(id, baseRev, bundle, device) {
   ws.rev += 1;
   persist();
   return { rev: curRev + 1, wsRev: ws.rev, updatedAt: ws.jobs[id].updatedAt };
+}
+
+/* ---------- Weekly plans ---------- */
+const PLAN_ID = /^plan_[a-z0-9]{4,40}$/;
+function validatePlan(id, p) {
+  const bad = (m) => { throw new WsError(400, `Invalid plan: ${m}.`); };
+  if (!PLAN_ID.test(id) || !p || p.id !== id) bad('id');
+  if (!['draft', 'creating', 'confirmed'].includes(p.status)) bad('status');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.weekStart || '') || typeof p.brief !== 'string') bad('week or brief');
+  if (!Array.isArray(p.days) || p.days.length < 1 || p.days.length > 7) bad('days');
+  for (const d of p.days) if (d.jobId != null && !ID.test(d.jobId)) bad('job link');
+  if (Buffer.byteLength(JSON.stringify(p)) > 200 * 1024) bad('too large');
+}
+function putPlan(id, baseRev, plan, device) {
+  validatePlan(id, plan);
+  const cur = ws.plans[id];
+  const curRev = cur ? cur.rev : 0;
+  if (Number(baseRev) !== curRev) throw new WsError(409, 'This plan changed on another device.', { current: cur ? { id, rev: cur.rev, updatedAt: cur.updatedAt, updatedBy: cur.updatedBy, plan: cur.plan } : null });
+  if (cur) {
+    // Once a day is linked to a job, that link is permanent: no re-pointing, no duplicates.
+    cur.plan.days.forEach((d, i) => {
+      if (d.jobId && plan.days[i]?.jobId !== d.jobId) throw new WsError(422, 'A planned post is already linked to a job and can’t be changed.');
+    });
+    if (cur.plan.status === 'confirmed' && plan.status !== 'confirmed') throw new WsError(422, 'A confirmed plan can’t go back to draft.');
+  }
+  ws.plans[id] = { rev: curRev + 1, updatedAt: Date.now(), updatedBy: device, plan };
+  ws.rev += 1;
+  persist();
+  return { rev: curRev + 1, wsRev: ws.rev, updatedAt: ws.plans[id].updatedAt };
 }
 
 function putBrand(baseRev, data, device) {
@@ -133,4 +164,4 @@ function readAsset(id) {
 
 const hasAsset = (id) => ASSET_ID.test(id) && fs.existsSync(metaPath(id));
 
-module.exports = { snapshot, getJob, putJob, putBrand, importBundles, saveAsset, readAsset, hasAsset, WsError, MAX_ASSET };
+module.exports = { snapshot, getJob, putJob, putPlan, putBrand, importBundles, saveAsset, readAsset, hasAsset, WsError, MAX_ASSET };

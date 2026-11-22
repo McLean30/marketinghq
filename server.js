@@ -85,6 +85,20 @@ async function handleApi(req, res, urlPath) {
     }
   }
   if (urlPath === '/api/quill/mock-calls' && method === 'GET' && quill.providerInfo().provider === 'mock') return sendJson(res, 200, require('./server/quill-mock').calls);
+  if (urlPath === '/api/vektor/mock-plan-calls' && method === 'GET' && quill.providerInfo().provider === 'mock') return sendJson(res, 200, require('./server/quill-mock').planCalls);
+  if (urlPath === '/api/vektor/plan' && method === 'POST') {
+    // One explicit, paid planning request. Same provider and sign-in rule as Quill captions.
+    if (auth.configured() && !signedIn) return sendJson(res, 401, { error: 'Sign in to the shared workspace to plan with AI.', retryable: false, code: 'signed_out' });
+    try {
+      const body = await readJsonBody(req);
+      const out = await quill.planWeek(body);
+      console.log(`[vektor] planned ${out.days.length} posts via ${out.provider} (${out.model})`);
+      return sendJson(res, 200, out);
+    } catch (e) {
+      console.warn(`[vektor] plan failed: ${e.code || 'error'} (${e.status || 500})`);
+      return sendJson(res, e.status || 500, { error: e.message || 'Planning failed.', retryable: e.retryable !== false });
+    }
+  }
 
   /* --- Shared workspace + images: owner only --- */
   if (urlPath.startsWith('/api/workspace') || urlPath.startsWith('/api/assets')) {
@@ -102,6 +116,11 @@ async function handleApi(req, res, urlPath) {
     const body = await readJsonBody(req);
     const out = wsStore.putJob(m[1], body.baseRev, body.bundle, deviceOf(req));
     return sendJson(res, 200, out);
+  }
+  m = /^\/api\/workspace\/plans\/([a-z0-9_]+)$/.exec(urlPath);
+  if (m && method === 'PUT') {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, wsStore.putPlan(m[1], body.baseRev, body.plan, deviceOf(req)));
   }
   if (urlPath === '/api/workspace/brand' && method === 'PUT') {
     const body = await readJsonBody(req);

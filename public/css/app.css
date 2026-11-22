@@ -424,3 +424,43 @@ code { background: var(--navy-3); padding: 1px 6px; border-radius: 4px; font-siz
   .studio-preview { background: var(--black); border-bottom: 1px solid var(--line); padding-bottom: 8px; }
   .studio-preview > .mini { font-size: .78rem; line-height: 1.35; }
 }
+
+/* Milestone 5: Vektor's weekly planning */
+.plat-GoogleBusinessProfile { background: #1A73E8; }
+.plat-b-GoogleBusinessProfile { border-left-color: #1A73E8; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.panel-head h2 { margin: 0; }
+.btn-small { min-height: 40px; padding: 6px 14px; font-size: .92rem; }
+.schedule { list-style: none; padding: 0; margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.schedule li { display: flex; gap: 8px; align-items: center; }
+.method-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.method-choice .btn { width: 100%; }
+.method-choice .mini { margin: 6px 2px 0; }
+.method-note { border-left: 3px solid var(--muted); padding: 4px 12px; color: var(--text); max-width: 80ch; }
+.method-note.ai { border-color: var(--cyan); }
+.method-note.mock { border-color: #C9B6FF; }
+.plan-days, .week-days { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 12px; }
+.plan-day, .week-day { background: rgba(9, 19, 38, .82); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px 16px; }
+.plan-day.left-out, .week-day.left-out { opacity: .6; border-style: dashed; }
+.plan-day-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
+.plan-day-head .incl { display: flex; gap: 10px; align-items: center; margin: 0; cursor: pointer; }
+.plan-day-head .incl input { width: 22px; height: 22px; accent-color: var(--cyan); }
+.plan-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.plan-fields label { margin-top: 10px; }
+.plan-bar { margin-top: 16px; }
+.week-angle { font-family: var(--display); font-size: 1.05rem; margin: 10px 0 4px; }
+.attention ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+.attention .att-fail a { color: var(--warn); font-weight: 600; }
+.attention .att-review a { color: var(--cyan); font-weight: 600; }
+.plan-link { color: var(--muted); margin: 0 0 8px; }
+.visual-brief { background: var(--navy-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: .92rem; }
+.weeks li a { text-decoration: none; }
+@media (min-width: 900px) {
+  .plan-fields { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 640px) {
+  .method-choice, .plan-fields { grid-template-columns: 1fr; }
+}
+
+.day-id { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+body.tap-guard main { pointer-events: none; }

@@ -2,6 +2,7 @@ import * as S from './store.js';
 import { briefTitle, sceneLabel } from './generators.js';
 import { renderGraphic } from './graphics.js';
 import * as P from './photo.js';
+import * as PL from './plan.js';
 import { scorpion, writer, designer } from './characters.js';
 
 const $main = document.getElementById('main');
@@ -32,6 +33,8 @@ function toast(msg) {
 
 const pill = (status) => `<span class="pill pill-${status}">${esc(S.STATUS_LABEL[status] || status)}</span>`;
 const demoTag = `<span class="demo-tag" title="Generated locally by a demo template, not a live AI model">Simulated demo output</span>`;
+const platSlug = (p) => String(p).replace(/\s+/g, '');
+const jobTitle = (job) => job.title || briefTitle(job.brief);
 const photoTag = `<span class="demo-tag photo" title="Built by you in Prism from a supplied photo and logo">Photo layout</span>`;
 
 /** Markup for any graphic version: inline SVG for simulated, a rendered PNG for Photo layout. */
@@ -74,6 +77,7 @@ function route() {
   if (a === 'job' && b) return { view: 'job', id: b, agent: parts[3] === 'agent' ? parts[4] : null, base: `#/job/${b}` };
   if (a === 'calendar') return { view: 'calendar' };
   if (a === 'workspace') return { view: 'workspace' };
+  if (a === 'week' && b) return { view: 'week', id: b };
   if (a === 'agent' && b) return { view: 'hq', agent: b, base: '#/' };
   return { view: 'hq' };
 }
@@ -118,7 +122,7 @@ function renderHQ() {
 
   <div class="hq-grid">
     <section class="panel brief-panel" aria-labelledby="new-brief-h">
-      <h2 id="new-brief-h">New brief</h2>
+      <div class="panel-head"><h2 id="new-brief-h">New brief</h2><a class="btn btn-small" href="#/week/new" data-testid="plan-week-link">Plan a content week</a></div>
       <form id="brief-form" novalidate>
         <label for="brief">What do you need?</label>
         <textarea id="brief" name="brief" rows="5" required placeholder="e.g. Create Friday’s LinkedIn post for UK commercial maintenance directors about…"></textarea>
@@ -145,8 +149,8 @@ function jobRow(job) {
   const { copy, graphic } = S.jobTasks(job);
   const st = S.jobStatus(job);
   return `<li><a class="job-row" href="#/job/${job.id}">
-    <span class="job-top"><span class="plat plat-${job.platform}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate)}</span></span>
-    <span class="job-title">${esc(briefTitle(job.brief))}</span>
+    <span class="job-top"><span class="plat plat-${platSlug(job.platform)}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate)}</span></span>
+    <span class="job-title">${esc(jobTitle(job))}</span>
     <span class="job-sub">${pill(st)}
       <span class="mini">Caption: ${esc(S.STATUS_LABEL[S.taskStatus(copy)])}</span>
       <span class="mini">Graphic: ${esc(S.STATUS_LABEL[S.taskStatus(graphic)])}</span></span>
@@ -162,10 +166,17 @@ function renderAgentSheet(agentId) {
     const log = S.getState().log.slice(0, 30);
     const jobs = S.getState().jobs;
     body = `
+      <h3>Content weeks</h3>
+      ${S.allPlans().length ? `<ul class="deleg weeks">${S.allPlans().map((pl) => {
+        const items = pl.status === 'draft' ? [] : attentionFor(pl);
+        return `<li><a href="#/week/${pl.id}" data-testid="week-link"><strong>${esc(PL.fmtWeek(pl.weekStart))}</strong></a>
+          <span class="mini">${esc(planMethodShort(pl))} · ${pl.status === 'draft' ? 'Draft plan, not confirmed' : `${pl.days.filter((d) => d.jobId).length} posts`}${items.length ? ` · ${items.length} need${items.length === 1 ? 's' : ''} your attention` : ''}</span></li>`;
+      }).join('')}</ul>` : '<p class="empty">No weeks planned yet.</p>'}
+      <a class="btn" href="#/week/new">Plan a content week</a>
       <h3>Delegations</h3>
       ${jobs.length ? `<ul class="deleg">${jobs.map((j) => {
         const { copy, graphic } = S.jobTasks(j);
-        return `<li><a href="#/job/${j.id}"><strong>${esc(briefTitle(j.brief))}</strong></a>
+        return `<li><a href="#/job/${j.id}"><strong>${esc(jobTitle(j))}</strong></a>
           <span class="mini">${j.platform}, ${fmtDate(j.targetDate)}</span>
           <span class="deleg-links"><a href="${agentHref('copywriter')}">Caption → Quill</a> ${pill(S.taskStatus(copy))}</span>
           <span class="deleg-links"><a href="${agentHref('designer')}">Graphic → Prism</a> ${pill(S.taskStatus(graphic))}</span></li>`;
@@ -186,7 +197,7 @@ function renderAgentSheet(agentId) {
         <h3>Assigned task</h3>
         <div class="assign">
           <p class="assign-instr">${esc(current.instruction)}</p>
-          <p class="assign-meta">${pill(st)} <span class="plat plat-${job.platform}">${job.platform}</span> <span class="mini">Due ${fmtDate(job.targetDate)}</span></p>
+          <p class="assign-meta">${pill(st)} <span class="plat plat-${platSlug(job.platform)}">${job.platform}</span> <span class="mini">Due ${fmtDate(job.targetDate)}</span></p>
           ${current.pending?.feedback ? `<p class="feedback-quote">${current.pending.error ? 'Your feedback' : 'Working on your feedback'}: “${esc(current.pending.feedback)}”</p>` : ''}
           ${current.pending?.error ? `<p class="error-inline" role="alert">${esc(current.pending.error.message)} Open the review to retry.</p>` : ''}
         </div>
@@ -200,7 +211,7 @@ function renderAgentSheet(agentId) {
           const j = S.getJob(t.jobId);
           const tv = S.currentVersion(t);
           return `<li><a href="#/job/${j.id}">${t.type === 'graphic' && tv ? `<span class="thumb">${graphicMarkup(t, tv)}</span>` : ''}
-            <span><strong>${esc(briefTitle(j.brief))}</strong><span class="mini">${j.platform}, ${fmtDate(j.targetDate)} · ${t.versions.length} version${t.versions.length === 1 ? '' : 's'}</span>${pill(S.taskStatus(t))}</span></a></li>`;
+            <span><strong>${esc(jobTitle(j))}</strong><span class="mini">${j.platform}, ${fmtDate(j.targetDate)} · ${t.versions.length} version${t.versions.length === 1 ? '' : 's'}</span>${pill(S.taskStatus(t))}</span></a></li>`;
         }).join('')}</ul>` : '<p class="empty">No earlier work yet.</p>'}`;
     }
   }
@@ -263,6 +274,7 @@ function assetPanel(job, task) {
           ${task.pending.kind === 'revision' ? `<button class="btn btn-ghost" data-cancel-rev="${task.id}">Keep v${task.versions.length} and cancel</button>` : ''}
         </div></div>`
       : busy ? `<div class="working-note" role="status">${a.name} is ${task.pending.kind === 'revision' ? `revising: “${esc(task.pending.feedback)}”` : st === 'queued' ? 'waiting for the hand-off' : 'producing the first version'}${task.pending.engine === 'ai' && st !== 'queued' ? (S.quill.provider === 'mock' ? ' (mock provider)' : ` with ${esc(modelName(S.quill.model))}`) : ''}…</div>` : ''}
+    ${task.type === 'graphic' && S.getJob(task.jobId)?.planDay?.visual ? `<p class="visual-brief"><strong>Visual brief:</strong> ${esc(S.getJob(task.jobId).planDay.visual)}</p>` : ''}
     ${v ? outputBlock(task, v) : ''}
     ${v?.notes?.length && v.n > 1 ? `<div class="change-note">${v.feedback ? `<p class="feedback-quote">Your feedback: “${esc(v.feedback)}”</p>` : ''}<p><strong>What changed:</strong> ${esc(v.notes.join(' '))}</p></div>` : ''}
     ${v && !busy ? `
@@ -303,8 +315,9 @@ function renderJob(id) {
   <nav class="crumbs"><a href="#/">← HQ</a></nav>
   <div id="sync-slot">${syncNotice(job.id)}</div>
   <header class="job-head">
-    <div class="job-head-top"><span class="plat plat-${job.platform}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>${pill(st)}</div>
-    <h1>${esc(briefTitle(job.brief))}</h1>
+    <div class="job-head-top"><span class="plat plat-${platSlug(job.platform)}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>${pill(st)}</div>
+    <h1>${esc(jobTitle(job))}</h1>
+    ${job.planId ? `<p class="plan-link" data-testid="plan-link">Part of <a href="#/week/${job.planId}">${esc(PL.fmtWeek(S.getPlan(job.planId)?.weekStart || job.targetDate))}</a> · ${esc(job.planDay.dayName)} · ${esc(job.platform)}. Audience: ${esc(job.planDay.audience)}.</p>` : ''}
     <details class="brief-detail" data-key="brief-${job.id}"><summary>Your brief</summary><p>${esc(job.brief)}</p></details>
   </header>
   <div class="review-grid">
@@ -334,8 +347,8 @@ function renderCalendar() {
   const today = isoLocal(new Date());
   const entry = (j) => {
     const st = S.jobStatus(j);
-    return `<a class="cal-entry plat-b-${j.platform}" href="#/job/${j.id}" data-testid="cal-entry">
-      <span class="plat plat-${j.platform}">${j.platform}</span><span class="cal-title">${esc(briefTitle(j.brief))}</span>
+    return `<a class="cal-entry plat-b-${platSlug(j.platform)}" href="#/job/${j.id}" data-testid="cal-entry">
+      <span class="plat plat-${platSlug(j.platform)}">${j.platform}</span><span class="cal-title">${esc(jobTitle(j))}</span>
       ${st === 'approved' ? '<span class="tag tag-ok">Approved</span>' : '<span class="tag tag-warn">Needs re-approval</span>'}</a>`;
   };
   const cells = [];
@@ -427,7 +440,8 @@ function renderStudio(jobId) {
   <div id="sync-slot">${syncNotice(job.id, { studio: true })}</div>
   <header class="studio-head">
     <h1>Photo layout</h1>
-    <p class="mini">Prism · ${esc(briefTitle(job.brief))} · ${job.platform}, ${fmtDate(job.targetDate)}. Saving creates graphic v${next}. Earlier versions and Quill’s caption stay exactly as they are.</p>
+    ${job.planDay?.visual ? `<p class="visual-brief"><strong>Visual brief from Vektor’s plan:</strong> ${esc(job.planDay.visual)}</p>` : ''}
+    <p class="mini">Prism · ${esc(jobTitle(job))} · ${job.platform}, ${fmtDate(job.targetDate)}. Saving creates graphic v${next}. Earlier versions and Quill’s caption stay exactly as they are.</p>
   </header>
   <div class="studio">
     <div class="studio-preview">
@@ -539,6 +553,23 @@ document.addEventListener('input', (e) => {
   requestDraw();
 });
 
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  const r = route();
+  if (r.view !== 'week' || !S.getPlan(r.id)) return;
+  const id = r.id;
+  if (t.dataset.planInclude != null) {
+    const i = Number(t.dataset.planInclude);
+    const on = t.checked;
+    S.commitPlan(id, () => { const p = S.getPlan(id); if (!p || p.status !== 'draft' || p.days[i].include === on) return false; p.days[i].include = on; return true; }).then((res) => { if (!res.ok) toast(res.error); render(); });
+  } else if (t.dataset.planField) {
+    const i = Number(t.dataset.i);
+    const f = t.dataset.planField;
+    const v = t.value.trim();
+    if (v) S.commitPlan(id, () => { const p = S.getPlan(id); if (!p || p.status !== 'draft' || p.days[i][f] === v) return false; p.days[i][f] = v; return true; }).then((res) => { if (!res.ok) toast(res.error); });
+  }
+});
+
 document.addEventListener('change', async (e) => {
   const st = ui.studio;
   const t = e.target;
@@ -641,7 +672,7 @@ async function downloadPhotoVersion(task, v, btn) {
       blob = await P.renderToPngBlob(v.content, { photo, logo });
     }
     const job = S.getJob(task.jobId);
-    const slug = briefTitle(job.brief).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+    const slug = jobTitle(job).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
     const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `nexai-${slug}-graphic-v${v.n}-1080x1350.png` });
     document.body.appendChild(a);
     a.click();
@@ -653,6 +684,148 @@ async function downloadPhotoVersion(task, v, btn) {
   } finally {
     btn.disabled = false;
   }
+}
+
+/* ---------- Vektor: weekly planning ---------- */
+function planMethodShort(pl) {
+  return pl.method === 'ai' ? `AI plan (${modelName(pl.model)})` : pl.method === 'mock' ? 'Mock AI plan (test mode)' : 'Template plan';
+}
+function planMethodNote(pl) {
+  if (pl.method === 'ai') return `<p class="method-note ai" data-testid="plan-method">Drafted by ${esc(modelName(pl.model))} in one AI request. Check every day and edit anything before confirming.</p>`;
+  if (pl.method === 'mock') return '<p class="method-note mock" data-testid="plan-method">Mock AI plan (test mode): canned output from the test provider, not AI.</p>';
+  return '<p class="method-note" data-testid="plan-method">Template plan: built instantly from your brief with Nexai’s standard week structure (Monday frames the problem, Tuesday to Thursday take one topic each, Friday pulls it together). No AI was used.</p>';
+}
+const dayLabel = (d) => `${d.dayName} ${new Date(`${d.date}T00:00:00Z`).toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'long' })}`;
+
+/** What needs the owner's attention across a confirmed week, each with a link to the right place. */
+function attentionFor(pl) {
+  const fails = [], reviews = [], photos = [], missing = [];
+  let firstJob = null;
+  for (const d of pl.days) {
+    if (!d.jobId) continue;
+    const job = S.getJob(d.jobId);
+    if (!job) { missing.push({ text: `${d.dayName}’s post hasn’t been created yet`, href: `#/week/${pl.id}` }); continue; }
+    firstJob = firstJob || job;
+    const { copy, graphic } = S.jobTasks(job);
+    const st = S.jobStatus(job);
+    if (copy.pending?.error || graphic.pending?.error) fails.push({ text: `${d.dayName}’s caption couldn’t be generated: retry it`, href: `#/job/${job.id}`, kind: 'fail' });
+    else if (st === 'ready_for_review' || st === 'needs_reapproval') {
+      const revised = copy.versions.length > 1 && copy.versions.at(-1).feedback;
+      reviews.push({ text: revised ? `${d.dayName}’s revised caption is ready to review` : st === 'needs_reapproval' ? `${d.dayName}’s post changed and needs fresh approval` : `${d.dayName}’s post is ready to review`, href: `#/job/${job.id}`, kind: 'review' });
+    }
+    if (st !== 'approved' && !graphic.versions.some((v) => v.content.mode === 'photo')) photos.push({ text: `${d.dayName} needs a photo`, day: d.dayName, href: `#/job/${job.id}/studio`, kind: 'photo' });
+  }
+  const logo = firstJob && !S.brand().logoId ? [{ text: 'Add the official Nexai logo (every post uses it)', href: `#/job/${firstJob.id}/studio`, kind: 'photo' }] : [];
+  return [...missing, ...fails, ...reviews, ...photos, ...logo];
+}
+
+/** Photo requests are grouped onto one line (one link per day) so reviews and failures stay prominent. */
+function attentionMarkup(items) {
+  const photos = items.filter((x) => x.kind === 'photo' && x.day);
+  const rest = items.filter((x) => !(x.kind === 'photo' && x.day));
+  const li = (x) => `<li class="att-${x.kind || 'info'}"><a href="${x.href}">${esc(x.text)}</a></li>`;
+  const photoLine = photos.length ? `<li class="att-photo">Needs a photo: ${photos.map((x) => `<a href="${x.href}" aria-label="${esc(x.text)}">${esc(x.day)}</a>`).join(', ')}</li>` : '';
+  return rest.filter((x) => x.kind !== 'photo').map(li).join('') + photoLine + rest.filter((x) => x.kind === 'photo').map(li).join('');
+}
+
+function renderWeekNew() {
+  const q = S.quill;
+  const aiOk = q.provider !== 'demo';
+  return `<nav class="crumbs"><a href="#/">← HQ</a></nav>
+  <header class="cal-head"><h1>Plan a content week</h1>
+    <p>Vektor plans five posts on Nexai’s schedule. You review and edit the plan before any captions are written.</p></header>
+  <section class="panel">
+    <ul class="schedule" aria-label="Nexai’s posting schedule">${PL.SCHEDULE.map((d) => `<li><strong>${d.dayName}</strong> <span class="plat plat-${platSlug(d.platform)}">${d.platform}</span></li>`).join('')}</ul>
+    <form id="week-form" novalidate>
+      <label for="wk-start">Week beginning (a Monday, UK dates)</label>
+      <input id="wk-start" type="date" value="${PL.nextMonday()}" required>
+      <label for="wk-brief">Brief for the week</label>
+      <textarea id="wk-brief" rows="5" required placeholder="e.g. Plan a week for UK commercial maintenance directors about…"></textarea>
+      <p class="form-error" id="wk-error" role="alert" ${ui.weekError ? '' : 'hidden'}>${esc(ui.weekError || '')}</p>
+      <div class="method-choice">
+        <div><button class="btn btn-primary" type="submit" name="method" value="template" ${ui.planning ? 'disabled' : ''}>Create template plan</button>
+          <p class="mini">Instant and free. Built from your brief with Nexai’s standard week structure. No AI.</p></div>
+        <div><button class="btn" type="submit" name="method" value="ai" ${!aiOk || ui.planning ? 'disabled' : ''} data-testid="ai-plan-btn">${ui.planning === 'ai' ? 'Drafting with AI…' : 'Draft with AI (1 request)'}</button>
+          <p class="mini">${aiOk ? (q.provider === 'mock' ? 'Uses the mock provider (test mode): canned output, not AI.' : `One request to ${esc(modelName(q.model))} through the server’s configured provider. Charged to your Anthropic account.`) : q.signInRequired ? 'Sign in to the shared workspace to plan with AI.' : 'AI isn’t set up on this server. Add ANTHROPIC_API_KEY to use it.'}</p></div>
+      </div>
+    </form>
+  </section>`;
+}
+
+function renderPlanEditor(pl) {
+  const included = pl.days.filter((d) => d.include).length;
+  return `<nav class="crumbs"><a href="#/">← HQ</a></nav>
+  <header class="cal-head"><h1>${esc(PL.fmtWeek(pl.weekStart))}</h1>${planMethodNote(pl)}
+    <details class="brief-detail"><summary>Brief for the week</summary><p>${esc(pl.brief)}</p></details></header>
+  <ol class="plan-days" data-testid="plan-editor">
+  ${pl.days.map((d, i) => `<li class="plan-day${d.include ? '' : ' left-out'}" data-testid="plan-day-${d.dayName}">
+    <div class="plan-day-head">
+      <span class="day-id"><label class="incl"><input type="checkbox" data-plan-include="${i}" ${d.include ? 'checked' : ''}> <strong>${esc(dayLabel(d))}</strong></label>
+      <span class="plat plat-${platSlug(d.platform)}">${esc(d.platform)}</span></span>
+    </div>
+    ${d.include ? `<div class="plan-fields">
+      <label for="pd-aud-${i}">Audience</label><input id="pd-aud-${i}" data-plan-field="audience" data-i="${i}" value="${esc(d.audience)}">
+      <label for="pd-angle-${i}">Angle</label><textarea id="pd-angle-${i}" rows="2" data-plan-field="angle" data-i="${i}">${esc(d.angle)}</textarea>
+      <label for="pd-take-${i}">Practical takeaway</label><textarea id="pd-take-${i}" rows="2" data-plan-field="takeaway" data-i="${i}">${esc(d.takeaway)}</textarea>
+      <label for="pd-vis-${i}">Visual brief for Prism</label><textarea id="pd-vis-${i}" rows="2" data-plan-field="visual" data-i="${i}">${esc(d.visual)}</textarea>
+    </div>` : '<p class="mini">Left out of this week. Tick the day to include it again.</p>'}
+  </li>`).join('')}
+  </ol>
+  <div class="approve-bar plan-bar">
+    <p>Confirming creates ${included} post${included === 1 ? '' : 's'}: Quill writes each caption${S.quill.provider === 'anthropic' ? ` (${included} AI request${included === 1 ? '' : 's'})` : ''} and Prism starts each graphic. Nothing is published.</p>
+    <button class="btn btn-primary" data-confirm-plan="${pl.id}" ${!included || ui.confirming ? 'disabled' : ''}>${ui.confirming ? 'Creating posts…' : `Confirm plan and create ${included} post${included === 1 ? '' : 's'}`}</button>
+  </div>`;
+}
+
+function renderWeekOverview(pl) {
+  const items = attentionFor(pl);
+  const created = pl.days.filter((d) => d.jobId && S.getJob(d.jobId)).length;
+  const linked = pl.days.filter((d) => d.jobId).length;
+  return `<nav class="crumbs"><a href="#/">← HQ</a></nav>
+  <header class="cal-head"><h1>${esc(PL.fmtWeek(pl.weekStart))}</h1>${planMethodNote(pl)}
+    <details class="brief-detail"><summary>Brief for the week</summary><p>${esc(pl.brief)}</p></details></header>
+  ${created < linked ? `<div class="sync-box conflict" role="alert" data-testid="plan-incomplete"><p><strong>${created} of ${linked} posts created.</strong> Creating the rest is safe to repeat: posts that already exist are never duplicated.</p><button class="btn btn-primary" data-finish-plan="${pl.id}" ${ui.confirming ? 'disabled' : ''}>Finish creating posts</button></div>` : ''}
+  <section class="panel attention" aria-labelledby="att-h" data-testid="attention">
+    <h2 id="att-h">Needs your attention</h2>
+    ${items.length ? `<ul>${attentionMarkup(items)}</ul>` : '<p>Nothing right now. Every post is approved.</p>'}
+  </section>
+  <ol class="week-days" data-testid="week-days">
+  ${pl.days.map((d) => {
+    const job = d.jobId ? S.getJob(d.jobId) : null;
+    if (!d.jobId) return `<li class="week-day left-out" data-testid="week-day-${d.dayName}"><div class="plan-day-head"><span class="day-id"><strong>${esc(dayLabel(d))}</strong><span class="plat plat-${platSlug(d.platform)}">${esc(d.platform)}</span></span></div><p class="mini">Left out of this week.</p></li>`;
+    if (!job) return `<li class="week-day" data-testid="week-day-${d.dayName}"><div class="plan-day-head"><span class="day-id"><strong>${esc(dayLabel(d))}</strong><span class="plat plat-${platSlug(d.platform)}">${esc(d.platform)}</span></span></div><p class="mini">Not created yet.</p></li>`;
+    const { copy, graphic } = S.jobTasks(job);
+    const st = S.jobStatus(job);
+    const cv = S.currentVersion(copy);
+    const gv = S.currentVersion(graphic);
+    return `<li class="week-day" data-testid="week-day-${d.dayName}" data-job="${job.id}">
+      <div class="plan-day-head"><span class="day-id"><strong>${esc(dayLabel(d))}</strong><span class="plat plat-${platSlug(job.platform)}">${esc(job.platform)}</span></span>${pill(st)}</div>
+      <p class="week-angle">${esc(job.planDay.angle)}</p>
+      <p class="mini">Caption: ${copy.pending?.error ? 'failed, needs retry' : cv ? `v${cv.n}` : S.STATUS_LABEL[S.taskStatus(copy)]} · Graphic: ${gv ? `v${gv.n} (${gv.content.mode === 'photo' ? 'Photo layout' : 'simulated, needs a photo'})` : S.STATUS_LABEL[S.taskStatus(graphic)]}${job.approval ? ` · Approved caption v${job.approval.copyVersion} + graphic v${job.approval.graphicVersion}` : ''}</p>
+      <div class="row-actions"><a class="btn btn-small" href="#/job/${job.id}">Open post</a><a class="btn btn-small btn-ghost" href="#/job/${job.id}/studio">Photo layout</a></div>
+    </li>`;
+  }).join('')}
+  </ol>`;
+}
+
+function renderWeek(id) {
+  if (id === 'new') return renderWeekNew();
+  const pl = S.getPlan(id);
+  if (!pl) return notFound();
+  return pl.status === 'draft' ? renderPlanEditor(pl) : renderWeekOverview(pl);
+}
+
+/** Read the editor's fields into the plan (used before confirming so nothing typed is lost). */
+function planEditsFromDom(pl) {
+  const edits = [];
+  document.querySelectorAll('[data-plan-field]').forEach((el) => edits.push([Number(el.dataset.i), el.dataset.planField, el.value.trim()]));
+  return () => {
+    const p = S.getPlan(pl.id);
+    if (!p || p.status !== 'draft') return false;
+    let changed = false;
+    for (const [i, f, v] of edits) if (p.days[i] && v && p.days[i][f] !== v) { p.days[i][f] = v; changed = true; }
+    return changed;
+  };
 }
 
 /* ---------- Shared workspace: sync notices, sign-in, import ---------- */
@@ -750,7 +923,7 @@ function renderImportPlan(plan) {
     ${plan.bundles.map((b) => {
       const c = b.tasks.find((t) => t.type === 'copy');
       const g = b.tasks.find((t) => t.type === 'graphic');
-      return `<tr><td><strong>${esc(briefTitle(b.job.brief))}</strong><br><span class="mini">${b.job.platform}, ${fmtDate(b.job.targetDate)}${b.job.approval ? ` · approved caption v${b.job.approval.copyVersion} + graphic v${b.job.approval.graphicVersion}` : ''}</span></td>
+      return `<tr><td><strong>${esc(jobTitle(b.job))}</strong><br><span class="mini">${b.job.platform}, ${fmtDate(b.job.targetDate)}${b.job.approval ? ` · approved caption v${b.job.approval.copyVersion} + graphic v${b.job.approval.graphicVersion}` : ''}</span></td>
         <td>Caption ${c.versions.length}, graphic ${g.versions.length}</td>
         <td>${willImport.has(b.job.id) ? 'Will import' : 'Already in workspace: skipped'}</td></tr>`;
     }).join('')}
@@ -768,7 +941,7 @@ function assetRefs(bundles, brandData) {
     const g = b.tasks.find((t) => t.type === 'graphic');
     for (const v of g.versions) {
       if (v.content.mode !== 'photo') continue;
-      add(v.content.photoId, 'photo', v.content.photoName, `photo “${v.content.photoName}” (${briefTitle(b.job.brief)}, graphic v${v.n})`);
+      add(v.content.photoId, 'photo', v.content.photoName, `photo “${v.content.photoName}” (${jobTitle(b.job)}, graphic v${v.n})`);
       add(v.content.logoId, 'logo', v.content.logoName, `logo “${v.content.logoName}”`);
     }
   }
@@ -808,7 +981,7 @@ let lastSig = '';
 function signature() {
   const s = S.getState();
   const w = S.ws;
-  return [w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
+  return [(s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
 }
 
 function render() {
@@ -827,7 +1000,7 @@ function render() {
   const pill = document.getElementById('ws-pill');
   if (pill) { pill.textContent = wsPillText(); pill.dataset.mode = S.ws.mode; pill.dataset.status = S.ws.status; }
   if (!S.ws.ready) { $main.innerHTML = '<p class="empty">Loading your workspace…</p>'; return; }
-  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'calendar' ? renderCalendar() : r.view === 'workspace' ? renderWorkspace() : renderHQ();
+  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'calendar' ? renderCalendar() : r.view === 'workspace' ? renderWorkspace() : r.view === 'week' ? renderWeek(r.id) : renderHQ();
   $sheet.innerHTML = (r.agent ? renderAgentSheet(r.agent) : '') + (ui.lightbox ? renderLightbox() : '');
   document.body.classList.toggle('no-scroll', !!(r.agent || ui.lightbox));
 
@@ -863,6 +1036,38 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) S.po
 let submitLock = false;
 document.addEventListener('submit', (e) => {
   const f = e.target;
+  if (f.id === 'week-form') {
+    e.preventDefault();
+    if (ui.planning) return; // one tap, one plan (and at most one paid request)
+    const method = e.submitter?.value === 'ai' ? 'ai' : 'template';
+    const weekStart = document.getElementById('wk-start').value;
+    const brief = document.getElementById('wk-brief').value.trim();
+    if (!PL.isMonday(weekStart)) { ui.weekError = 'Choose a Monday for the week beginning.'; render(); return; }
+    if (brief.length < 12) { ui.weekError = 'Add a brief of at least a sentence.'; render(); return; }
+    ui.weekError = '';
+    ui.planning = method;
+    render();
+    (async () => {
+      const days = PL.weekDays(weekStart);
+      let planDays;
+      let model = null;
+      let usedMethod = 'template';
+      if (method === 'ai') {
+        const r = await S.requestAiPlan(brief, weekStart, days);
+        if (!r.ok) { ui.planning = null; ui.weekError = `${r.error} No plan was created.`; render(); return; }
+        planDays = days.map((d, i) => ({ ...d, ...r.days[i], include: true, jobId: null }));
+        model = r.model;
+        usedMethod = r.provider === 'anthropic' ? 'ai' : 'mock';
+      } else planDays = PL.templatePlan(brief, weekStart);
+      const res = await S.createPlan({ weekStart, brief, method: usedMethod, days: planDays, model });
+      ui.planning = null;
+      if (!res.ok) { ui.weekError = res.error || 'The plan wasn’t saved.'; render(); return; }
+      const wb = document.getElementById('wk-brief');
+      if (wb) wb.value = '';
+      location.hash = `#/week/${res.plan.id}`;
+    })();
+    return;
+  }
   if (f.id === 'signin-form') {
     e.preventDefault();
     if (ui.signingIn) return;
@@ -897,6 +1102,9 @@ document.addEventListener('submit', (e) => {
     if (!f.targetDate.value) { err.textContent = 'Choose a target date.'; err.hidden = false; return; }
     submitLock = true;
     setTimeout(() => (submitLock = false), 1200);
+    // The page scrolls to show Vektor after sending; ignore the second half of a double tap so it can't open whatever moved under the finger.
+    document.body.classList.add('tap-guard');
+    setTimeout(() => document.body.classList.remove('tap-guard'), 600);
     S.createJob({ brief, platform: f.platform.value, targetDate: f.targetDate.value }).then((res) => {
       if (!res.ok) { err.textContent = res.error || 'The job wasn’t saved. Try again.'; err.hidden = false; render(); return; }
       const ta = document.getElementById('brief');
@@ -969,6 +1177,24 @@ document.addEventListener('click', (e) => {
       render();
       if (res.conflict) document.querySelector('[data-testid="conflict"]')?.scrollIntoView({ block: 'center' });
     });
+    return;
+  }
+  if (t.dataset.confirmPlan || t.dataset.finishPlan) {
+    const id = t.dataset.confirmPlan || t.dataset.finishPlan;
+    if (ui.confirming) return;
+    ui.confirming = true;
+    t.disabled = true;
+    const pl = S.getPlan(id);
+    const applyEdits = pl && pl.status === 'draft' ? planEditsFromDom(pl) : null;
+    (async () => {
+      if (applyEdits) { const r = await S.commitPlan(id, applyEdits); if (!r.ok) { ui.confirming = false; toast(r.error); render(); return; } }
+      const res = await S.confirmPlan(id);
+      ui.confirming = false;
+      if (res.ok) toast('Plan confirmed. Quill and Prism are on it.');
+      else if (res.failed) toast(`${res.failed.length} post${res.failed.length === 1 ? '' : 's'} couldn’t be created yet. Use “Finish creating posts” to try again.`);
+      else if (res.error) toast(res.error);
+      render();
+    })();
     return;
   }
   if (t.dataset.loadLatest) {

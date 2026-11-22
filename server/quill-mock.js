@@ -8,6 +8,21 @@ const calls = [];
 const TAGS = '#BuildingServices #FacilitiesManagement #FieldService #MEP #CommercialMaintenance';
 
 function draftFor(req) {
+  const angle = /^Angle: (.+)$/m.exec(req.brief);
+  const takeaway = /^Practical takeaway: (.+)$/m.exec(req.brief);
+  if (angle && takeaway) {
+    const gbp = req.platform === 'Google Business Profile';
+    return {
+      caption: [
+        `${angle[1].replace(/\.$/, '')}.`,
+        'It rarely looks like a big problem on the day. It shows up later, when the office is chasing and the invoice is still waiting.',
+        `One practical step: ${takeaway[1].charAt(0).toLowerCase()}${takeaway[1].slice(1).replace(/\.$/, '')}.`,
+        gbp ? 'Questions about how we handle this on your site? Ask the team.' : 'How does your team handle this today?',
+        ...(gbp ? [] : [req.platform === 'Facebook' ? '#FacilitiesManagement #BuildingServices' : TAGS]),
+      ].join('\n\n'),
+      notes: `Mock draft from the plan's angle and takeaway for ${req.platform}.`,
+    };
+  }
   if (/photo/i.test(req.brief)) {
     return {
       caption: [
@@ -50,4 +65,21 @@ async function generate(req) {
   return req.kind === 'revision' ? revisionFor(req) : draftFor(req);
 }
 
-module.exports = { generate, calls };
+const planCalls = [];
+async function planWeek(req) {
+  planCalls.push({ brief: req.brief, weekStart: req.weekStart, days: req.days.map((d) => `${d.dayName} ${d.platform}`) });
+  await sleep(DELAY_MS);
+  const angles = [
+    ['Maintenance directors', 'Finished jobs that sit unbilled are cash you have already earned', 'Pull a “complete but not invoiced” list every Monday morning'],
+    ['Office and service coordinators', 'The missing engineer photo is the most common reason an invoice waits', 'Make before and after photos a required step to close a job'],
+    ['Local facilities managers', 'What a complete job sheet looks like when it reaches the office', 'Use a five-line job sheet check before leaving site'],
+    ['Service managers', 'Client sign-off that waits a week turns into a dispute', 'Capture sign-off on the engineer’s device before leaving'],
+    ['Operations directors', 'Three checks that turn “done” into “ready to invoice”', 'Agree one definition of complete with engineers and the office'],
+  ];
+  return req.days.map((d, i) => {
+    const [audience, angle, takeaway] = angles[i % angles.length];
+    return { audience, angle, takeaway, visual: `Engineer on a UK commercial site for ${d.platform}: plant room or rooftop, natural light, no text.` };
+  });
+}
+
+module.exports = { generate, calls, planWeek, planCalls };
