@@ -9,7 +9,14 @@
 const Anthropic = require('@anthropic-ai/sdk').default;
 const mock = require('./quill-mock');
 
-const MODEL = process.env.QUILL_MODEL || 'claude-opus-5-5';
+// Model and effort are server-side settings. Default: Claude Sonnet 5.5 at medium effort, a cost-effective
+// choice for short social captions (verified against platform.claude.com docs, November 2026).
+// Examples: QUILL_MODEL=claude-opus-5-5 QUILL_EFFORT=high for harder briefs; QUILL_MODEL=claude-haiku-5-5 for lowest cost.
+const MODEL = (process.env.QUILL_MODEL || 'claude-sonnet-5-5').trim();
+const EFFORT = (process.env.QUILL_EFFORT || 'medium').trim().toLowerCase();
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+if (!/^claude-[a-z0-9-]+$/.test(MODEL)) throw new Error(`QUILL_MODEL "${MODEL}" is not a valid Claude model ID (e.g. claude-sonnet-5-5).`);
+if (!EFFORTS.includes(EFFORT)) throw new Error(`QUILL_EFFORT must be one of ${EFFORTS.join(', ')}.`);
 const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X'];
 
 function resolveProvider() {
@@ -32,6 +39,7 @@ function providerInfo() {
   return {
     provider: PROVIDER,
     model: PROVIDER === 'live' ? MODEL : PROVIDER === 'mock' ? 'mock-quill' : null,
+    effort: PROVIDER === 'live' ? EFFORT : null,
     label: PROVIDER === 'live' ? 'Anthropic API' : PROVIDER === 'mock' ? 'Mock provider (tests)' : 'Local demo templates',
   };
 }
@@ -134,14 +142,12 @@ class QuillError extends Error {
 async function callAnthropic(req) {
   let response;
   try {
-    response = await client.beta.messages.create({
+    // No `fallbacks`: only the configured model handles a brief. A refusal is reported back, not rerouted.
+    // `thinking` is omitted, so current models run adaptive thinking; effort is the cost/depth control.
+    response = await client.messages.create({
       model: MODEL,
       max_tokens: 16000,
-      // Opus 5.5: thinking is always adaptive; effort set explicitly (its default is medium).
-      output_config: { effort: 'high', format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
-      // Server-side refusal fallback, routed by refusal category.
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
+      output_config: { effort: EFFORT, format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: buildUserMessage(req) }],
     });
@@ -154,7 +160,7 @@ async function callAnthropic(req) {
     if (e instanceof Anthropic.APIError) throw new QuillError(`The Anthropic API returned an error (${e.status ?? 'unknown'}). Retry in a moment.`, { code: 'api_error' });
     throw new QuillError('Caption generation failed unexpectedly. Retry in a moment.', { code: 'unknown' });
   }
-  if (response.stop_reason === 'refusal') throw new QuillError('The model declined this request. Try rewording the brief or feedback.', { retryable: false, code: 'refusal' });
+  if (response.stop_reason === 'refusal') throw new QuillError(`${MODEL} declined this request. Reword the brief or feedback, or choose another model in QUILL_MODEL.`, { retryable: false, code: 'refusal' });
   if (response.stop_reason === 'max_tokens') throw new QuillError('The caption was cut off before it finished. Retry.', { code: 'truncated' });
   const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
   let parsed;

@@ -3,4 +3,5 @@ tests/screenshots/
 .DS_Store
 .env
 .env.*
+!.env.example
 *.zip

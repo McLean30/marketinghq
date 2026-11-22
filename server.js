@@ -92,5 +92,5 @@ http
   .listen(PORT, HOST, () => {
     const info = quill.providerInfo();
     console.log(`Nexai AI Marketing HQ running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
-    console.log(`Quill caption provider: ${info.label}${info.model ? ` (${info.model})` : ''}`);
+    console.log(`Quill caption provider: ${info.label}${info.model ? ` (${info.model}${info.effort ? `, effort ${info.effort}` : ''})` : ''}`);
   });

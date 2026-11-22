@@ -1,5 +1,6 @@
 // Milestone 2 acceptance: Quill AI captions through the real UI, using the deterministic mock provider.
 // Starts its own server with QUILL_PROVIDER=mock. Run: npm run test:m2
+import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { spawn } from 'child_process';
 import fs from 'fs';
@@ -8,7 +9,7 @@ const { chromium, devices } = require('playwright');
 
 const PORT = 4174;
 const BASE = `http://127.0.0.1:${PORT}/`;
-const OUT = new URL('./screenshots/', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('./screenshots/', import.meta.url));
 fs.mkdirSync(OUT, { recursive: true });
 const BRIEF = 'Write for an M&E service manager who gets to Friday afternoon with three completed jobs still waiting on engineer photos. Give them one practical way to stop the office chasing.';
 const FEEDBACK = 'Open at 4pm on Friday with what the service manager sees on screen. Cut the caption to under 100 words and keep one practical fix.';
@@ -16,7 +17,7 @@ const assert = (c, m) => { if (!c) throw new Error(`FAIL: ${m}`); console.log(` 
 const words = (t) => t.trim().split(/\s+/).filter(Boolean).length;
 
 const server = spawn(process.execPath, ['server.js'], {
-  cwd: new URL('..', import.meta.url).pathname,
+  cwd: fileURLToPath(new URL('..', import.meta.url)),
   env: { ...process.env, PORT: String(PORT), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '1200', ANTHROPIC_API_KEY: '' },
   stdio: ['ignore', 'pipe', 'inherit'],
 });

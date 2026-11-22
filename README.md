@@ -2,7 +2,7 @@
 
 Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer). Review both together, request revisions with feedback, approve the pair, and see it on the private content calendar.
 
-Milestone 2 gives Quill real AI caption drafting and revision through the Anthropic API (Claude Opus 5.5, `claude-opus-5-5`). Prism's graphics are still local demo outputs.
+Milestone 2 gives Quill real AI caption drafting and revision through the Anthropic API. By default that's Claude Sonnet 5.5 (`claude-sonnet-5-5`) at `medium` effort, and you can change both on the server. Prism's graphics are still local demo outputs.
 
 ## Run it
 
@@ -11,28 +11,32 @@ npm install
 npm start
 ```
 
-Open http://127.0.0.1:4173. Needs Node 20+.
+Open http://127.0.0.1:4173. Needs Node 20.6+.
 
 Without credentials, the app runs exactly as in Milestone 1: Quill uses local demo templates and every caption is labelled "Simulated demo output". The brief panel says which mode Quill is in.
 
 ### Switch on live AI captions
 
-Quill calls the Anthropic API **from the server only**. The key never reaches the browser and is never logged.
+Quill calls the Anthropic API **from the server only**. The key never reaches the browser, is never logged, and lives in a gitignored `.env` file.
 
 1. Create an API key in the Anthropic Console (platform.claude.com), in a workspace you're happy to bill.
-2. Start the server with the key in its environment. Either export it in your shell session:
+2. Copy `.env.example` to `.env` and put the key after `ANTHROPIC_API_KEY=` in your own editor. Don't paste it into chat, commits or issue trackers.
+3. Run `npm run start:env` (same as `node --env-file=.env server.js`).
+4. The start-up log should say `Quill caption provider: Anthropic API (claude-sonnet-5-5, effort medium)`. New captions are labelled "AI-generated · Claude Sonnet 5.5".
 
-   ```bash
-   export ANTHROPIC_API_KEY=...   # type or paste it in your own terminal, not into chat
-   npm start
-   ```
+### Model settings (server-side, in `.env`)
 
-   or put `ANTHROPIC_API_KEY=...` in a local `.env` file and run `node --env-file=.env server.js`. `.env` is gitignored; never commit it.
-3. The start-up log should say `Quill caption provider: Anthropic API (claude-opus-5-5)`, and new captions are labelled "AI-generated · Claude Opus 5.5".
+| Setting | Default | Notes |
+|---|---|---|
+| `QUILL_MODEL` | `claude-sonnet-5-5` | Any Claude model ID. `claude-opus-5-5` for harder briefs (twice the price); `claude-haiku-5-5` for lowest cost (test quality first). |
+| `QUILL_EFFORT` | `medium` | `low`, `medium`, `high`, `xhigh` or `max`. Higher means more thinking, latency and cost. |
+| `QUILL_PROVIDER` | automatic | `demo` forces local templates even with a key; `mock` is for tests only. |
 
-Optional settings: `QUILL_MODEL` (default `claude-opus-5-5`); `QUILL_PROVIDER=demo` forces demo mode even when a key is present.
+An invalid model ID format or effort value stops the server at start-up with a clear message. An unknown but well-formed model ID is reported by the API on the first request.
 
-Each draft or revision is one API request at `high` effort with structured output, plus the SDK's automatic retries on transient errors. Server-side refusal fallback (`fallbacks: "default"`) is enabled, so if Opus 5.5 declines a request, the API can rerun it on a fallback model.
+Each draft or revision is a single API request using structured output, plus the SDK's automatic retries on transient errors. **There is no automatic model fallback.** Only the configured model handles a brief. If it declines a request, the caption panel says so and nothing is rerouted.
+
+Settings were checked against the Anthropic docs (models overview, pricing, effort, thinking, structured outputs) in November 2026. Per million tokens: Sonnet 5.5 is $2 input / $10 output; Opus 5.5 is $4 / $20; Haiku 5.5 is $0.10 / $0.50 for prompts up to 100K tokens.
 
 ### Phone
 
@@ -51,7 +55,8 @@ Each draft or revision is one API request at `high` effort with structured outpu
 ```bash
 npm run test:m2      # Milestone 2 UI suite, desktop + phone, deterministic mock provider (starts its own server on :4174)
 npm run test:api     # Anthropic SDK path against a local stub API with a dummy key (no network, no cost)
-npm start & npm run test:e2e   # Milestone 1 desktop + phone suite, demo mode on :4173
+npm start   # then, in a second terminal:
+npm run test:e2e   # Milestone 1 desktop + phone suite, demo mode on :4173
 ```
 
 The mock provider (`QUILL_PROVIDER=mock`, `server/quill-mock.js`) returns canned captions so tests are repeatable. Its output is labelled "Mock AI response (test mode)" and is never used unless that variable is set.

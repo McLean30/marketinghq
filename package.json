@@ -5,6 +5,7 @@
   "description": "Nexai Digital's private internal AI marketing dashboard (milestone 2: Quill AI captions).",
   "scripts": {
     "start": "node server.js",
+    "start:env": "node --env-file=.env server.js",
     "test:e2e": "node tests/acceptance.mjs",
     "test:m2": "node tests/quill-m2.mjs",
     "test:api": "node tests/anthropic-path.mjs"
@@ -13,6 +14,6 @@
     "@anthropic-ai/sdk": "^1.12.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.6"
   }
 }

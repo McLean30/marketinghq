@@ -1,6 +1,7 @@
 // Exercises the real Anthropic SDK code path in server/quill.js against a local stub of the Messages API.
 // No real key and no network: a dummy key is used and ANTHROPIC_BASE_URL points at the stub.
 // Verifies request shape (model, prompt contents, structured output, fallbacks), parsing and error mapping.
+import { fileURLToPath } from 'url';
 import http from 'http';
 import { spawn } from 'child_process';
 
@@ -28,7 +29,7 @@ const stub = http.createServer((req, res) => {
 await new Promise((r) => stub.listen(STUB_PORT, '127.0.0.1', r));
 
 const app = spawn(process.execPath, ['server.js'], {
-  cwd: new URL('..', import.meta.url).pathname,
+  cwd: fileURLToPath(new URL('..', import.meta.url)),
   env: { ...process.env, PORT: String(APP_PORT), QUILL_PROVIDER: '', ANTHROPIC_API_KEY: 'dummy-test-key-not-real', ANTHROPIC_BASE_URL: `http://127.0.0.1:${STUB_PORT}`, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' },
   stdio: ['ignore', 'pipe', 'inherit'],
 });
@@ -40,7 +41,7 @@ const post = (body) => fetch(`http://127.0.0.1:${APP_PORT}/api/quill/caption`, {
 try {
   console.log('\n== Anthropic SDK path (local stub, dummy key) ==');
   const status = await (await fetch(`http://127.0.0.1:${APP_PORT}/api/quill/status`)).json();
-  assert(status.provider === 'live' && status.model === 'claude-opus-5-5', 'Key in server env switches Quill to live Anthropic provider');
+  assert(status.provider === 'live' && status.model === 'claude-sonnet-5-5' && status.effort === 'medium', 'Key in server env switches Quill to live provider: default claude-sonnet-5-5 at medium effort');
   assert(!log.includes('dummy-test-key'), 'Server log never prints the key');
 
   const brief = 'Write for an M&E service manager who gets to Friday afternoon with three completed jobs still waiting on engineer photos.';
@@ -49,10 +50,10 @@ try {
   assert(r.status === 200 && out.provider === 'anthropic' && out.caption.startsWith('Stub caption'), 'Structured JSON response parsed into a caption');
   const req = seen.at(-1);
   assert(req.url.startsWith('/v1/messages'), 'Calls the Messages API');
-  assert(req.body.model === 'claude-opus-5-5', 'Uses claude-opus-5-5');
-  assert(req.body.output_config?.format?.type === 'json_schema' && req.body.output_config.effort === 'high', 'Requests structured output at high effort');
-  assert(req.body.fallbacks === 'default' && /server-side-fallback-2026-07-01/.test(req.headers['anthropic-beta'] || ''), 'Server-side refusal fallback enabled');
-  assert(!('thinking' in req.body) && !('temperature' in req.body), 'No disabled thinking or sampling params (400s on Opus 5.5)');
+  assert(req.body.model === 'claude-sonnet-5-5', 'Sends model claude-sonnet-5-5');
+  assert(req.body.output_config?.format?.type === 'json_schema' && req.body.output_config.effort === 'medium', 'Requests structured output at medium effort');
+  assert(!('fallbacks' in req.body) && !/server-side-fallback/.test(req.headers['anthropic-beta'] || ''), 'No automatic model fallback (no fallbacks param, no fallback beta header)');
+  assert(!('thinking' in req.body) && !('temperature' in req.body) && !('top_p' in req.body), 'No thinking override or sampling params');
   assert(/British English/.test(req.body.system) && /Never invent results/.test(req.body.system), 'System prompt carries Nexai voice and no-invented-results rule');
   const msg = req.body.messages[0].content;
   assert(msg.includes(brief) && msg.includes('Platform: LinkedIn') && msg.includes('Old caption v1') && msg.includes('Cut it to under 100 words.'), 'Revision prompt includes brief, platform, current caption and exact feedback');
@@ -71,8 +72,40 @@ try {
   assert(r.status === 400, 'Invalid revision request rejected before calling the API');
   r = await fetch(`http://127.0.0.1:${APP_PORT}/api/quill/caption`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' }, body: '{}' });
   assert(r.status === 403, 'Cross-origin requests refused');
-  console.log('\nAnthropic path checks passed.');
 } finally {
   app.kill();
+}
+
+// Server-side overrides: QUILL_MODEL / QUILL_EFFORT, and fail-fast on bad values.
+function startApp(extraEnv, port) {
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    env: { ...process.env, PORT: String(port), QUILL_PROVIDER: '', ANTHROPIC_API_KEY: 'dummy-test-key-not-real', ANTHROPIC_BASE_URL: `http://127.0.0.1:${STUB_PORT}`, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', ...extraEnv },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  child.stdout.on('data', (d) => (out += d));
+  child.stderr.on('data', (d) => (out += d));
+  const ready = new Promise((res) => {
+    child.stdout.on('data', () => /provider/.test(out) && res('ready'));
+    child.on('exit', (code) => res(`exit ${code}`));
+  });
+  return { child, ready, output: () => out };
+}
+try {
+  console.log('\n== Server-side model settings ==');
+  const alt = startApp({ QUILL_MODEL: 'claude-haiku-5-5', QUILL_EFFORT: 'low' }, APP_PORT + 1);
+  assert((await alt.ready) === 'ready' && /claude-haiku-5-5, effort low/.test(alt.output()), 'QUILL_MODEL / QUILL_EFFORT override the defaults (start-up log names model and effort)');
+  mode = 'ok';
+  const r = await fetch(`http://127.0.0.1:${APP_PORT + 1}/api/quill/caption`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'draft', brief: 'A brief long enough to pass validation.', platform: 'LinkedIn' }) });
+  assert(r.status === 200 && seen.at(-1).body.model === 'claude-haiku-5-5' && seen.at(-1).body.output_config.effort === 'low', 'Request uses the overridden model and effort');
+  alt.child.kill();
+  const bad = startApp({ QUILL_EFFORT: 'extreme' }, APP_PORT + 2);
+  const badResult = await bad.ready;
+  assert(badResult.startsWith('exit') && /QUILL_EFFORT must be one of/.test(bad.output()), 'Invalid QUILL_EFFORT stops the server with a clear message');
+  const badModel = startApp({ QUILL_MODEL: 'gpt-4' }, APP_PORT + 3);
+  assert((await badModel.ready).startsWith('exit') && /not a valid Claude model ID/.test(badModel.output()), 'Invalid QUILL_MODEL stops the server with a clear message');
+  console.log('\nAnthropic path checks passed.');
+} finally {
   stub.close();
 }
