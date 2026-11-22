@@ -106,6 +106,8 @@ export function renderGraphic(spec, { title = 'Nexai social graphic' } = {}) {
   const scene = (SCENES[spec.scene] || SCENES.plantroom)();
   const subLines = wrapLines(spec.sub, 34);
   const h = spec.headline;
+  // Fit the longest headline line into the ~620px text column (Chakra Petch bold is roughly 0.56em per glyph).
+  const hSize = Math.min(80, Math.floor(620 / (0.56 * Math.max(...h.map((l) => l.length)))));
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1080" role="img" aria-label="${escapeXml(title)}">
   <defs>
     <linearGradient id="shade" x1="0" y1="0" x2="1" y2="0">
@@ -117,7 +119,7 @@ export function renderGraphic(spec, { title = 'Nexai social graphic' } = {}) {
   <rect width="760" height="1080" fill="url(#shade)"/>
   <rect y="820" width="1080" height="260" fill="url(#foot)"/>
   <rect x="64" y="96" width="8" height="${h.length * 92 + 10}" fill="${accent}"/>
-  ${h.map((line, i) => `<text x="96" y="${170 + i * 92}" font-family="Chakra Petch, Arial, sans-serif" font-weight="700" font-size="80" fill="#FFFFFF">${escapeXml(line)}</text>`).join('')}
+  ${h.map((line, i) => `<text x="96" y="${170 + i * 92}" font-family="Chakra Petch, Arial, sans-serif" font-weight="700" font-size="${hSize}" fill="#FFFFFF">${escapeXml(line)}</text>`).join('')}
   ${subLines.map((line, i) => `<text x="96" y="${200 + h.length * 92 + i * 44}" font-family="Barlow, Arial, sans-serif" font-size="34" fill="#DCE8F7">${escapeXml(line)}</text>`).join('')}
   <g transform="translate(96 ${240 + h.length * 92 + subLines.length * 44})">
     <rect width="${Math.round(spec.chip.length * 12.2 + 48)}" height="52" rx="26" fill="none" stroke="${accent}" stroke-width="3"/>

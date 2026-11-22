@@ -1,0 +1,174 @@
+# Vercel preview smoke test
+#
+# Runs against the Vercel Preview deployment of one exact commit and reports a check named
+# "Vercel preview smoke test" on that commit (it shows on any pull request containing it).
+#
+# - Runs on every push: it finds the Vercel Preview deployment that Vercel's GitHub integration records for
+#   that exact commit, waits for it to finish (up to 20 minutes) and tests that deployment's own URL. A new
+#   commit gets a new deployment and a fresh result; an older deployment can't stand in for it.
+# - Manual run (Actions → Vercel preview smoke test → Run workflow) takes a commit SHA and does the same.
+#   (GitHub only offers manual runs for workflows on the default branch.)
+# - Results: pass → success; fail → failure; blocked (preview protection / no access) → action_required,
+#   which GitHub never treats as passing. Preview protection stays on: add the Vercel "Protection Bypass for
+#   Automation" secret as the repository secret VERCEL_AUTOMATION_BYPASS_SECRET.
+# - Demo mode only: no paid AI calls (the test refuses them), nothing created or published.
+name: Vercel preview smoke test
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit SHA to test (its own Vercel Preview deployment is found and waited for)
+        required: true
+
+permissions:
+  contents: read
+  checks: write
+  deployments: read
+  statuses: read
+
+concurrency:
+  group: vercel-smoke-${{ inputs.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: smoke (runner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find the commit's Vercel Preview deployment and wait for it
+        id: dep
+        uses: actions/github-script@v7
+        env:
+          INPUT_SHA: ${{ inputs.sha || github.sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            let sha, state, url, depId, env;
+            {
+              sha = (process.env.INPUT_SHA || '').trim();
+              if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error('Give a commit SHA.');
+              sha = (await github.rest.repos.getCommit({ owner, repo, ref: sha })).data.sha;
+              const deadline = Date.now() + 20 * 60 * 1000;
+              while (true) {
+                const deps = (await github.rest.repos.listDeployments({ owner, repo, sha, per_page: 30 })).data
+                  .filter((d) => /preview/i.test(d.environment))
+                  .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                if (deps.length) {
+                  const d = deps[0];
+                  const st = (await github.rest.repos.listDeploymentStatuses({ owner, repo, deployment_id: d.id, per_page: 1 })).data[0];
+                  depId = d.id; env = d.environment; state = st ? st.state : 'pending';
+                  url = st ? (st.environment_url || st.target_url) : '';
+                  if (['success', 'failure', 'error', 'inactive'].includes(state)) break;
+                }
+                if (Date.now() > deadline) {
+                  if (!depId) {
+                    // Nothing recorded as a GitHub deployment: note any Vercel commit status for the report.
+                    const st = (await github.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha })).data.statuses.find((x) => /vercel/i.test(x.context));
+                    core.info(st ? `Vercel commit status: ${st.state} (${st.context}) ${st.target_url}` : 'No Vercel deployment or commit status was recorded on GitHub for this commit.');
+                    core.setOutput('vercel_status', st ? `${st.context}: ${st.state}` : 'none');
+                  }
+                  state = depId ? (state || 'missing') : 'missing';
+                  break;
+                }
+                core.info(`Waiting for the Vercel Preview deployment of ${sha.slice(0, 7)} (${state || 'not found yet'})…`);
+                await new Promise((r) => setTimeout(r, 20000));
+              }
+            }
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const check = await github.rest.checks.create({
+              owner, repo, head_sha: sha, name: 'Vercel preview smoke test', status: 'in_progress', details_url: runUrl,
+              output: { title: 'Testing the Vercel preview', summary: `Commit ${sha}\nPreview: ${url || 'not available'}` },
+            });
+            core.setOutput('sha', sha);
+            core.setOutput('state', state || 'missing');
+            core.setOutput('url', url || '');
+            core.setOutput('deployment_id', String(depId || ''));
+            core.setOutput('environment', env || '');
+            core.setOutput('check_id', String(check.data.id));
+            core.setOutput('run_url', runUrl);
+
+      - name: Decide what to check for this commit
+        id: expect
+        env:
+          SHA: ${{ steps.dep.outputs.sha }}
+        run: |
+          if git cat-file -e "${SHA}:public/js/review.js" 2>/dev/null; then echo "reviewer=1" >> "$GITHUB_OUTPUT"; else echo "reviewer=0" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/setup-node@v4
+        if: steps.dep.outputs.state == 'success'
+        with:
+          node-version: 22
+
+      - name: Install the browser
+        if: steps.dep.outputs.state == 'success'
+        run: |
+          npm install --no-save --no-package-lock playwright@1.63.0
+          npx playwright install --with-deps chromium
+
+      - name: Run the smoke test against the preview
+        if: steps.dep.outputs.state == 'success'
+        env:
+          PREVIEW_URL: ${{ steps.dep.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          EXPECT_REVIEWER: ${{ steps.expect.outputs.reviewer }}
+          SMOKE_RESULT: smoke-result.json
+          SMOKE_SHOTS: smoke-shots
+        run: |
+          mkdir -p smoke-shots
+          node tests/vercel-smoke.mjs || true
+
+      - name: Keep screenshots
+        if: always() && steps.dep.outputs.state == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vercel-smoke-${{ steps.dep.outputs.sha }}
+          path: smoke-shots/
+          if-no-files-found: ignore
+
+      - name: Report "Vercel preview smoke test"
+        if: always() && steps.dep.outputs.check_id != ''
+        uses: actions/github-script@v7
+        env:
+          CHECK_ID: ${{ steps.dep.outputs.check_id }}
+          SHA: ${{ steps.dep.outputs.sha }}
+          STATE: ${{ steps.dep.outputs.state }}
+          URL: ${{ steps.dep.outputs.url }}
+          DEP_ID: ${{ steps.dep.outputs.deployment_id }}
+          ENVIRONMENT: ${{ steps.dep.outputs.environment }}
+          RUN_URL: ${{ steps.dep.outputs.run_url }}
+          VERCEL_STATUS: ${{ steps.dep.outputs.vercel_status }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const e = process.env;
+            let result;
+            if (e.STATE !== 'success') {
+              result = e.STATE === 'missing'
+                ? { status: 'blocked', summary: `Vercel didn't record a Preview deployment for this commit on GitHub within 20 minutes (Vercel commit status: ${process.env.VERCEL_STATUS || 'none'}), so the preview could not be tested. Check that the Vercel GitHub integration is connected to this repository.`, steps: [] }
+                : { status: 'fail', summary: `The Vercel Preview deployment finished with “${e.STATE}”.`, steps: [] };
+            } else {
+              try { result = JSON.parse(fs.readFileSync('smoke-result.json', 'utf8')); }
+              catch { result = { status: 'fail', summary: 'The smoke test did not produce a result.', steps: [] }; }
+            }
+            const conclusion = { pass: 'success', fail: 'failure', blocked: 'action_required' }[result.status] || 'failure';
+            const title = { pass: 'Passed', fail: 'Failed', blocked: 'Blocked: could not reach HQ' }[result.status] || 'Failed';
+            const lines = (result.steps || []).map((s) => `- ${s.ok ? '✅' : '❌'} ${s.text}`).join('\n');
+            await github.rest.checks.update({
+              owner, repo, check_run_id: Number(e.CHECK_ID), status: 'completed', conclusion, details_url: e.RUN_URL,
+              output: {
+                title: `${title}: ${result.summary}`.slice(0, 250),
+                summary: `**${title}.** ${result.summary}\n\n- Commit: \`${e.SHA}\`\n- Preview URL: ${e.URL || 'none'}\n- Deployment: ${e.DEP_ID || 'none'} (${e.ENVIRONMENT || 'n/a'})\n- Run: ${e.RUN_URL}`,
+                text: lines || 'No browser steps ran.',
+              },
+            });
+            core.summary.addHeading(`Vercel preview smoke test: ${title}`).addRaw(`${result.summary}\n\nCommit ${e.SHA}\n\nPreview ${e.URL}\n\n${lines}`).write();
+            if (result.status !== 'pass') core.setFailed(`${title}: ${result.summary}`);
