@@ -4,7 +4,7 @@
 
 const THEMES = {
   unbilled: {
-    match: /invoice|invoic|job sheet|paperwork|unbilled|photo is missing|missing photo/i,
+    match: /invoic|job sheet|paperwork|unbilled|engineer photos?|missing photos?|photo is missing/i,
     title: 'Finished jobs the office can’t invoice',
     hooks: [
       'Your engineer finished the job on Tuesday. Your office still can’t invoice it.',
@@ -92,7 +92,8 @@ function audienceFrom(brief) {
 export function briefTitle(brief) {
   const t = THEMES[themeFor(brief)];
   if (t.title) return t.title;
-  const clean = brief.replace(/^(create|write|make|give me)\s+/i, '').split(/[.?!]/)[0];
+  let clean = brief.replace(/^(please\s+)?(create|write|make|draft|give me)\s+(.*?\bfor\s+)?/i, '').split(/[.?!]/)[0];
+  clean = clean.charAt(0).toUpperCase() + clean.slice(1);
   return clean.length > 64 ? `${clean.slice(0, 61)}…` : clean;
 }
 

@@ -332,3 +332,18 @@ main[data-view="job"] ~ #toast { bottom: 110px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* Milestone 2: caption provenance, provider mode, failures */
+.demo-tag.ai { color: var(--cyan); border: 1px solid rgba(46, 230, 255, .6); border-style: solid; }
+.demo-tag.mock { color: #C9B6FF; border-color: rgba(201, 182, 255, .6); }
+.src-mini { font-size: .72rem; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--navy-3); color: var(--muted); }
+.quill-mode { font-size: .86rem; color: var(--muted); margin: 12px 0 0; }
+.quill-mode.live { color: var(--cyan); }
+.quill-mode.mock { color: #C9B6FF; }
+.error-box { border: 1px solid var(--warn); background: rgba(255, 193, 94, .08); border-radius: 12px; padding: 4px 14px 14px; margin: 8px 0 12px; }
+.error-box p { margin: 10px 0; }
+.error-inline { color: var(--warn); margin: 8px 0 0; }
+.pill-failed, .pill-needs_retry { color: #1E1300; background: var(--warn); border-color: var(--warn); }
+.state-failed { color: #1E1300; background: var(--warn); border-color: var(--warn); }
+.state-failed .dot { background: #1E1300; }
+.char[data-state="failed"] .eye { opacity: .6; fill: var(--warn); }

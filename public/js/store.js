@@ -16,6 +16,25 @@ export const AGENTS = {
 export const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X'];
 
 const empty = () => ({ jobs: [], tasks: [], log: [] });
+
+/* ---------- Quill provider (server-side AI) ---------- */
+// provider: 'anthropic' (live AI), 'mock' (test fixture) or 'demo' (local templates, no server AI).
+export let quill = { provider: 'demo', model: null, label: 'Local demo templates', checked: false };
+export async function loadQuillProvider() {
+  try {
+    const r = await fetch('api/quill/status', { cache: 'no-store' });
+    if (r.ok) {
+      const info = await r.json();
+      quill = { provider: info.provider === 'live' ? 'anthropic' : info.provider, model: info.model, label: info.label, checked: true };
+    }
+  } catch {
+    quill = { ...quill, checked: true };
+  }
+  listeners.forEach((fn) => fn());
+  return quill;
+}
+const copyEngine = () => (quill.provider === 'demo' ? 'demo' : 'ai');
+const inFlight = new Set(); // task ids with a caption request currently awaiting the server (this tab only)
 let state = load();
 const listeners = new Set();
 
@@ -75,6 +94,7 @@ export function createJob({ brief, platform, targetDate }) {
       versions: [],
       pending: {
         kind: 'initial',
+        engine: agentId === 'copywriter' ? copyEngine() : 'demo',
         startAt: job.delegatedAt,
         readyAt: job.delegatedAt + (agentId === 'copywriter' ? COPY_MS : GRAPHIC_MS),
       },
@@ -95,6 +115,7 @@ export const jobTasks = (job) => ({ copy: getTask(job.taskIds.copy), graphic: ge
 export const currentVersion = (task) => task.versions[task.versions.length - 1] || null;
 
 export function taskStatus(task, now = Date.now()) {
+  if (task.pending?.error) return 'failed';
   if (task.pending) {
     if (now < task.pending.startAt) return 'queued';
     return task.pending.kind === 'revision' ? 'revising' : 'working';
@@ -108,6 +129,7 @@ export function taskStatus(task, now = Date.now()) {
 export function jobStatus(job, now = Date.now()) {
   const { copy, graphic } = jobTasks(job);
   if (now < job.delegatedAt) return 'delegating';
+  if (copy.pending?.error || graphic.pending?.error) return 'needs_retry';
   if (copy.pending || graphic.pending) return 'in_production';
   if (job.approval) {
     const fresh =
@@ -128,13 +150,20 @@ export const STATUS_LABEL = {
   revising: 'Revising',
   awaiting_review: 'Awaiting your review',
   idle: 'Idle',
+  failed: 'Failed, retry needed',
+  needs_retry: 'Needs your retry',
 };
 
 /** Resolve any agent work whose time has come. Returns true if state changed. */
 export function tick(now = Date.now()) {
   let changed = false;
   for (const task of state.tasks) {
-    if (!task.pending || now < task.pending.readyAt) continue;
+    if (!task.pending) continue;
+    if (task.pending.engine === 'ai') {
+      if (dispatchAi(task, now)) changed = true;
+      continue;
+    }
+    if (now < task.pending.readyAt) continue;
     const job = getJob(task.jobId);
     const prev = currentVersion(task);
     const n = task.versions.length + 1;
@@ -151,6 +180,7 @@ export function tick(now = Date.now()) {
       feedback: task.pending.feedback || null,
       by: AGENTS[task.agent].name,
       simulated: true,
+      source: 'demo',
       createdAt: task.pending.readyAt,
     });
     task.pending = null;
@@ -165,9 +195,16 @@ export function requestRevision(taskId, feedback) {
   const task = getTask(taskId);
   if (!task || task.pending) return;
   const now = Date.now();
-  task.pending = { kind: 'revision', feedback: feedback.trim(), startAt: now, readyAt: now + REVISION_MS };
+  task.pending = {
+    kind: 'revision',
+    engine: task.type === 'copy' ? copyEngine() : 'demo',
+    feedback: feedback.trim(),
+    startAt: now,
+    readyAt: now + REVISION_MS,
+  };
   log(task.jobId, task.agent, `Revision requested on the ${AGENTS[task.agent].label.toLowerCase()}: "${feedback.trim()}"`);
   save();
+  tick(); // send the request now rather than on the next timer tick
 }
 
 export function editCaption(taskId, text) {
@@ -182,6 +219,7 @@ export function editCaption(taskId, text) {
     feedback: null,
     by: 'You',
     simulated: false,
+    source: 'human',
     createdAt: Date.now(),
   });
   log(task.jobId, 'manager', 'Caption edited by hand. The pair needs fresh approval.');
@@ -202,12 +240,14 @@ export function approveJob(jobId) {
 export function agentState(agentId, now = Date.now()) {
   if (agentId === 'manager') {
     if (state.jobs.some((j) => now < j.delegatedAt)) return 'delegating';
-    if (state.tasks.some((t) => t.pending && now >= t.pending.startAt)) return 'working';
+    if (state.tasks.some((t) => t.pending && !t.pending.error && now >= t.pending.startAt)) return 'working';
     return 'idle';
   }
   const mine = state.tasks.filter((t) => t.agent === agentId);
-  if (mine.some((t) => t.pending && now >= t.pending.startAt)) return mine.some((t) => t.pending?.kind === 'revision') ? 'revising' : 'working';
-  if (mine.some((t) => t.pending)) return 'queued';
+  const active = mine.filter((t) => t.pending && !t.pending.error);
+  if (active.some((t) => now >= t.pending.startAt)) return active.some((t) => t.pending.kind === 'revision') ? 'revising' : 'working';
+  if (mine.some((t) => t.pending?.error)) return 'failed';
+  if (active.length) return 'queued';
   if (mine.some((t) => ['ready_for_review', 'needs_reapproval'].includes(jobStatus(getJob(t.jobId), now)))) return 'awaiting_review';
   return 'idle';
 }
@@ -217,5 +257,91 @@ export const agentTasks = (agentId) =>
 
 export function resetAll() {
   state = empty();
+  save();
+}
+
+
+/* ---------- Live caption requests ---------- */
+/** Start the server request for an AI caption task. Returns true if state changed. */
+function dispatchAi(task, now) {
+  const p = task.pending;
+  if (p.error || inFlight.has(task.id) || now < p.startAt) return false;
+  if (p.requestedAt) {
+    // A request was sent before a refresh and its reply was lost with the page. Don't silently resend: ask.
+    p.error = { message: 'The page was refreshed before Quill replied. Your work is saved. Retry to send the request again.', retryable: true, at: now };
+    save();
+    return true;
+  }
+  const job = getJob(task.jobId);
+  const prev = currentVersion(task);
+  const body = {
+    kind: p.kind === 'revision' ? 'revision' : 'draft',
+    brief: job.brief,
+    platform: job.platform,
+    currentCaption: p.kind === 'revision' ? prev?.content.text : undefined,
+    currentVersion: prev?.n,
+    feedback: p.kind === 'revision' ? p.feedback : undefined,
+  };
+  p.requestedAt = now;
+  inFlight.add(task.id);
+  save();
+  fetch('api/quill/caption', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(async (r) => {
+      let data = {};
+      try { data = await r.json(); } catch { /* non-JSON error page */ }
+      if (!r.ok) throw Object.assign(new Error(data.error || `Quill request failed (${r.status}).`), { retryable: data.retryable !== false });
+      return data;
+    })
+    .then((data) => {
+      const live = getTask(task.id);
+      if (!live?.pending || live.pending.requestedAt !== p.requestedAt) return; // superseded
+      const n = live.versions.length + 1;
+      live.versions.push({
+        n,
+        content: { text: data.caption, opts: null },
+        notes: data.notes ? [`v${n}: ${data.notes}`] : [],
+        feedback: live.pending.feedback || null,
+        by: AGENTS.copywriter.name,
+        simulated: data.provider !== 'anthropic',
+        source: data.provider,
+        model: data.model,
+        createdAt: Date.now(),
+      });
+      live.pending = null;
+      log(live.jobId, 'copywriter', `Caption v${n} delivered for review (${data.provider === 'anthropic' ? 'AI-generated' : 'mock'}).`);
+    })
+    .catch((e) => {
+      const live = getTask(task.id);
+      if (!live?.pending || live.pending.requestedAt !== p.requestedAt) return;
+      live.pending.error = { message: e.message || 'Quill request failed.', retryable: e.retryable !== false, at: Date.now() };
+      log(live.jobId, 'copywriter', `Caption request failed: ${live.pending.error.message}`);
+    })
+    .finally(() => {
+      inFlight.delete(task.id);
+      save();
+    });
+  return true;
+}
+
+/** One click = at most one new request: ignored while a request for this task is in flight. */
+export function retryTask(taskId) {
+  const task = getTask(taskId);
+  if (!task?.pending?.error || inFlight.has(taskId)) return false;
+  task.pending.error = null;
+  task.pending.requestedAt = null;
+  task.pending.engine = copyEngine();
+  task.pending.startAt = Date.now();
+  task.pending.readyAt = Date.now() + REVISION_MS;
+  save();
+  tick();
+  return true;
+}
+
+/** Abandon a failed revision request; the current caption version stays as it was. */
+export function cancelFailedRevision(taskId) {
+  const task = getTask(taskId);
+  if (!task?.pending?.error || task.pending.kind !== 'revision' || inFlight.has(taskId)) return;
+  log(task.jobId, 'copywriter', 'Failed revision request cancelled. Caption unchanged.');
+  task.pending = null;
   save();
 }
