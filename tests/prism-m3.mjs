@@ -176,7 +176,7 @@ try {
     Storage.prototype.setItem = function (k, v) { if (k === 'nexai-hq:v1') throw new DOMException('Quota exceeded', 'QuotaExceededError'); return window.__set.call(this, k, v); };
   });
   await page.click('#st-save');
-  await page.waitForSelector('#st-error:has-text("storage is full, so the design wasn’t saved")');
+  await page.waitForSelector('#st-error:has-text("browser’s storage is full, so the change wasn’t saved")');
   assert(true, 'Full job storage: save refused, not reported as saved');
   await page.evaluate(() => { Storage.prototype.setItem = window.__set; });
   await page.screenshot({ path: `${OUT}/m3-phone-06-storage-full.png` });

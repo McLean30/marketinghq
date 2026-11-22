@@ -73,6 +73,7 @@ function route() {
   if (a === 'job' && b && parts[3] === 'studio') return { view: 'studio', id: b, base: `#/job/${b}` };
   if (a === 'job' && b) return { view: 'job', id: b, agent: parts[3] === 'agent' ? parts[4] : null, base: `#/job/${b}` };
   if (a === 'calendar') return { view: 'calendar' };
+  if (a === 'workspace') return { view: 'workspace' };
   if (a === 'agent' && b) return { view: 'hq', agent: b, base: '#/' };
   return { view: 'hq' };
 }
@@ -288,7 +289,7 @@ function assetPanel(job, task) {
 /* ---------- Review ---------- */
 function renderJob(id) {
   const job = S.getJob(id);
-  if (!job) return `<section class="panel"><h1>Job not found</h1><p>This job isn’t in this browser’s storage. <a href="#/">Back to HQ</a></p></section>`;
+  if (!job) return notFound();
   const { copy, graphic } = S.jobTasks(job);
   const st = S.jobStatus(job);
   const canApprove = st === 'ready_for_review' || st === 'needs_reapproval';
@@ -300,6 +301,7 @@ function renderJob(id) {
   else approveText = 'Approval opens when both the caption and graphic are ready.';
   return `
   <nav class="crumbs"><a href="#/">← HQ</a></nav>
+  <div id="sync-slot">${syncNotice(job.id)}</div>
   <header class="job-head">
     <div class="job-head-top"><span class="plat plat-${job.platform}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>${pill(st)}</div>
     <h1>${esc(briefTitle(job.brief))}</h1>
@@ -401,6 +403,8 @@ function initStudio(job, task) {
     logoScale: last?.logoScale || P.DEFAULT_SPEC.logoScale,
     error: '',
     saving: false,
+    dirty: false,
+    baseVersions: task.versions.length,
   };
   return ui.studio;
 }
@@ -409,7 +413,7 @@ const studioSpec = (st) => ({ headline: st.headline, headlinePos: st.headlinePos
 
 function renderStudio(jobId) {
   const job = S.getJob(jobId);
-  if (!job) return `<section class="panel"><h1>Job not found</h1><p><a href="#/">Back to HQ</a></p></section>`;
+  if (!job) return notFound();
   const task = S.getTask(job.taskIds.graphic);
   const st = initStudio(job, task);
   const next = task.versions.length + 1;
@@ -420,6 +424,7 @@ function renderStudio(jobId) {
   const busy = !!task.pending;
   return `
   <nav class="crumbs"><a href="#/job/${job.id}">← Back to review</a></nav>
+  <div id="sync-slot">${syncNotice(job.id, { studio: true })}</div>
   <header class="studio-head">
     <h1>Photo layout</h1>
     <p class="mini">Prism · ${esc(briefTitle(job.brief))} · ${job.platform}, ${fmtDate(job.targetDate)}. Saving creates graphic v${next}. Earlier versions and Quill’s caption stay exactly as they are.</p>
@@ -529,6 +534,7 @@ document.addEventListener('input', (e) => {
   else if (t.id === 'st-logo-scale') st.logoScale = Number(t.value) / 100;
   else if (t.name === 'st-pos') st.headlinePos = t.value;
   else return;
+  st.dirty = true;
   syncStudioOutputs();
   requestDraw();
 });
@@ -542,6 +548,7 @@ document.addEventListener('change', async (e) => {
   try {
     const prepared = await P.prepareUpload(t.files[0], kind);
     st[kind] = { ...prepared, stored: false };
+    st.dirty = true;
     if (kind === 'photo') st.crop = { ...P.DEFAULT_SPEC.crop };
     if (kind === 'logo') st.logoReused = false;
   } catch (err) {
@@ -566,6 +573,7 @@ document.addEventListener('pointermove', (e) => {
   const oy = P.H - r.dh;
   if (ox < 0) st.crop.fx = clamp01(drag.fx + ((e.clientX - drag.x) * drag.k) / ox);
   if (oy < 0) st.crop.fy = clamp01(drag.fy + ((e.clientY - drag.y) * drag.k) / oy);
+  st.dirty = true;
   syncStudioOutputs();
   requestDraw();
 });
@@ -598,9 +606,17 @@ async function saveStudio() {
     const spec = studioSpec(st);
     const content = { ...spec, photoId: st.photo.id, photoName: st.photo.name, logoId: st.logo.id, logoName: st.logo.name, w: P.W, h: P.H };
     const notes = [`Photo layout: headline at ${spec.headlinePos}, crop ${Math.round(spec.crop.zoom * 100)}% zoom, logo ${Math.round(spec.logoScale * 100)}%.`];
-    const version = S.saveGraphicVersion(task.id, content, notes);
+    const res = await S.saveGraphicVersion(task.id, content, notes, st.baseVersions);
+    if (!res.ok) {
+      st.saving = false;
+      st.error = res.conflict ? 'Not saved: this graphic changed on another device. Load the latest version (your edits stay here), then save again.' : res.error || 'The design wasn’t saved.';
+      render();
+      return;
+    }
+    const version = res.result;
+    st.dirty = false;
     if (S.brand().logoId !== st.logo.id) {
-      try { S.setBrandLogo(st.logo.id, st.logo.name); } catch { toast('Design saved, but the logo couldn’t be remembered for the next job.'); }
+      try { await S.setBrandLogo(st.logo.id, st.logo.name); } catch { toast('Design saved, but the logo couldn’t be remembered for the next job.'); }
     }
     P.seedRendered(`${task.id}:${version.n}`, await P.renderToPngBlob(spec, { photo: st.photo.bitmap, logo: st.logo.bitmap }));
     ui.studio = null;
@@ -639,11 +655,160 @@ async function downloadPhotoVersion(task, v, btn) {
   }
 }
 
+/* ---------- Shared workspace: sync notices, sign-in, import ---------- */
+const ACTION_TEXT = { approve: 'Not approved.', 'save-graphic': 'Design not saved yet.', revision: 'Feedback not sent yet.', edit: 'Caption edit not saved yet.', retry: 'Not retried.', cancel: 'Not cancelled.', create: 'Not saved.', save: 'Not saved.' };
+const ago = (ts) => {
+  if (!ts) return '';
+  const s = Math.round((Date.now() - ts) / 1000);
+  return s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : fmtTime(ts);
+};
+const devName = (d) => (d === 'phone' ? 'your phone' : d === 'computer' ? 'your computer' : 'another device');
+
+function syncNotice(jobId, { studio = false } = {}) {
+  const ws = S.ws;
+  if (ws.mode !== 'shared') return '';
+  const c = ws.conflicts[jobId];
+  const u = ws.updates[jobId];
+  if (c) {
+    return `<div class="sync-box conflict" role="alert" data-testid="conflict">
+      <p><strong>${ACTION_TEXT[c.action] || 'Not saved.'}</strong> This job changed on ${devName(c.entry.updatedBy)} ${ago(c.entry.updatedAt)} and you were looking at an older version:</p>
+      <ul>${c.changes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+      <p class="mini">${studio ? 'Your edits in this editor are kept when you load the latest version.' : 'Load the latest version and review it before approving.'}</p>
+      <button class="btn btn-primary" data-load-latest="${jobId}">${studio ? 'Load latest and keep my edits' : 'Load the latest version'}</button>
+    </div>`;
+  }
+  if (u) {
+    return `<div class="sync-box update" role="status" data-testid="remote-update">
+      <p><strong>Updated on ${devName(u.entry.updatedBy)} ${ago(u.entry.updatedAt)}.</strong> You’re viewing an older version.</p>
+      <ul>${u.changes.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+      <button class="btn btn-primary" data-load-latest="${jobId}">${studio ? 'Load latest and keep my edits' : 'Load the latest version'}</button>
+    </div>`;
+  }
+  if (ws.status === 'signed_out') return `<div class="sync-box conflict" role="alert"><p><strong>You’re signed out.</strong> Changes can’t be saved until you <a href="#/workspace">sign in again</a>.</p></div>`;
+  if (ws.status === 'offline') return '<div class="sync-box update" role="status"><p><strong>Can’t reach the HQ server.</strong> Changes won’t save until the connection is back.</p></div>';
+  return '';
+}
+
+function notFound() {
+  const ws = S.ws;
+  if (ws.mode === 'local' && ws.authConfigured) {
+    return `<section class="panel"><h1>Job not in this browser</h1><p>If it’s in the shared workspace, <a href="#/workspace" data-testid="signin-link">sign in</a> to open it.</p></section>`;
+  }
+  return `<section class="panel"><h1>Job not found</h1><p><a href="#/">Back to HQ</a></p></section>`;
+}
+
+function wsPillText() {
+  const ws = S.ws;
+  if (!ws.ready) return 'Loading…';
+  if (ws.mode === 'shared') return ws.status === 'signed_out' ? 'Signed out' : ws.status === 'offline' ? 'Offline' : 'Shared workspace';
+  return ws.authConfigured ? 'This browser only' : 'Private demo';
+}
+
+function renderWorkspace() {
+  const ws = S.ws;
+  const local = S.localBundles();
+  let body;
+  if (!ws.authConfigured) {
+    body = `<section class="panel"><h2>Shared workspace is off</h2>
+      <p>This server has no owner password yet, so everything stays in this browser (the local demo).</p>
+      <p>To use one private workspace on your laptop and phone: stop the server, run <code>npm run set-password</code>, then start it with <code>npm run start:env</code>.</p></section>`;
+  } else if (!ws.signedIn) {
+    body = `<section class="panel narrow"><h2>Sign in</h2>
+      <form id="signin-form" novalidate>
+        <label for="ws-password">Owner password</label>
+        <input id="ws-password" type="password" autocomplete="current-password" required>
+        <p class="form-error" id="signin-error" role="alert" ${ui.signinError ? '' : 'hidden'}>${esc(ui.signinError || '')}</p>
+        <button class="btn btn-primary" type="submit" ${ui.signingIn ? 'disabled' : ''}>${ui.signingIn ? 'Signing in…' : 'Sign in'}</button>
+      </form>
+      <p class="mini">Until you sign in, you’re using this browser’s local demo. Nothing from the shared workspace is visible here.</p></section>`;
+  } else {
+    const plan = ui.importPlan;
+    const res = ui.importResult;
+    body = `<section class="panel">
+      <h2>You’re signed in</h2>
+      <p>Using: <strong>${ws.mode === 'shared' ? 'the shared workspace (laptop and phone)' : 'this browser only (local demo)'}</strong></p>
+      <div class="row-actions">
+        ${ws.mode === 'shared' ? '<button class="btn" data-mode="local">Switch to this browser only</button>' : '<button class="btn btn-primary" data-mode="shared">Use the shared workspace</button>'}
+        <button class="btn btn-ghost" data-signout>Sign out</button>
+      </div>
+    </section>
+    <section class="panel" aria-labelledby="import-h">
+      <h2 id="import-h">Import this browser’s work</h2>
+      <p>This browser has <strong>${local.bundles.length} job${local.bundles.length === 1 ? '' : 's'}</strong> saved locally. Importing copies them, with their photos and logo, into the shared workspace. The originals stay in this browser. Importing twice never duplicates a job.</p>
+      ${local.bundles.length ? `<button class="btn" data-import-preview ${ui.importBusy ? 'disabled' : ''}>Preview import</button>` : ''}
+      ${plan ? renderImportPlan(plan) : ''}
+      ${res ? `<div class="import-result" role="status" data-testid="import-result"><p><strong>Import finished.</strong> ${res.imported.length} job${res.imported.length === 1 ? '' : 's'} imported, ${res.skipped.length} already in the workspace (kept as they are). ${res.uploaded} image${res.uploaded === 1 ? '' : 's'} uploaded.${res.brandSet ? ' Logo set as the workspace logo.' : ''}</p>${res.missing.length ? `<p class="warn">Missing images (not in this browser): ${res.missing.map((m) => esc(m.label)).join('; ')}.</p>` : ''}${res.failed.length ? `<p class="warn">Upload failed: ${res.failed.map((m) => esc(m.label)).join('; ')}. Retry the import to try again.</p>` : ''}</div>` : ''}
+    </section>`;
+  }
+  return `<header class="cal-head"><h1>Workspace</h1><p class="mini">Private. Data and images are only available to the signed-in owner. Nothing is published.</p></header>${body}`;
+}
+
+function renderImportPlan(plan) {
+  const willImport = new Set(plan.dry.imported);
+  return `<div class="import-plan" data-testid="import-plan">
+    <table><thead><tr><th scope="col">Job</th><th scope="col">Versions</th><th scope="col">Import</th></tr></thead><tbody>
+    ${plan.bundles.map((b) => {
+      const c = b.tasks.find((t) => t.type === 'copy');
+      const g = b.tasks.find((t) => t.type === 'graphic');
+      return `<tr><td><strong>${esc(briefTitle(b.job.brief))}</strong><br><span class="mini">${b.job.platform}, ${fmtDate(b.job.targetDate)}${b.job.approval ? ` · approved caption v${b.job.approval.copyVersion} + graphic v${b.job.approval.graphicVersion}` : ''}</span></td>
+        <td>Caption ${c.versions.length}, graphic ${g.versions.length}</td>
+        <td>${willImport.has(b.job.id) ? 'Will import' : 'Already in workspace: skipped'}</td></tr>`;
+    }).join('')}
+    </tbody></table>
+    <p>${plan.refs.length} image${plan.refs.length === 1 ? '' : 's'} referenced: ${plan.refs.filter((r) => r.local || r.server).length} available.</p>
+    ${plan.refs.some((r) => !r.local && !r.server) ? `<p class="warn" data-testid="import-missing"><strong>Missing from this browser:</strong> ${plan.refs.filter((r) => !r.local && !r.server).map((r) => esc(r.label)).join('; ')}. Those versions will import without their image.</p>` : ''}
+    <button class="btn btn-primary" data-import-commit ${ui.importBusy || !willImport.size && !(plan.brand.logoId && plan.dry.brandSet) ? 'disabled' : ''}>${willImport.size ? `Import ${willImport.size} job${willImport.size === 1 ? '' : 's'}` : 'Nothing new to import'}</button>
+  </div>`;
+}
+
+function assetRefs(bundles, brandData) {
+  const refs = new Map();
+  const add = (id, kind, name, label) => { if (id && !refs.has(id)) refs.set(id, { id, kind, name, label }); };
+  for (const b of bundles) {
+    const g = b.tasks.find((t) => t.type === 'graphic');
+    for (const v of g.versions) {
+      if (v.content.mode !== 'photo') continue;
+      add(v.content.photoId, 'photo', v.content.photoName, `photo “${v.content.photoName}” (${briefTitle(b.job.brief)}, graphic v${v.n})`);
+      add(v.content.logoId, 'logo', v.content.logoName, `logo “${v.content.logoName}”`);
+    }
+  }
+  add(brandData.logoId, 'logo', brandData.logoName, `logo “${brandData.logoName}”`);
+  return [...refs.values()];
+}
+
+async function buildImportPlan() {
+  const { bundles, brand } = S.localBundles();
+  const refs = assetRefs(bundles, brand);
+  for (const r of refs) r.local = !!(await P.getLocalAsset(r.id).catch(() => null));
+  const check = await fetch('api/assets/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: refs.map((r) => r.id) }) }).then((x) => x.json()).catch(() => ({ present: [] }));
+  for (const r of refs) r.server = (check.present || []).includes(r.id);
+  const dry = await S.importPreview(bundles, brand);
+  return { bundles, brand, refs, dry };
+}
+
+async function runImport(plan) {
+  let uploaded = 0;
+  const failed = [];
+  for (const r of plan.refs) {
+    if (r.server || !r.local) continue;
+    try {
+      const rec = await P.getLocalAsset(r.id);
+      await P.uploadAsset({ id: rec.id, kind: rec.kind, name: rec.name, blob: rec.blob });
+      uploaded++;
+    } catch (e) {
+      failed.push({ ...r, error: e.message });
+    }
+  }
+  const out = await S.importCommit(plan.bundles, plan.brand);
+  return { ...out, uploaded, failed, missing: plan.refs.filter((r) => !r.local && !r.server) };
+}
+
 /* ---------- Render loop ---------- */
 let lastSig = '';
 function signature() {
   const s = S.getState();
-  return [S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
+  const w = S.ws;
+  return [w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
 }
 
 function render() {
@@ -658,7 +823,11 @@ function render() {
 
   document.querySelectorAll('[data-nav]').forEach((a) => a.toggleAttribute('aria-current', a.dataset.nav === (r.view === 'calendar' ? 'calendar' : r.view === 'hq' ? 'hq' : '')));
   $main.dataset.view = r.view;
-  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'calendar' ? renderCalendar() : renderHQ();
+  S.setFocusJob(r.view === 'job' || r.view === 'studio' ? r.id : null);
+  const pill = document.getElementById('ws-pill');
+  if (pill) { pill.textContent = wsPillText(); pill.dataset.mode = S.ws.mode; pill.dataset.status = S.ws.status; }
+  if (!S.ws.ready) { $main.innerHTML = '<p class="empty">Loading your workspace…</p>'; return; }
+  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'calendar' ? renderCalendar() : r.view === 'workspace' ? renderWorkspace() : renderHQ();
   $sheet.innerHTML = (r.agent ? renderAgentSheet(r.agent) : '') + (ui.lightbox ? renderLightbox() : '');
   document.body.classList.toggle('no-scroll', !!(r.agent || ui.lightbox));
 
@@ -675,15 +844,45 @@ function render() {
 }
 
 setInterval(() => {
-  const changed = S.tick();
-  if (route().view === 'studio') return; // never rebuild the editor under the user's fingers
-  if (changed || signature() !== lastSig) render();
+  if (!S.ws.ready) return;
+  S.tick();
+  const r = route();
+  if (r.view === 'studio') {
+    // Never rebuild the editor under the user's fingers: only refresh the sync notice.
+    const slot = document.getElementById('sync-slot');
+    const html = syncNotice(r.id, { studio: true });
+    if (slot && slot.dataset.html !== html) { slot.innerHTML = html; slot.dataset.html = html; }
+    return;
+  }
+  if (signature() !== lastSig) render();
 }, 400);
+setInterval(() => S.poll(), 3000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) S.poll(); });
 
 /* ---------- Events ---------- */
 let submitLock = false;
 document.addEventListener('submit', (e) => {
   const f = e.target;
+  if (f.id === 'signin-form') {
+    e.preventDefault();
+    if (ui.signingIn) return;
+    const pw = document.getElementById('ws-password').value;
+    if (!pw) { ui.signinError = 'Enter the owner password.'; render(); return; }
+    ui.signingIn = true;
+    ui.signinError = '';
+    render();
+    S.signIn(pw).then((res) => {
+      ui.signingIn = false;
+      const el = document.getElementById('ws-password');
+      if (el) el.value = '';
+      if (!res.ok) { ui.signinError = res.error; render(); return; }
+      toast('Signed in. Using the shared workspace.');
+      const next = ui.afterSignIn;
+      ui.afterSignIn = null;
+      if (next) location.hash = next; else render();
+    });
+    return;
+  }
   if (f.id === 'studio-form') {
     e.preventDefault();
     saveStudio();
@@ -698,12 +897,14 @@ document.addEventListener('submit', (e) => {
     if (!f.targetDate.value) { err.textContent = 'Choose a target date.'; err.hidden = false; return; }
     submitLock = true;
     setTimeout(() => (submitLock = false), 1200);
-    const job = S.createJob({ brief, platform: f.platform.value, targetDate: f.targetDate.value });
-    f.brief.value = '';
-    document.getElementById('brief').value = '';
-    toast('Brief sent. Vektor is delegating.');
-    render();
-    document.querySelector('.stage')?.scrollIntoView({ block: 'start' });
+    S.createJob({ brief, platform: f.platform.value, targetDate: f.targetDate.value }).then((res) => {
+      if (!res.ok) { err.textContent = res.error || 'The job wasn’t saved. Try again.'; err.hidden = false; render(); return; }
+      const ta = document.getElementById('brief');
+      if (ta) ta.value = '';
+      toast('Brief sent. Vektor is delegating.');
+      render();
+      document.querySelector('.stage')?.scrollIntoView({ block: 'start' });
+    });
     return;
   }
   if (f.dataset.revForm) {
@@ -714,22 +915,30 @@ document.addEventListener('submit', (e) => {
     if (!fb) { ta.focus(); ta.setAttribute('aria-invalid', 'true'); return; }
     if (S.getTask(id).pending) return; // already sent: ignore a second tap
     f.querySelectorAll('button').forEach((b) => (b.disabled = true));
-    ta.value = '';
-    delete ui.revision[id];
-    S.requestRevision(id, fb);
-    toast(`Feedback sent to ${S.AGENTS[S.getTask(id).agent].name}.`);
-    render();
+    S.requestRevision(id, fb).then((res) => {
+      if (res.ok) {
+        const box = document.getElementById(`fb-${id}`);
+        if (box) box.value = '';
+        delete ui.revision[id];
+        toast(`Feedback sent to ${S.AGENTS[S.getTask(id).agent].name}.`);
+      } else if (res.error) toast(res.error);
+      render(); // on a conflict the form stays open with your feedback in it
+    });
     return;
   }
   if (f.dataset.editForm) {
     e.preventDefault();
     const id = f.dataset.editForm;
     const ta = document.getElementById(`ed-${id}`);
-    S.editCaption(id, ta.value);
-    ta.value = '';
-    delete ui.editing[id];
-    toast('Saved as a new caption version.');
-    render();
+    f.querySelectorAll('button').forEach((b) => (b.disabled = true));
+    S.editCaption(id, ta.value).then((res) => {
+      if (res.ok && !res.noop) {
+        delete ui.editing[id];
+        toast('Saved as a new caption version.');
+      } else if (res.error) toast(res.error);
+      else if (res.noop) delete ui.editing[id];
+      render();
+    });
   }
 });
 
@@ -746,12 +955,47 @@ document.addEventListener('click', (e) => {
   }
   if (t.dataset.retry) {
     t.disabled = true;
-    if (S.retryTask(t.dataset.retry)) toast(`Retrying with ${S.AGENTS[S.getTask(t.dataset.retry).agent].name}.`);
+    const name = S.AGENTS[S.getTask(t.dataset.retry).agent].name;
+    S.retryTask(t.dataset.retry).then((res) => { if (res.ok) toast(`Retrying with ${name}.`); else if (res.error) toast(res.error); render(); });
+    return;
+  }
+  if (t.dataset.cancelRev) { t.disabled = true; S.cancelFailedRevision(t.dataset.cancelRev).then((res) => { if (res.ok) toast('Revision cancelled. Caption unchanged.'); else if (res.error) toast(res.error); render(); }); return; }
+  if (t.dataset.approve) {
+    t.disabled = true;
+    S.approveJob(t.dataset.approve).then((res) => {
+      if (res.ok && !res.noop) toast('Approved. Added to the private calendar.');
+      else if (res.conflict) toast('Not approved: a newer version was saved on another device.');
+      else if (res.error) toast(res.error);
+      render();
+      if (res.conflict) document.querySelector('[data-testid="conflict"]')?.scrollIntoView({ block: 'center' });
+    });
+    return;
+  }
+  if (t.dataset.loadLatest) {
+    const id = t.dataset.loadLatest;
+    S.loadLatest(id);
+    if (ui.studio?.jobId === id) {
+      const task = S.getTask(ui.studio.taskId);
+      ui.studio.baseVersions = task.versions.length;
+      ui.studio.error = '';
+      ui.studio.saving = false;
+      toast(`Loaded the latest version. Your edits are kept; saving now creates graphic v${task.versions.length + 1}.`);
+    } else toast('Loaded the latest version.');
     render();
     return;
   }
-  if (t.dataset.cancelRev) { S.cancelFailedRevision(t.dataset.cancelRev); toast('Revision cancelled. Caption unchanged.'); render(); return; }
-  if (t.dataset.approve) { S.approveJob(t.dataset.approve); toast('Approved. Added to the private calendar.'); render(); return; }
+  if (t.dataset.mode) { S.chooseMode(t.dataset.mode).then(() => { toast(t.dataset.mode === 'shared' ? 'Using the shared workspace.' : 'Using this browser only.'); render(); }); return; }
+  if (t.matches('[data-signout]')) { S.signOut().then(() => { ui.importPlan = ui.importResult = null; toast('Signed out.'); render(); }); return; }
+  if (t.matches('[data-import-preview]')) {
+    ui.importBusy = true; ui.importResult = null; render();
+    buildImportPlan().then((plan) => { ui.importPlan = plan; }).catch((err) => toast(err.message)).finally(() => { ui.importBusy = false; render(); });
+    return;
+  }
+  if (t.matches('[data-import-commit]') && ui.importPlan && !ui.importBusy) {
+    ui.importBusy = true; render();
+    runImport(ui.importPlan).then((res) => { ui.importResult = res; ui.importPlan = null; }).catch((err) => toast(err.message)).finally(() => { ui.importBusy = false; render(); });
+    return;
+  }
   if (t.dataset.lightbox) { ui.lightbox = t.dataset.lightbox; render(); document.querySelector('[data-close-lb]')?.focus(); return; }
   if (t.matches('[data-close-lb]')) { ui.lightbox = null; render(); return; }
   if (t.dataset.download) {
@@ -780,10 +1024,23 @@ document.addEventListener('keydown', (e) => {
   if (ui.lightbox) { ui.lightbox = null; render(); } else if (route().agent) location.hash = route().base || '#/';
 });
 
-window.addEventListener('hashchange', () => {
-  ui.lightbox = null;
+let restoringHash = false;
+window.addEventListener('beforeunload', (e) => {
+  if (ui.studio?.dirty) { e.preventDefault(); e.returnValue = ''; }
+});
+window.addEventListener('hashchange', (e) => {
+  if (restoringHash) { restoringHash = false; return; }
   const r = route();
+  if (r.view !== 'studio' && ui.studio?.dirty) {
+    if (!window.confirm('You have unsaved changes in Photo layout. Leave and discard them?')) {
+      restoringHash = true;
+      location.hash = new URL(e.oldURL).hash;
+      return;
+    }
+  }
+  ui.lightbox = null;
   if (r.view !== 'studio') ui.studio = null; // unsaved studio drafts are discarded on leaving
+  if (r.view === 'job' && !S.getJob(r.id) && S.ws.mode === 'local' && S.ws.authConfigured) ui.afterSignIn = location.hash;
   if (r.view === 'calendar') ui.calMonth = null;
   render();
   if (r.agent) document.querySelector('.sheet [data-close]')?.focus();
@@ -791,6 +1048,11 @@ window.addEventListener('hashchange', () => {
   ui.prevView = r.view; ui.prevId = r.id;
 });
 
-S.tick();
 render();
-S.loadQuillProvider().then(() => { S.tick(); render(); });
+S.init().then(async () => {
+  const r = route();
+  if (r.view === 'job' && !S.getJob(r.id) && S.ws.mode === 'local' && S.ws.authConfigured) ui.afterSignIn = location.hash;
+  await S.loadQuillProvider();
+  S.tick();
+  render();
+});

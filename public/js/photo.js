@@ -32,7 +32,7 @@ function openDb() {
 
 const isQuota = (e) => e && (e.name === 'QuotaExceededError' || e.code === 22 || /quota/i.test(e.message || ''));
 
-export async function putAsset(rec) {
+export async function putLocalAsset(rec) {
   const db = await openDb();
   await new Promise((resolve, reject) => {
     let tx;
@@ -51,7 +51,7 @@ export async function putAsset(rec) {
   });
 }
 
-export async function getAsset(id) {
+export async function getLocalAsset(id) {
   if (!id) return null;
   const db = await openDb();
   return new Promise((resolve) => {
@@ -61,11 +61,44 @@ export async function getAsset(id) {
   });
 }
 
+/* ---------- Backend switch: this browser (IndexedDB) or the private shared workspace (server) ---------- */
+let backend = 'local';
+export function setAssetBackend(b) { backend = b === 'server' ? 'server' : 'local'; }
+export const assetBackend = () => backend;
+
+export async function uploadAsset(rec) {
+  let r;
+  try {
+    r = await fetch(`api/assets/${rec.id}`, { method: 'POST', body: rec.blob, headers: { 'Content-Type': rec.blob.type, 'X-Asset-Kind': rec.kind, 'X-Asset-Name': encodeURIComponent(rec.name || ''), 'X-HQ-Device': 'upload' } });
+  } catch {
+    throw new AssetError('Can’t reach the HQ server, so the image wasn’t saved. Nothing was changed.');
+  }
+  if (r.ok) return;
+  let msg = '';
+  try { msg = (await r.json()).error; } catch { /* ignore */ }
+  if (r.status === 401) throw new AssetError('You’re signed out, so the image wasn’t saved. Sign in, then save again.');
+  throw new AssetError(msg || `The server couldn’t store the image (${r.status}). Nothing was saved.`);
+}
+
+async function fetchServerAsset(id) {
+  try {
+    const r = await fetch(`api/assets/${id}`, { cache: 'no-store' });
+    return r.ok ? { id, blob: await r.blob() } : null;
+  } catch {
+    return null;
+  }
+}
+
+export const putAsset = (rec) => (backend === 'server' ? uploadAsset(rec) : putLocalAsset(rec));
+export const getAsset = (id) => (!id ? Promise.resolve(null) : backend === 'server' ? fetchServerAsset(id) : getLocalAsset(id));
+
 const bitmapCache = new Map(); // asset id -> Promise<ImageBitmap|null>
 export function loadBitmap(id) {
   if (!id) return Promise.resolve(null);
   if (!bitmapCache.has(id)) {
-    bitmapCache.set(id, getAsset(id).then((rec) => (rec ? createImageBitmap(rec.blob) : null)).catch(() => null));
+    const p = getAsset(id).then((rec) => (rec ? createImageBitmap(rec.blob) : null)).catch(() => null);
+    bitmapCache.set(id, p);
+    p.then((b) => { if (!b) bitmapCache.delete(id); }); // don't cache a miss (e.g. signed out); retry next time
   }
   return bitmapCache.get(id);
 }
@@ -290,6 +323,7 @@ export function renderedVersion(key, spec, onReady) {
         const missing = [!photo && 'photo', !logo && 'logo'].filter(Boolean);
         const blob = await renderToPngBlob(spec, { photo, logo });
         rendered.set(key, { url: URL.createObjectURL(blob), blob, missing });
+        if (missing.length) setTimeout(() => rendered.delete(key), 5000); // try again later (e.g. after sign-in)
       })
       .catch((e) => rendered.set(key, { error: e.message || 'Render failed' }))
       .finally(() => onReady && onReady());

@@ -1,8 +1,8 @@
 {
   "name": "nexai-marketing-hq",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Nexai Digital's private internal AI marketing dashboard (milestone 3: Prism Photo layout).",
+  "description": "Nexai Digital's private internal AI marketing dashboard (milestone 4: shared private workspace).",
   "scripts": {
     "start": "node server.js",
     "start:env": "node --env-file=.env server.js",
@@ -10,7 +10,9 @@
     "test:m2": "node tests/quill-m2.mjs",
     "test:api": "node tests/anthropic-path.mjs",
     "test:m3": "node tests/prism-m3.mjs",
-    "fixtures": "node tests/make-fixtures.cjs"
+    "fixtures": "node tests/make-fixtures.cjs",
+    "set-password": "node scripts/set-owner-password.cjs",
+    "test:m4": "node tests/shared-m4.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0"

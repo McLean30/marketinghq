@@ -1,11 +1,19 @@
-// Persistence + domain logic. Browser storage only (milestone 1 prototype).
+// Jobs, tasks, versions, approvals. Two backends:
+//   local  - this browser's localStorage (the original demo, works signed-out)
+//   shared - the private server workspace (owner sign-in), shared by laptop and phone
+// Every change goes through commit(jobId, mutate). In shared mode the job is saved against the revision this
+// device last saw; if another device saved first, the server refuses it and we never overwrite silently.
 import { draftCaption, reviseCaption, draftGraphic, reviseGraphic } from './generators.js';
+import { setAssetBackend } from './photo.js';
 
 const KEY = 'nexai-hq:v1';
+const MODE_KEY = 'nexai-hq:mode';
+const DEVICE_KEY = 'nexai-hq:device';
 const DELEGATE_MS = 1600; // Manager briefing time
 const COPY_MS = 4200;
 const GRAPHIC_MS = 5600;
 const REVISION_MS = 3800;
+const STALE_REQUEST_MS = 5 * 60 * 1000;
 
 export const AGENTS = {
   manager: { id: 'manager', name: 'Vektor', role: 'Marketing Manager' },
@@ -16,115 +24,361 @@ export const AGENTS = {
 export const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X'];
 
 const empty = () => ({ jobs: [], tasks: [], log: [], brand: {} });
+const clone = (x) => (x == null ? x : JSON.parse(JSON.stringify(x)));
+const uid = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
 
-/* ---------- Quill provider (server-side AI) ---------- */
-// provider: 'anthropic' (live AI), 'mock' (test fixture) or 'demo' (local templates, no server AI).
+/* ---------- Device identity (labels "your phone" / "your computer" in change notes) ---------- */
+export const DEVICE = (() => {
+  let id = lsGet(DEVICE_KEY);
+  if (!id) { id = uid('dev'); lsSet(DEVICE_KEY, id); }
+  return id;
+})();
+export const deviceKind = () => (matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 700 ? 'phone' : 'computer');
+
+/* ---------- Mode, auth and sync status ---------- */
+export const ws = {
+  mode: 'local', // 'local' | 'shared'
+  authConfigured: false,
+  signedIn: false,
+  ready: false,
+  status: 'ok', // 'ok' | 'offline' | 'signed_out'
+  rev: 0,
+  synced: {}, // jobId -> { rev, updatedAt, updatedBy }
+  brandRev: 0,
+  updates: {}, // jobId -> { changes, entry } : newer version on the server, not yet loaded (job is open)
+  conflicts: {}, // jobId -> { action, changes, entry } : a save of yours that the server refused
+  focusJob: null,
+};
+
+/* ---------- Quill provider ---------- */
 export let quill = { provider: 'demo', model: null, label: 'Local demo templates', checked: false };
 export async function loadQuillProvider() {
   try {
     const r = await fetch('api/quill/status', { cache: 'no-store' });
     if (r.ok) {
       const info = await r.json();
-      quill = { provider: info.provider === 'live' ? 'anthropic' : info.provider, model: info.model, label: info.label, checked: true };
+      quill = { provider: info.provider === 'live' ? 'anthropic' : info.provider, model: info.model, label: info.label, signInRequired: !!info.signInRequired, checked: true };
     }
   } catch {
     quill = { ...quill, checked: true };
   }
-  listeners.forEach((fn) => fn());
+  notify();
   return quill;
 }
 const copyEngine = () => (quill.provider === 'demo' ? 'demo' : 'ai');
-const inFlight = new Set(); // task ids with a caption request currently awaiting the server (this tab only)
-let state = load();
-const listeners = new Set();
+const inFlight = new Set(); // task ids with a caption request awaiting the server (this tab)
+// A request cut off because this page is being refreshed or closed isn't a failure: the next load offers Retry.
+let unloading = false;
+addEventListener('pagehide', () => { unloading = true; });
+addEventListener('pageshow', () => { unloading = false; });
 
-function load() {
+/* ---------- State ---------- */
+let state = loadLocal();
+const listeners = new Set();
+const notify = () => listeners.forEach((fn) => fn());
+export const subscribe = (fn) => listeners.add(fn);
+export const getState = () => state;
+
+function loadLocal() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return empty();
-    const parsed = JSON.parse(raw);
-    return { ...empty(), ...parsed };
+    return { ...empty(), ...JSON.parse(raw) };
   } catch {
     return empty();
   }
 }
+export const readLocalState = loadLocal;
 
-function save() {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(state));
-  } catch {
-    /* storage unavailable: app still works for this tab */
-  }
-  listeners.forEach((fn) => fn());
-}
-
-/** Save and report failure (used where a silent failure would wrongly claim success). */
-function saveStrict() {
+function saveLocal(strict) {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
   } catch (e) {
-    const full = e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message || ''));
-    throw new Error(full ? 'This browser’s storage is full, so the design wasn’t saved. Your job and earlier versions are unchanged.' : 'This browser blocked saving, so the design wasn’t saved. Your job and earlier versions are unchanged.');
-  } finally {
-    listeners.forEach((fn) => fn());
+    if (strict) {
+      const full = e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message || ''));
+      throw new Error(full ? 'This browser’s storage is full, so the change wasn’t saved. Your job and earlier versions are unchanged.' : 'This browser blocked saving, so the change wasn’t saved. Your job and earlier versions are unchanged.');
+    }
   }
 }
-
-export const subscribe = (fn) => listeners.add(fn);
-export const getState = () => state;
-const uid = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 function log(jobId, agent, text) {
   state.log.unshift({ id: uid('log'), jobId, agent, text, at: Date.now() });
-  state.log = state.log.slice(0, 200);
+  state.log = state.log.slice(0, 400);
 }
 
-export function createJob({ brief, platform, targetDate }) {
-  const now = Date.now();
-  const job = {
-    id: uid('job'),
-    brief: brief.trim(),
-    platform,
-    targetDate,
-    createdAt: now,
-    delegatedAt: now + DELEGATE_MS,
-    taskIds: {},
-    approval: null, // { copyVersion, graphicVersion, at }
-    approvals: [],
-  };
-  for (const agentId of ['copywriter', 'designer']) {
-    const task = {
-      id: uid('task'),
-      jobId: job.id,
-      agent: agentId,
-      type: AGENTS[agentId].taskType,
-      instruction:
-        agentId === 'copywriter'
-          ? `Write a ${platform} caption with relevant hashtags for: ${job.brief}`
-          : `Design a branded ${platform} graphic for: ${job.brief}`,
-      createdAt: now,
-      versions: [],
-      pending: {
-        kind: 'initial',
-        engine: agentId === 'copywriter' ? copyEngine() : 'demo',
-        startAt: job.delegatedAt,
-        readyAt: job.delegatedAt + (agentId === 'copywriter' ? COPY_MS : GRAPHIC_MS),
-      },
-    };
-    job.taskIds[task.type] = task.id;
-    state.tasks.push(task);
-  }
-  state.jobs.unshift(job);
-  log(job.id, 'manager', `New brief received for ${platform}, due ${targetDate}.`);
-  log(job.id, 'manager', 'Delegated the caption to Quill and the graphic to Prism.');
-  save();
-  return job;
-}
-
+/* ---------- Job bundles (the unit saved to the server) ---------- */
 export const getJob = (id) => state.jobs.find((j) => j.id === id);
 export const getTask = (id) => state.tasks.find((t) => t.id === id);
 export const jobTasks = (job) => ({ copy: getTask(job.taskIds.copy), graphic: getTask(job.taskIds.graphic) });
 export const currentVersion = (task) => task.versions[task.versions.length - 1] || null;
+
+function bundleOf(jobId) {
+  const job = getJob(jobId);
+  if (!job) return null;
+  return clone({ job, tasks: state.tasks.filter((t) => t.jobId === jobId), log: state.log.filter((l) => l.jobId === jobId) });
+}
+
+function applyBundle(bundle) {
+  const id = bundle.job.id;
+  const i = state.jobs.findIndex((j) => j.id === id);
+  if (i >= 0) state.jobs[i] = clone(bundle.job); else state.jobs.push(clone(bundle.job));
+  state.jobs.sort((a, b) => b.createdAt - a.createdAt);
+  state.tasks = state.tasks.filter((t) => t.jobId !== id).concat(clone(bundle.tasks));
+  state.log = state.log.filter((l) => l.jobId !== id).concat(clone(bundle.log)).sort((a, b) => b.at - a.at);
+}
+function removeJob(id) {
+  state.jobs = state.jobs.filter((j) => j.id !== id);
+  state.tasks = state.tasks.filter((t) => t.jobId !== id);
+  state.log = state.log.filter((l) => l.jobId !== id);
+}
+
+/** Human-readable list of what differs between the bundle you have and the server's. */
+export function describeChanges(mine, theirs) {
+  const out = [];
+  if (!theirs) return out;
+  for (const t of theirs.tasks) {
+    const old = mine?.tasks.find((x) => x.id === t.id);
+    const label = t.type === 'copy' ? 'Caption' : 'Graphic';
+    for (const v of t.versions.slice(old ? old.versions.length : 0)) {
+      const kind = t.type === 'graphic' ? (v.content.mode === 'photo' ? 'Photo layout' : 'simulated') : ({ anthropic: 'AI', mock: 'mock', human: 'edited by you', demo: 'demo' })[v.source] || 'saved';
+      out.push(`${label} v${v.n} saved (${kind})`);
+    }
+    if (t.pending && !old?.pending) out.push(`${label} revision requested${t.pending.feedback ? `: “${t.pending.feedback}”` : ''}`);
+  }
+  const a0 = mine?.job.approval;
+  const a1 = theirs.job.approval;
+  if (a1 && JSON.stringify(a0) !== JSON.stringify(a1)) out.push(`Approved caption v${a1.copyVersion} with graphic v${a1.graphicVersion}`);
+  if (!out.length) out.push('Job details updated');
+  return out;
+}
+
+/* ---------- Server calls ---------- */
+async function api(path, opts = {}) {
+  let r;
+  try {
+    r = await fetch(path, { cache: 'no-store', ...opts, headers: { 'X-HQ-Device': deviceKind(), ...(opts.body && typeof opts.body === 'string' ? { 'Content-Type': 'application/json' } : {}), ...(opts.headers || {}) } });
+  } catch {
+    ws.status = 'offline';
+    notify();
+    throw Object.assign(new Error('Can’t reach the HQ server. Check the server is running and you’re on the same Wi-Fi, then try again.'), { offline: true });
+  }
+  let data = {};
+  try { data = await r.json(); } catch { /* binary or empty */ }
+  if (r.status === 401) {
+    ws.signedIn = false;
+    ws.status = 'signed_out';
+    notify();
+  } else if (ws.status === 'offline') ws.status = 'ok';
+  return { status: r.status, ok: r.ok, data };
+}
+
+/* ---------- The one way state changes ---------- */
+const locks = new Map(); // jobId -> Promise (serialises saves per job)
+
+/**
+ * Apply `mutate` to the job and persist it. `mutate` returns false for "nothing to do".
+ * User actions (background: false) that conflict are rolled back and reported in ws.conflicts.
+ * Background work (agent timers, AI results) that conflicts is re-applied on top of the latest version.
+ */
+export async function commit(jobId, mutate, { background = false, strict = true, action = 'save' } = {}) {
+  if (ws.mode === 'local') {
+    const before = clone(state);
+    const result = mutate();
+    if (result === false) return { ok: true, noop: true };
+    try {
+      saveLocal(strict && !background);
+    } catch (e) {
+      state = before;
+      notify();
+      return { ok: false, error: e.message };
+    }
+    notify();
+    return { ok: true, result };
+  }
+  if (background && (locks.has(jobId) || ws.updates[jobId] || ws.conflicts[jobId])) return { ok: true, noop: true, skipped: true };
+  const prev = locks.get(jobId) || Promise.resolve();
+  const run = prev.then(() => commitShared(jobId, mutate, background, action));
+  const guard = run.catch(() => {});
+  locks.set(jobId, guard);
+  try {
+    return await run;
+  } finally {
+    if (locks.get(jobId) === guard) locks.delete(jobId);
+  }
+}
+
+async function commitShared(jobId, mutate, background, action) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const before = bundleOf(jobId);
+    const result = mutate();
+    if (result === false) return { ok: true, noop: true };
+    const bundle = bundleOf(jobId);
+    notify();
+    let res;
+    try {
+      res = await api(`api/workspace/jobs/${jobId}`, { method: 'PUT', body: JSON.stringify({ baseRev: ws.synced[jobId]?.rev || 0, bundle }) });
+    } catch (e) {
+      rollback(jobId, before);
+      return { ok: false, error: e.message };
+    }
+    if (res.ok) {
+      ws.synced[jobId] = { rev: res.data.rev, updatedAt: res.data.updatedAt, updatedBy: deviceKind() };
+      ws.rev = Math.max(ws.rev, res.data.wsRev);
+      return { ok: true, result };
+    }
+    if (res.status === 409) {
+      const current = res.data.current;
+      if (background && current) {
+        applyBundle(current.bundle);
+        ws.synced[jobId] = { rev: current.rev, updatedAt: current.updatedAt, updatedBy: current.updatedBy };
+        continue; // re-apply the background change on top of the latest version
+      }
+      rollback(jobId, before);
+      if (current) ws.conflicts[jobId] = { action, changes: describeChanges(before, current.bundle), entry: current };
+      notify();
+      return { ok: false, conflict: true };
+    }
+    rollback(jobId, before);
+    return { ok: false, error: res.data.error || `Save failed (${res.status}).` };
+  }
+  return { ok: false, error: 'This job kept changing on another device. Reload and try again.' };
+}
+
+function rollback(jobId, before) {
+  if (before) applyBundle(before); else removeJob(jobId);
+  notify();
+}
+
+/** Load the newest server version of a job (after a conflict or an "updated elsewhere" notice). */
+export function loadLatest(jobId) {
+  const src = ws.conflicts[jobId]?.entry || ws.updates[jobId]?.entry;
+  if (!src) return;
+  applyBundle(src.bundle);
+  ws.synced[jobId] = { rev: src.rev, updatedAt: src.updatedAt, updatedBy: src.updatedBy };
+  delete ws.conflicts[jobId];
+  delete ws.updates[jobId];
+  notify();
+}
+export const dismissConflict = (jobId) => { delete ws.conflicts[jobId]; notify(); };
+export const setFocusJob = (jobId) => { ws.focusJob = jobId || null; };
+
+/* ---------- Boot, sign-in and polling ---------- */
+export async function init() {
+  try {
+    const r = await api('api/auth/status');
+    ws.authConfigured = !!r.data.authConfigured;
+    ws.signedIn = !!r.data.signedIn;
+  } catch {
+    ws.authConfigured = false;
+  }
+  const pref = lsGet(MODE_KEY);
+  await setMode(ws.signedIn && pref !== 'local' ? 'shared' : 'local');
+  ws.ready = true;
+  notify();
+}
+
+export async function setMode(mode) {
+  if (mode === 'shared' && !ws.signedIn) mode = 'local';
+  ws.mode = mode;
+  setAssetBackend(mode === 'shared' ? 'server' : 'local');
+  ws.updates = {};
+  ws.conflicts = {};
+  ws.synced = {};
+  if (mode === 'shared') {
+    state = empty();
+    await pullWorkspace(true);
+  } else {
+    state = loadLocal();
+  }
+  notify();
+}
+export function chooseMode(mode) {
+  lsSet(MODE_KEY, mode);
+  return setMode(mode);
+}
+
+export async function signIn(password) {
+  const r = await api('api/auth/login', { method: 'POST', body: JSON.stringify({ password }) });
+  if (!r.ok) return { ok: false, error: r.data.error || 'Sign-in failed.' };
+  ws.signedIn = true;
+  ws.status = 'ok';
+  lsSet(MODE_KEY, 'shared');
+  await setMode('shared');
+  await loadQuillProvider();
+  return { ok: true };
+}
+
+export async function signOut() {
+  await api('api/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
+  ws.signedIn = false;
+  await setMode('local');
+  await loadQuillProvider();
+}
+
+/** Fetch the server workspace. Jobs open on screen are not swapped under you: you get a notice instead. */
+async function pullWorkspace(initial = false) {
+  const r = await api('api/workspace');
+  if (!r.ok) return false;
+  const snap = r.data;
+  for (const e of snap.jobs) {
+    const known = ws.synced[e.id];
+    if (known && known.rev >= e.rev) continue;
+    if (!initial && known && e.id === ws.focusJob && !ws.conflicts[e.id]) {
+      ws.updates[e.id] = { changes: describeChanges(bundleOf(e.id), e.bundle), entry: e };
+      continue;
+    }
+    if (locks.has(e.id)) continue; // a save of ours is in flight; its result decides
+    applyBundle(e.bundle);
+    ws.synced[e.id] = { rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy };
+  }
+  state.brand = { ...(snap.brand.data || {}) };
+  ws.brandRev = snap.brand.rev;
+  ws.rev = snap.rev;
+  notify();
+  return true;
+}
+
+let polling = false;
+export async function poll() {
+  if (ws.mode !== 'shared' || polling) return;
+  polling = true;
+  try {
+    const r = await api('api/workspace/rev');
+    if (r.ok && r.data.rev !== ws.rev) await pullWorkspace();
+  } catch { /* offline: status already set */ } finally {
+    polling = false;
+  }
+}
+
+/* ---------- Domain actions ---------- */
+export async function createJob({ brief, platform, targetDate }) {
+  const now = Date.now();
+  const job = { id: uid('job'), brief: brief.trim(), platform, targetDate, createdAt: now, delegatedAt: now + DELEGATE_MS, taskIds: {}, approval: null, approvals: [] };
+  const res = await commit(job.id, () => {
+    const tasks = ['copywriter', 'designer'].map((agentId) => {
+      const task = {
+        id: uid('task'),
+        jobId: job.id,
+        agent: agentId,
+        type: AGENTS[agentId].taskType,
+        instruction: agentId === 'copywriter' ? `Write a ${platform} caption with relevant hashtags for: ${job.brief}` : `Design a branded ${platform} graphic for: ${job.brief}`,
+        createdAt: now,
+        versions: [],
+        pending: { kind: 'initial', engine: agentId === 'copywriter' ? copyEngine() : 'demo', startAt: job.delegatedAt, readyAt: job.delegatedAt + (agentId === 'copywriter' ? COPY_MS : GRAPHIC_MS) },
+      };
+      job.taskIds[task.type] = task.id;
+      return task;
+    });
+    state.jobs.unshift(job);
+    state.tasks.push(...tasks);
+    log(job.id, 'manager', `New brief received for ${platform}, due ${targetDate}.`);
+    log(job.id, 'manager', 'Delegated the caption to Quill and the graphic to Prism.');
+    return job;
+  }, { action: 'create' });
+  return res.ok ? { ok: true, job } : res;
+}
 
 export function taskStatus(task, now = Date.now()) {
   if (task.pending?.error) return 'failed';
@@ -132,8 +386,7 @@ export function taskStatus(task, now = Date.now()) {
     if (now < task.pending.startAt) return 'queued';
     return task.pending.kind === 'revision' ? 'revising' : 'working';
   }
-  const job = getJob(task.jobId);
-  const st = jobStatus(job, now);
+  const st = jobStatus(getJob(task.jobId), now);
   if (st === 'approved') return 'approved';
   return 'awaiting_review';
 }
@@ -144,8 +397,7 @@ export function jobStatus(job, now = Date.now()) {
   if (copy.pending?.error || graphic.pending?.error) return 'needs_retry';
   if (copy.pending || graphic.pending) return 'in_production';
   if (job.approval) {
-    const fresh =
-      job.approval.copyVersion === copy.versions.length && job.approval.graphicVersion === graphic.versions.length;
+    const fresh = job.approval.copyVersion === copy.versions.length && job.approval.graphicVersion === graphic.versions.length;
     return fresh ? 'approved' : 'needs_reapproval';
   }
   return 'ready_for_review';
@@ -166,90 +418,88 @@ export const STATUS_LABEL = {
   needs_retry: 'Needs your retry',
 };
 
-/** Resolve any agent work whose time has come. Returns true if state changed. */
+/** Resolve agent work whose time has come (simulated outputs, AI requests). */
 export function tick(now = Date.now()) {
-  let changed = false;
-  for (const task of state.tasks) {
+  for (const task of state.tasks.slice()) {
     if (!task.pending) continue;
-    if (task.pending.engine === 'ai') {
-      if (dispatchAi(task, now)) changed = true;
-      continue;
-    }
+    if (task.pending.engine === 'ai') { dispatchAi(task.id, now); continue; }
     if (now < task.pending.readyAt) continue;
-    const job = getJob(task.jobId);
-    const prev = currentVersion(task);
-    const n = task.versions.length + 1;
-    let output;
-    if (task.type === 'copy') {
-      output = task.pending.kind === 'initial' ? draftCaption(job) : reviseCaption(job, prev.content, task.pending.feedback, n);
-    } else {
-      // A simulated revision builds on the latest simulated design, even if Photo layout versions came after it.
-      const lastSim = [...task.versions].reverse().find((x) => x.content.mode !== 'photo');
-      const base = lastSim ? lastSim.content : draftGraphic(job).content;
-      output = task.pending.kind === 'initial' ? draftGraphic(job) : reviseGraphic(job, base, task.pending.feedback, n);
-    }
-    task.versions.push({
-      n,
-      content: output.content,
-      notes: output.notes,
-      feedback: task.pending.feedback || null,
-      by: AGENTS[task.agent].name,
-      simulated: true,
-      source: 'demo',
-      createdAt: task.pending.readyAt,
-    });
-    task.pending = null;
-    log(job.id, task.agent, `${AGENTS[task.agent].label} v${n} delivered for review.`);
-    changed = true;
+    const taskId = task.id;
+    commit(task.jobId, () => {
+      const t = getTask(taskId);
+      if (!t?.pending || t.pending.engine === 'ai' || Date.now() < t.pending.readyAt) return false;
+      const job = getJob(t.jobId);
+      const prev = currentVersion(t);
+      const n = t.versions.length + 1;
+      let output;
+      if (t.type === 'copy') {
+        output = t.pending.kind === 'initial' ? draftCaption(job) : reviseCaption(job, prev.content, t.pending.feedback, n);
+      } else {
+        // A simulated revision builds on the latest simulated design, even if Photo layout versions came after it.
+        const lastSim = [...t.versions].reverse().find((x) => x.content.mode !== 'photo');
+        const base = lastSim ? lastSim.content : draftGraphic(job).content;
+        output = t.pending.kind === 'initial' ? draftGraphic(job) : reviseGraphic(job, base, t.pending.feedback, n);
+      }
+      t.versions.push({ n, content: output.content, notes: output.notes, feedback: t.pending.feedback || null, by: AGENTS[t.agent].name, simulated: true, source: 'demo', createdAt: t.pending.readyAt });
+      t.pending = null;
+      log(job.id, t.agent, `${AGENTS[t.agent].label} v${n} delivered for review.`);
+      return true;
+    }, { background: true });
   }
-  if (changed) save();
-  return changed;
 }
 
-export function requestRevision(taskId, feedback) {
+export async function requestRevision(taskId, feedback) {
   const task = getTask(taskId);
-  if (!task || task.pending) return;
-  const now = Date.now();
-  task.pending = {
-    kind: 'revision',
-    engine: task.type === 'copy' ? copyEngine() : 'demo',
-    feedback: feedback.trim(),
-    startAt: now,
-    readyAt: now + REVISION_MS,
-  };
-  log(task.jobId, task.agent, `Revision requested on the ${AGENTS[task.agent].label.toLowerCase()}: "${feedback.trim()}"`);
-  save();
-  tick(); // send the request now rather than on the next timer tick
+  if (!task || task.pending) return { ok: false, noop: true };
+  const res = await commit(task.jobId, () => {
+    const t = getTask(taskId);
+    if (!t || t.pending) return false;
+    const now = Date.now();
+    t.pending = { kind: 'revision', engine: t.type === 'copy' ? copyEngine() : 'demo', feedback: feedback.trim(), startAt: now, readyAt: now + REVISION_MS };
+    log(t.jobId, t.agent, `Revision requested on the ${AGENTS[t.agent].label.toLowerCase()}: "${feedback.trim()}"`);
+    return true;
+  }, { action: 'revision' });
+  if (res.ok) tick();
+  return res;
 }
 
 export function editCaption(taskId, text) {
   const task = getTask(taskId);
-  if (!task || task.pending || task.type !== 'copy') return;
-  const prev = currentVersion(task);
-  if (prev && prev.content.text === text) return;
-  task.versions.push({
-    n: task.versions.length + 1,
-    content: { ...prev.content, text },
-    notes: ['Edited directly by you'],
-    feedback: null,
-    by: 'You',
-    simulated: false,
-    source: 'human',
-    createdAt: Date.now(),
-  });
-  log(task.jobId, 'manager', 'Caption edited by hand. The pair needs fresh approval.');
-  save();
+  if (!task || task.pending || task.type !== 'copy') return Promise.resolve({ ok: false, noop: true });
+  return commit(task.jobId, () => {
+    const t = getTask(taskId);
+    const prev = currentVersion(t);
+    if (!prev || prev.content.text === text) return false;
+    t.versions.push({ n: t.versions.length + 1, content: { ...prev.content, text }, notes: ['Edited directly by you'], feedback: null, by: 'You', simulated: false, source: 'human', createdAt: Date.now() });
+    log(t.jobId, 'manager', 'Caption edited by hand. The pair needs fresh approval.');
+    return true;
+  }, { action: 'edit' });
 }
 
-export function approveJob(jobId) {
+/** Approve exactly the versions shown on screen. If the job moved on elsewhere, nothing is approved. */
+export async function approveJob(jobId) {
   const job = getJob(jobId);
-  const st = jobStatus(job);
-  if (st !== 'ready_for_review' && st !== 'needs_reapproval') return;
+  if (!job) return { ok: false, noop: true };
   const { copy, graphic } = jobTasks(job);
-  job.approval = { copyVersion: copy.versions.length, graphicVersion: graphic.versions.length, at: Date.now() };
-  job.approvals.push(job.approval);
-  log(job.id, 'manager', `Approved caption v${job.approval.copyVersion} with graphic v${job.approval.graphicVersion}. Added to the private calendar.`);
-  save();
+  const shown = { copyVersion: copy.versions.length, graphicVersion: graphic.versions.length };
+  if (ws.mode === 'shared' && ws.updates[jobId]) {
+    // We already know a newer version exists: don't even try.
+    ws.conflicts[jobId] = { action: 'approve', changes: ws.updates[jobId].changes, entry: ws.updates[jobId].entry };
+    delete ws.updates[jobId];
+    notify();
+    return { ok: false, conflict: true };
+  }
+  return commit(jobId, () => {
+    const j = getJob(jobId);
+    const st = jobStatus(j);
+    if (st !== 'ready_for_review' && st !== 'needs_reapproval') return false;
+    const t = jobTasks(j);
+    if (t.copy.versions.length !== shown.copyVersion || t.graphic.versions.length !== shown.graphicVersion) return false;
+    j.approval = { ...shown, at: Date.now() };
+    j.approvals = [...(j.approvals || []), j.approval];
+    log(j.id, 'manager', `Approved caption v${shown.copyVersion} with graphic v${shown.graphicVersion}. Added to the private calendar.`);
+    return true;
+  }, { action: 'approve' });
 }
 
 export function agentState(agentId, now = Date.now()) {
@@ -267,130 +517,166 @@ export function agentState(agentId, now = Date.now()) {
   return 'idle';
 }
 
-export const agentTasks = (agentId) =>
-  state.tasks.filter((t) => t.agent === agentId).sort((a, b) => b.createdAt - a.createdAt);
-
-export function resetAll() {
-  state = empty();
-  save();
-}
-
+export const agentTasks = (agentId) => state.tasks.filter((t) => t.agent === agentId).sort((a, b) => b.createdAt - a.createdAt);
 
 /* ---------- Live caption requests ---------- */
-/** Start the server request for an AI caption task. Returns true if state changed. */
-function dispatchAi(task, now) {
-  const p = task.pending;
-  if (p.error || inFlight.has(task.id) || now < p.startAt) return false;
+// A request is "claimed" by saving requestedAt/requestedBy first, so two devices never pay for the same caption.
+async function dispatchAi(taskId, now) {
+  const task = getTask(taskId);
+  const p = task?.pending;
+  if (!p || p.error || inFlight.has(taskId) || now < p.startAt) return;
   if (p.requestedAt) {
-    // A request was sent before a refresh and its reply was lost with the page. Don't silently resend: ask.
-    p.error = { message: 'The page was refreshed before Quill replied. Your work is saved. Retry to send the request again.', retryable: true, at: now };
-    save();
-    return true;
+    const mineLost = p.requestedBy === DEVICE || !p.requestedBy;
+    if (mineLost || now - p.requestedAt > STALE_REQUEST_MS) {
+      inFlight.add(taskId);
+      await commit(task.jobId, () => {
+        const t = getTask(taskId);
+        if (!t?.pending || t.pending.error || t.pending.requestedAt !== p.requestedAt) return false;
+        t.pending.error = { message: mineLost ? 'The page was refreshed before Quill replied. Your work is saved. Retry to send the request again.' : 'Quill’s reply never arrived. Your work is saved. Retry to send the request again.', retryable: true, at: Date.now() };
+        return true;
+      }, { background: true });
+      inFlight.delete(taskId);
+    }
+    return; // another device's request is still in flight
   }
-  const job = getJob(task.jobId);
-  const prev = currentVersion(task);
+  inFlight.add(taskId);
+  const claimedAt = Date.now();
+  const claim = await commit(task.jobId, () => {
+    const t = getTask(taskId);
+    if (!t?.pending || t.pending.error || t.pending.requestedAt || t.pending.engine !== 'ai') return false;
+    t.pending.requestedAt = claimedAt;
+    t.pending.requestedBy = DEVICE;
+    return true;
+  }, { background: true });
+  const live = getTask(taskId);
+  if (!claim.ok || claim.noop || live?.pending?.requestedAt !== claimedAt) { inFlight.delete(taskId); return; }
+  const job = getJob(live.jobId);
+  const prev = currentVersion(live);
   const body = {
-    kind: p.kind === 'revision' ? 'revision' : 'draft',
+    kind: live.pending.kind === 'revision' ? 'revision' : 'draft',
     brief: job.brief,
     platform: job.platform,
-    currentCaption: p.kind === 'revision' ? prev?.content.text : undefined,
+    currentCaption: live.pending.kind === 'revision' ? prev?.content.text : undefined,
     currentVersion: prev?.n,
-    feedback: p.kind === 'revision' ? p.feedback : undefined,
+    feedback: live.pending.kind === 'revision' ? live.pending.feedback : undefined,
   };
-  p.requestedAt = now;
-  inFlight.add(task.id);
-  save();
-  fetch('api/quill/caption', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    .then(async (r) => {
-      let data = {};
-      try { data = await r.json(); } catch { /* non-JSON error page */ }
-      if (!r.ok) throw Object.assign(new Error(data.error || `Quill request failed (${r.status}).`), { retryable: data.retryable !== false });
-      return data;
-    })
-    .then((data) => {
-      const live = getTask(task.id);
-      if (!live?.pending || live.pending.requestedAt !== p.requestedAt) return; // superseded
-      const n = live.versions.length + 1;
-      live.versions.push({
-        n,
-        content: { text: data.caption, opts: null },
-        notes: data.notes ? [`v${n}: ${data.notes}`] : [],
-        feedback: live.pending.feedback || null,
-        by: AGENTS.copywriter.name,
-        simulated: data.provider !== 'anthropic',
-        source: data.provider,
-        model: data.model,
-        createdAt: Date.now(),
-      });
-      live.pending = null;
-      log(live.jobId, 'copywriter', `Caption v${n} delivered for review (${data.provider === 'anthropic' ? 'AI-generated' : 'mock'}).`);
-    })
-    .catch((e) => {
-      const live = getTask(task.id);
-      if (!live?.pending || live.pending.requestedAt !== p.requestedAt) return;
-      live.pending.error = { message: e.message || 'Quill request failed.', retryable: e.retryable !== false, at: Date.now() };
-      log(live.jobId, 'copywriter', `Caption request failed: ${live.pending.error.message}`);
-    })
-    .finally(() => {
-      inFlight.delete(task.id);
-      save();
-    });
-  return true;
+  let outcome;
+  try {
+    const r = await fetch('api/quill/caption', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify(body) });
+    let data = {};
+    try { data = await r.json(); } catch { /* non-JSON error page */ }
+    outcome = r.ok ? { data } : { error: { message: data.error || `Quill request failed (${r.status}).`, retryable: data.retryable !== false } };
+  } catch {
+    outcome = { error: { message: 'Can’t reach the HQ server. Retry when you’re connected.', retryable: true } };
+  }
+  if (unloading) { inFlight.delete(taskId); return; }
+  await commit(job.id, () => {
+    const t = getTask(taskId);
+    if (!t?.pending || t.pending.requestedAt !== claimedAt) return false; // superseded
+    if (outcome.data) {
+      const d = outcome.data;
+      const n = t.versions.length + 1;
+      t.versions.push({ n, content: { text: d.caption, opts: null }, notes: d.notes ? [`v${n}: ${d.notes}`] : [], feedback: t.pending.feedback || null, by: AGENTS.copywriter.name, simulated: d.provider !== 'anthropic', source: d.provider, model: d.model, createdAt: Date.now() });
+      t.pending = null;
+      log(t.jobId, 'copywriter', `Caption v${n} delivered for review (${d.provider === 'anthropic' ? 'AI-generated' : 'mock'}).`);
+    } else {
+      t.pending.error = { ...outcome.error, at: Date.now() };
+      log(t.jobId, 'copywriter', `Caption request failed: ${outcome.error.message}`);
+    }
+    return true;
+  }, { background: true });
+  inFlight.delete(taskId);
 }
 
 /** One click = at most one new request: ignored while a request for this task is in flight. */
-export function retryTask(taskId) {
+export async function retryTask(taskId) {
   const task = getTask(taskId);
-  if (!task?.pending?.error || inFlight.has(taskId)) return false;
-  task.pending.error = null;
-  task.pending.requestedAt = null;
-  task.pending.engine = copyEngine();
-  task.pending.startAt = Date.now();
-  task.pending.readyAt = Date.now() + REVISION_MS;
-  save();
-  tick();
-  return true;
+  if (!task?.pending?.error || inFlight.has(taskId)) return { ok: false, noop: true };
+  const res = await commit(task.jobId, () => {
+    const t = getTask(taskId);
+    if (!t?.pending?.error) return false;
+    Object.assign(t.pending, { error: null, requestedAt: null, requestedBy: null, engine: t.type === 'copy' ? copyEngine() : 'demo', startAt: Date.now(), readyAt: Date.now() + REVISION_MS });
+    return true;
+  }, { action: 'retry' });
+  if (res.ok) tick();
+  return res;
 }
 
 /** Abandon a failed revision request; the current caption version stays as it was. */
 export function cancelFailedRevision(taskId) {
   const task = getTask(taskId);
-  if (!task?.pending?.error || task.pending.kind !== 'revision' || inFlight.has(taskId)) return;
-  log(task.jobId, 'copywriter', 'Failed revision request cancelled. Caption unchanged.');
-  task.pending = null;
-  save();
+  if (!task?.pending?.error || task.pending.kind !== 'revision' || inFlight.has(taskId)) return Promise.resolve({ ok: false, noop: true });
+  return commit(task.jobId, () => {
+    const t = getTask(taskId);
+    if (!t?.pending?.error) return false;
+    log(t.jobId, 'copywriter', 'Failed revision request cancelled. Caption unchanged.');
+    t.pending = null;
+    return true;
+  }, { action: 'cancel' });
 }
-
 
 /* ---------- Prism Photo layout ---------- */
-/** Append a Photo layout version. Throws (and leaves state untouched) if it can't be persisted. */
-export function saveGraphicVersion(taskId, content, notes) {
+/**
+ * Append a Photo layout version built on `baseVersions` (the number of graphic versions the editor started from).
+ * Resolves { ok, result: version } or { ok: false, conflict | error }; state is unchanged on failure.
+ */
+export async function saveGraphicVersion(taskId, content, notes, baseVersions) {
   const task = getTask(taskId);
-  if (!task || task.type !== 'graphic') throw new Error('Graphic task not found.');
-  if (task.pending) throw new Error('Prism is still working on this graphic. Wait for it to finish, then save.');
-  const n = task.versions.length + 1;
-  const version = { n, content: { ...content, mode: 'photo' }, notes, feedback: null, by: 'You with Prism', simulated: false, source: 'photo', createdAt: Date.now() };
-  task.versions.push(version);
-  const prevLog = state.log.slice();
-  log(task.jobId, 'designer', `Photo layout saved as graphic v${n}.`);
-  try {
-    saveStrict();
-  } catch (e) {
-    task.versions.pop();
-    state.log = prevLog;
-    throw e;
+  if (!task || task.type !== 'graphic') return { ok: false, error: 'Graphic task not found.' };
+  if (task.pending) return { ok: false, error: 'Prism is still working on this graphic. Wait for it to finish, then save.' };
+  if (ws.mode === 'shared' && ws.updates[task.jobId]) {
+    ws.conflicts[task.jobId] = { action: 'save-graphic', changes: ws.updates[task.jobId].changes, entry: ws.updates[task.jobId].entry };
+    delete ws.updates[task.jobId];
+    notify();
+    return { ok: false, conflict: true };
   }
-  return version;
+  let version;
+  const res = await commit(task.jobId, () => {
+    const t = getTask(taskId);
+    if (baseVersions != null && t.versions.length !== baseVersions) return false;
+    const n = t.versions.length + 1;
+    version = { n, content: { ...content, mode: 'photo' }, notes, feedback: null, by: 'You with Prism', simulated: false, source: 'photo', createdAt: Date.now() };
+    t.versions.push(version);
+    log(t.jobId, 'designer', `Photo layout saved as graphic v${n}.`);
+    return true;
+  }, { action: 'save-graphic' });
+  if (res.ok && res.noop) return { ok: false, error: 'The graphic changed since you opened the editor. Reload the latest version, then save again.' };
+  return res.ok ? { ok: true, result: version } : res;
 }
 
-export function setBrandLogo(id, name) {
+export async function setBrandLogo(id, name) {
   const prev = state.brand;
   state.brand = { ...state.brand, logoId: id, logoName: name, logoSavedAt: Date.now() };
-  try {
-    saveStrict();
-  } catch (e) {
+  if (ws.mode === 'local') {
+    try { saveLocal(true); } catch (e) { state.brand = prev; throw e; }
+    return;
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await api('api/workspace/brand', { method: 'PUT', body: JSON.stringify({ baseRev: ws.brandRev, data: { logoId: id, logoName: name } }) });
+    if (r.ok) { ws.brandRev = r.data.rev; return; }
+    if (r.status === 409 && r.data.current) { ws.brandRev = r.data.current.rev; continue; } // last logo chosen wins
     state.brand = prev;
-    throw e;
+    throw new Error(r.data.error || 'The logo couldn’t be remembered.');
   }
 }
 export const brand = () => state.brand || {};
+
+/* ---------- Import this browser's work into the shared workspace ---------- */
+export function localBundles() {
+  const local = loadLocal();
+  return {
+    bundles: local.jobs.map((job) => ({ job, tasks: local.tasks.filter((t) => t.jobId === job.id), log: local.log.filter((l) => l.jobId === job.id) })),
+    brand: local.brand || {},
+  };
+}
+export async function importPreview(bundles, brandData) {
+  const r = await api('api/workspace/import', { method: 'POST', body: JSON.stringify({ bundles, brand: brandData, dryRun: true }) });
+  if (!r.ok) throw new Error(r.data.error || 'Import preview failed.');
+  return r.data;
+}
+export async function importCommit(bundles, brandData) {
+  const r = await api('api/workspace/import', { method: 'POST', body: JSON.stringify({ bundles, brand: brandData }) });
+  if (!r.ok) throw new Error(r.data.error || 'Import failed.');
+  await pullWorkspace(true);
+  return r.data;
+}

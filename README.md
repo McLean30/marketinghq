@@ -1,4 +1,4 @@
-# Nexai AI Marketing HQ (milestone 3)
+# Nexai AI Marketing HQ (milestone 4)
 
 Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer). Review both together, request revisions with feedback, approve the pair, and see it on the private content calendar.
 
@@ -54,6 +54,18 @@ From a job, open **Photo layout** from the Graphic panel, or from Prism's worksp
 
 Limits: images live only in this browser, so they don't sync between devices, and clearing site data removes them. The headline font (Chakra Petch) loads from Google Fonts; offline, both preview and export fall back to the same system font. Only local rendering is used: no image-generation API and no publishing.
 
+## Shared private workspace (milestone 4)
+
+One workspace for your laptop and phone: jobs, captions, graphic versions, original photos, the reusable logo, feedback, approvals and the calendar are stored on the HQ server, not in one browser.
+
+- **Storage**: plain files in `data/` (or `HQ_DATA_DIR`): `workspace.json`, `sessions.json` and `assets/`. Writes are atomic, so data survives restarts. Back up by copying the `data` folder while the server is stopped. `data/` is gitignored.
+- **Privacy**: the owner signs in with a password. Only its scrypt hash is stored, in `.env` as `HQ_OWNER_PASSWORD_HASH`, set with `npm run set-password`. Workspace data, images, exports (rendered from those images) and AI caption requests all require sign-in; a signed-out browser gets 401 even with a direct URL. Sessions use an HttpOnly, SameSite=Strict cookie and last 30 days. Five wrong passwords lock sign-in for 15 minutes.
+- **Local demo** still works: without a password set, or when not signed in, the app uses this browser's storage as before. The top-right pill shows which you're using.
+- **Import**: Workspace → Preview import shows the jobs in this browser, which ones are already in the workspace, and any missing photos or logos. Import copies them; the browser originals are kept, and re-importing never duplicates a job or version.
+- **Two devices**: each job has a revision number. If your phone saves a newer version while your laptop shows an older one, the laptop gets an "Updated on your phone" notice, and any save or approval from the stale screen is refused with a list of what changed. "Load the latest version" brings it up to date. In Prism your unsaved edits are kept, and the next save becomes a new version on top. Saved versions and approvals can't be overwritten or removed (enforced by the server). Leaving Prism with unsaved edits asks first.
+
+**Security limits for this milestone**: it runs on plain HTTP. Over Wi-Fi, your password and session cookie are unencrypted on the local network. Use it only on a Wi-Fi network you trust (your own home or office network, set to Private on Windows), never on public Wi-Fi, and stop the server when you're done. Don't port-forward or deploy it; that needs HTTPS and hosting first.
+
 ## Behaviour
 
 - **Every request uses the real job**: the brief and platform go to Quill on every draft. A revision also sends the current caption and your feedback, quoted exactly.
@@ -67,6 +79,7 @@ Limits: images live only in this browser, so they don't sync between devices, an
 ```bash
 npm run test:m2      # Milestone 2 UI suite, desktop + phone, deterministic mock provider (starts its own server on :4174)
 npm run test:m3      # Milestone 3 Photo layout suite (desktop, phone-sized and iPhone 13; starts its own server on :4176)
+npm run test:m4      # Milestone 4 shared workspace: desktop + iPhone-emulation browsers, server restart, signed-out access, import (own server on :4177)
 npm run test:api     # Anthropic SDK path against a local stub API with a dummy key (no network, no cost)
 npm start   # then, in a second terminal:
 npm run test:e2e   # Milestone 1 desktop + phone suite, demo mode on :4173
@@ -91,7 +104,9 @@ The mock provider (`QUILL_PROVIDER=mock`, `server/quill-mock.js`) returns canned
 
 ## Structure
 
-- `server.js`: static server plus `GET /api/quill/status` and `POST /api/quill/caption` (same-origin only).
+- `server.js`: static files, Quill API, sign-in, workspace and image APIs (mutating requests same-origin only).
+- `server/auth.js` (owner password, sessions), `server/workspace.js` (job revisions, append-only checks, import, images), `server/storage.js` (atomic file writes).
+- `scripts/set-owner-password.cjs`: hidden password prompt; writes only the hash to `.env`.
 - `server/quill.js`: provider selection, prompt, Anthropic SDK call, error mapping. `server/quill-mock.js`: test fixture.
 - `public/js/store.js`: jobs, linked tasks, versions, feedback, approvals, persistence, caption request dispatch and retry.
 - `public/js/app.js`: views (HQ stage, agent workspace, review, Photo layout studio, calendar, full-screen graphic viewer).
