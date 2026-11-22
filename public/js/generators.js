@@ -4,7 +4,7 @@
 
 const THEMES = {
   unbilled: {
-    match: /invoice|invoic|job sheet|paperwork|unbilled|photo is missing|missing photo/i,
+    match: /invoic|job sheet|paperwork|unbilled|engineer photos?|missing photos?|photo is missing/i,
     title: 'Finished jobs the office can’t invoice',
     hooks: [
       'Your engineer finished the job on Tuesday. Your office still can’t invoice it.',
@@ -92,7 +92,8 @@ function audienceFrom(brief) {
 export function briefTitle(brief) {
   const t = THEMES[themeFor(brief)];
   if (t.title) return t.title;
-  const clean = brief.replace(/^(create|write|make|give me)\s+/i, '').split(/[.?!]/)[0];
+  let clean = brief.replace(/^(please\s+)?(create|write|make|draft|give me)\s+(.*?\bfor\s+)?/i, '').split(/[.?!]/)[0];
+  clean = clean.charAt(0).toUpperCase() + clean.slice(1);
   return clean.length > 64 ? `${clean.slice(0, 61)}…` : clean;
 }
 
@@ -102,18 +103,19 @@ function compose(theme, platform, opts) {
   const tags = theme.hashtags[tagIdx % theme.hashtags.length];
   const cta = theme.ctas[ctaIdx % theme.ctas.length];
   const isShort = short || platform === 'X';
+  const noTags = platform === 'Google Business Profile'; // Google Business Profile posts don't use hashtags
   const parts = [hook];
   if (isShort) {
     parts.push(`The usual culprit: ${theme.fixes[0].charAt(0).toLowerCase()}${theme.fixes[0].slice(1)} isn’t happening.`);
     parts.push(cta);
-    parts.push(tags.slice(0, 3).join(' '));
+    if (!noTags) parts.push(tags.slice(0, 3).join(' '));
   } else {
     if (theme.problem) parts.push(theme.problem);
     parts.push(`Across a commercial maintenance business, those small gaps add up:\n${theme.impacts.map((i) => `• ${i}`).join('\n')}`);
     if (numberPrompt) parts.push('[Add your own figure here, e.g. the value of work completed but not yet invoiced this month.]');
     parts.push(`Three fixes that help:\n${theme.fixes.map((f, i) => `${i + 1}. ${f}`).join('\n')}`);
     parts.push(cta);
-    parts.push((platform === 'Instagram' ? [...tags, '#Engineering', '#BuildingServices'] : tags).join(' '));
+    if (!noTags) parts.push((platform === 'Instagram' ? [...tags, '#Engineering', '#BuildingServices'] : tags).join(' '));
   }
   return { text: parts.join('\n\n'), opts: { hookIdx, ctaIdx, tagIdx, short, friendly, numberPrompt } };
 }

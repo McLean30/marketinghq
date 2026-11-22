@@ -1,12 +1,13 @@
 // End-to-end acceptance test for milestone 1. Run with the server up: npm start, then npm run test:e2e
 // Drives the real UI at desktop and phone sizes. Screenshots go to tests/screenshots/.
+import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import fs from 'fs';
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:4173/';
-const OUT = new URL('./screenshots/', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('./screenshots/', import.meta.url));
 fs.mkdirSync(OUT, { recursive: true });
 const BRIEF =
   "Create Friday's LinkedIn post for UK commercial maintenance directors about jobs engineers have finished but the office still can't invoice because a job sheet or photo is missing. Give me a useful caption with relevant hashtags and a branded graphic.";
@@ -147,7 +148,7 @@ async function run(name, contextOpts) {
   // Reduced motion: status still clear
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto(BASE + '#/');
-  const anim = await page.locator('.char-manager .eye').first().evaluate((el) => getComputedStyle(el).animationName);
+  const anim = await page.locator('.char-manager .tail-pulse').first().evaluate((el) => getComputedStyle(el).animationName);
   assert(anim === 'none', 'Reduced motion disables character animation');
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
