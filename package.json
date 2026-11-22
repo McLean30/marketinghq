@@ -15,7 +15,8 @@
     "test:m4": "node tests/shared-m4.mjs",
     "test:m5": "node tests/week-m5.mjs",
     "test:m6": "node tests/agents-m6.mjs",
-    "test:m7": "node tests/review-m7.mjs"
+    "test:m7": "node tests/review-m7.mjs",
+    "test:preview": "node tests/preview-boot.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0"

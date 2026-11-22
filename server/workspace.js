@@ -3,27 +3,37 @@
 // and the caller gets the latest bundle. Version histories and approvals are append-only.
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR, ASSET_DIR, writeAtomic, readJson } = require('./storage');
+const { APP_DIR, paths, writeAtomic, readJson } = require('./storage');
 
-const FILE = path.join(DATA_DIR, 'workspace.json');
+const file = () => path.join(paths().DATA_DIR, 'workspace.json');
 const MAX_BUNDLE = 1.5 * 1024 * 1024;
 const ID = /^[a-z]+_[a-z0-9]{4,40}$/;
 const ASSET_ID = /^(photo|logo)_[a-z0-9]{4,40}$/;
 const ASSET_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png' };
 const MAX_ASSET = 15 * 1024 * 1024;
 
-let ws = readJson(FILE, { version: 1, rev: 0, jobs: {}, brand: { rev: 0, data: {} } });
-ws.plans = ws.plans || {};
-
 /* ---------- Business profile: every save is a new, identified version ---------- */
 const crypto = require('crypto');
-const SEED = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'public', 'data', 'profile-seed.json'), 'utf8'));
 const versionId = (n, data) => `pv${n}-${crypto.createHash('sha1').update(JSON.stringify(data)).digest('hex').slice(0, 6)}`;
-if (!ws.profile) {
-  ws.profile = { rev: 1, versions: [{ id: versionId(1, SEED), n: 1, savedAt: Date.now(), savedBy: 'seed', data: SEED }] };
-  writeAtomic(FILE, JSON.stringify(ws));
+
+/**
+ * The workspace is loaded (and seeded with the starting business profile) on first use. Only shared-mode API routes
+ * call in here, so a demo deployment with no settings never reads or writes the data folder.
+ */
+let state = null;
+function W() {
+  if (state) return state;
+  const ws = readJson(file(), { version: 1, rev: 0, jobs: {}, brand: { rev: 0, data: {} } });
+  ws.plans = ws.plans || {};
+  if (!ws.profile) {
+    const seed = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'public', 'data', 'profile-seed.json'), 'utf8'));
+    ws.profile = { rev: 1, versions: [{ id: versionId(1, seed), n: 1, savedAt: Date.now(), savedBy: 'seed', data: seed }] };
+    writeAtomic(file(), JSON.stringify(ws));
+  }
+  state = ws;
+  return state;
 }
-const persist = () => writeAtomic(FILE, JSON.stringify(ws));
+const persist = () => writeAtomic(file(), JSON.stringify(W()));
 
 class WsError extends Error {
   constructor(status, message, extra = {}) { super(message); this.status = status; Object.assign(this, extra); }
@@ -32,12 +42,13 @@ class WsError extends Error {
 const entry = (id, e) => ({ id, rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy, bundle: e.bundle });
 
 function snapshot() {
+  const ws = W();
   const jobs = Object.entries(ws.jobs).map(([id, e]) => entry(id, e)).sort((a, b) => b.bundle.job.createdAt - a.bundle.job.createdAt);
   const plans = Object.entries(ws.plans).map(([id, e]) => ({ id, rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy, plan: e.plan })).sort((a, b) => b.plan.createdAt - a.plan.createdAt);
   return { rev: ws.rev, jobs, brand: ws.brand, plans, profile: ws.profile };
 }
 
-const getJob = (id) => (ws.jobs[id] ? entry(id, ws.jobs[id]) : null);
+const getJob = (id) => (W().jobs[id] ? entry(id, W().jobs[id]) : null);
 
 function validateBundle(id, b) {
   const bad = (m) => { throw new WsError(400, `Invalid job data: ${m}.`); };
@@ -74,6 +85,7 @@ function checkAppendOnly(prev, next) {
 }
 
 function putJob(id, baseRev, bundle, device) {
+  const ws = W();
   validateBundle(id, bundle);
   const cur = ws.jobs[id];
   const curRev = cur ? cur.rev : 0;
@@ -97,6 +109,7 @@ function validatePlan(id, p) {
   if (Buffer.byteLength(JSON.stringify(p)) > 200 * 1024) bad('too large');
 }
 function putPlan(id, baseRev, plan, device) {
+  const ws = W();
   validatePlan(id, plan);
   const cur = ws.plans[id];
   const curRev = cur ? cur.rev : 0;
@@ -127,6 +140,7 @@ function validateProfile(d) {
   if (!d.audience || !d.cta || !d.brand || !d.writing) bad('sections');
 }
 function putProfile(baseRev, data, device) {
+  const ws = W();
   validateProfile(data);
   if (Number(baseRev) !== ws.profile.rev) throw new WsError(409, 'The business profile was changed on another device.', { current: ws.profile });
   const n = ws.profile.versions.length + 1;
@@ -138,6 +152,7 @@ function putProfile(baseRev, data, device) {
 }
 
 function putBrand(baseRev, data, device) {
+  const ws = W();
   if (!data || typeof data !== 'object' || (data.logoId && !ASSET_ID.test(data.logoId))) throw new WsError(400, 'Invalid brand settings.');
   if (Number(baseRev) !== ws.brand.rev) throw new WsError(409, 'Brand settings changed on another device.', { current: ws.brand });
   ws.brand = { rev: ws.brand.rev + 1, data: { logoId: data.logoId || null, logoName: String(data.logoName || '').slice(0, 200), logoSavedAt: Date.now() }, updatedBy: device };
@@ -148,6 +163,7 @@ function putBrand(baseRev, data, device) {
 
 /** Idempotent import: a job id already in the workspace is skipped, never duplicated or overwritten. */
 function importBundles(bundles, brand, device, dryRun) {
+  const ws = W();
   if (!Array.isArray(bundles)) throw new WsError(400, 'Nothing to import.');
   const imported = [];
   const skipped = [];
@@ -168,8 +184,8 @@ function importBundles(bundles, brand, device, dryRun) {
 }
 
 /* ---------- Assets (original photos and logos) ---------- */
-const assetPath = (id) => path.join(ASSET_DIR, `${id}.bin`);
-const metaPath = (id) => path.join(ASSET_DIR, `${id}.json`);
+const assetPath = (id) => path.join(paths().ASSET_DIR, `${id}.bin`);
+const metaPath = (id) => path.join(paths().ASSET_DIR, `${id}.json`);
 
 function saveAsset(id, { kind, name, type }, buf) {
   if (!ASSET_ID.test(id) || !id.startsWith(`${kind}_`)) throw new WsError(400, 'Invalid image id.');

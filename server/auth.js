@@ -3,11 +3,10 @@
 // SameSite=Strict cookie; only their SHA-256 hashes are kept on disk, so sessions survive a restart.
 const crypto = require('crypto');
 const path = require('path');
-const { DATA_DIR, writeAtomic, readJson } = require('./storage');
+const { paths, writeAtomic, readJson } = require('./storage');
 
 const COOKIE = 'hq_session';
 const SESSION_DAYS = 30;
-const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const HASH = (process.env.HQ_OWNER_PASSWORD_HASH || '').trim();
 
 function hashPassword(password) {
@@ -28,12 +27,16 @@ function verifyPassword(password, stored) {
 
 const configured = () => /^scrypt\$/.test(HASH);
 const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
-let sessions = readJson(SESSIONS_FILE, {});
-const persist = () => writeAtomic(SESSIONS_FILE, JSON.stringify(sessions));
+// Sessions are loaded on first use, and only when sign-in is configured (shared mode).
+let cache = null;
+const sessionsFile = () => path.join(paths().DATA_DIR, 'sessions.json');
+const store = () => (cache ??= readJson(sessionsFile(), {}));
+const persist = () => writeAtomic(sessionsFile(), JSON.stringify(store()));
 
 function prune() {
   const now = Date.now();
   let changed = false;
+  const sessions = store();
   for (const [k, s] of Object.entries(sessions)) if (s.expiresAt < now) { delete sessions[k]; changed = true; }
   if (changed) persist();
 }
@@ -47,7 +50,7 @@ function session(req) {
   if (!configured()) return null;
   const token = readCookie(req);
   if (!token) return null;
-  const s = sessions[sha(token)];
+  const s = store()[sha(token)];
   if (!s || s.expiresAt < Date.now()) return null;
   return s;
 }
@@ -77,14 +80,14 @@ function login(req, password, device) {
   failures.delete(ip);
   prune();
   const token = crypto.randomBytes(32).toString('base64url');
-  sessions[sha(token)] = { createdAt: Date.now(), expiresAt: Date.now() + SESSION_DAYS * 864e5, device: String(device || '').slice(0, 20) };
+  store()[sha(token)] = { createdAt: Date.now(), expiresAt: Date.now() + SESSION_DAYS * 864e5, device: String(device || '').slice(0, 20) };
   persist();
   return { status: 200, cookie: `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_DAYS * 86400}` };
 }
 
 function logout(req) {
   const token = readCookie(req);
-  if (token && sessions[sha(token)]) { delete sessions[sha(token)]; persist(); }
+  if (configured() && token && store()[sha(token)]) { delete store()[sha(token)]; persist(); }
   return `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
 }
 

@@ -54,6 +54,10 @@ From a job, open **Photo layout** from the Graphic panel, or from Prism's worksp
 
 Limits: images live only in this browser, so they don't sync between devices, and clearing site data removes them. The headline font (Chakra Petch) loads from Google Fonts; offline, both preview and export fall back to the same system font. Only local rendering is used: no image-generation API and no publishing.
 
+## Deploying a preview (for example Vercel)
+
+With no settings the server runs in **browser demo mode**: HQ opens, jobs live in the browser, and captions use local templates. It doesn't read or write its data folder at start-up, so a read-only serverless filesystem is fine. The shared workspace (owner sign-in, durable server saves) switches on only when `HQ_OWNER_PASSWORD_HASH` is set. That needs a persistent, writable `HQ_DATA_DIR`, which serverless functions don't provide, so run the shared workspace on a machine you control. `npm run test:preview` checks this boot path, including a bundled build.
+
 ## Business profile and Brand & Quality Reviewer (milestone 7)
 
 **Business profile** (HQ → *Business profile*, on desktop and phone): services with descriptions, audience, proof (product names only until you add approved claims or links), the website CTA and organic-post guidance, brand rules (British English, LinkedIn hashtag rule, imagery, and the official logo, which Prism's Photo layout sets), offers (wording, start, end, active; empty at first), and fields for Nexai's **Winner's Writing Process** and **self-review checklist**, which are marked *Missing* until you paste the original wording.
@@ -128,6 +132,7 @@ npm run test:m4      # Milestone 4 shared workspace: desktop + iPhone-emulation 
 npm run test:m5      # Milestone 5 weekly planning: template plan, edits, forced failure + retry, approvals, second browser, AI-path (mock) on phone (own server on :4178)
 npm run test:m6      # Milestone 6 redesign: phone/desktop framing, keyboard, state-driven motion, reduced motion; saves design/previews/ (own server on :4179)
 npm run test:m7      # Milestone 7: profile versions, expired-offer review on a fixed test date, phone controls (own server on :4181)
+npm run test:preview # Preview/serverless boot: no settings, read-only filesystem, source entry + esbuild bundle
 npm run test:api     # Anthropic SDK path against a local stub API with a dummy key (no network, no cost)
 npm start   # then, in a second terminal:
 npm run test:e2e   # Milestone 1 desktop + phone suite, demo mode on :4173

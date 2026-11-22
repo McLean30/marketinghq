@@ -1522,7 +1522,8 @@ document.addEventListener('click', (e) => {
     location.hash = href;
     render();
   });
-  vt.finished.finally(() => {
+  vt.ready.catch(() => {}); // a skipped transition (e.g. a quick second tap) is fine: the workspace still opens
+  vt.finished.catch(() => {}).finally(() => {
     ui.vtAgent = null;
     document.querySelector('.sheet .agent-art')?.style.removeProperty('view-transition-name');
   });

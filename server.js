@@ -6,9 +6,9 @@ const path = require('path');
 const quill = require('./server/quill');
 const auth = require('./server/auth');
 const wsStore = require('./server/workspace');
-const { DATA_DIR } = require('./server/storage');
+const storage = require('./server/storage');
 
-const ROOT = path.join(__dirname, 'public');
+const ROOT = path.join(storage.APP_DIR, 'public');
 const PORT = Number(process.env.PORT) || 4173;
 const HOST = process.env.HOST || '127.0.0.1';
 const MAX_JSON = 4 * 1024 * 1024;
@@ -190,6 +190,6 @@ http
     const info = quill.providerInfo();
     console.log(`Nexai AI Marketing HQ running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
     console.log(`Quill caption provider: ${info.label}${info.model ? ` (${info.model}${info.effort ? `, effort ${info.effort}` : ''})` : ''}`);
-    console.log(auth.configured() ? `Shared workspace: on (owner sign-in required). Data folder: ${DATA_DIR}` : 'Shared workspace: off (run npm run set-password to turn it on). Local demo mode only.');
+    console.log(auth.configured() ? `Shared workspace: on (owner sign-in required). Data folder: ${storage.dataDir()}` : 'Shared workspace: off (run npm run set-password to turn it on). Local demo mode only.');
     if (auth.configured() && HOST !== '127.0.0.1' && HOST !== 'localhost') console.log('Warning: plain HTTP on your network. Use only on a Wi-Fi network you trust.');
   });
