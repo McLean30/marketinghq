@@ -1,4 +1,4 @@
-# Nexai AI Marketing HQ (milestone 6)
+# Nexai AI Marketing HQ (milestone 7)
 
 Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer). Review both together, request revisions with feedback, approve the pair, and see it on the private content calendar.
 
@@ -54,6 +54,26 @@ From a job, open **Photo layout** from the Graphic panel, or from Prism's worksp
 
 Limits: images live only in this browser, so they don't sync between devices, and clearing site data removes them. The headline font (Chakra Petch) loads from Google Fonts; offline, both preview and export fall back to the same system font. Only local rendering is used: no image-generation API and no publishing.
 
+## Business profile and Brand & Quality Reviewer (milestone 7)
+
+**Business profile** (HQ → *Business profile*, on desktop and phone): services with descriptions, audience, proof (product names only until you add approved claims or links), the website CTA and organic-post guidance, brand rules (British English, LinkedIn hashtag rule, imagery, and the official logo, which Prism's Photo layout sets), offers (wording, start, end, active; empty at first), and fields for Nexai's **Winner's Writing Process** and **self-review checklist**, which are marked *Missing* until you paste the original wording.
+
+- Every save is a new version with an identifier (for example `pv3-9f2c1a`), a timestamp and the device. Earlier versions are kept, and the history shows what changed. In the shared workspace only the signed-in owner can edit; signed out, it's read-only.
+- Vektor's plans (template and AI), Quill's drafts and revisions (local templates, mock and the configured Anthropic provider) and Prism's visual briefs use the relevant fields. Every new caption, graphic, plan, job and review records the profile version it used. Posts from before the profile open unchanged and say so.
+- Offers are quoted exactly, and only when the brief asks for an offer that's live on the post date.
+- **Profile changes are targeted.** After a save, the screen lists only the posts the change actually touches (for example, a post quoting an offer whose end date changed) and says which field changed and how. An unrelated edit doesn't send other posts back to review or remove approvals.
+
+**Calibre, the Brand & Quality Reviewer** (fourth agent; HQ card, workspace with assigned reviews and history, and a *Brand & quality review* panel on every post):
+- Reviews the exact **caption version + graphic version** against the **current profile version**, records all three, and checks offers against the post date (or today, if that's later).
+- **Rules the app runs itself:** offer wording that isn't live on that date; the LinkedIn hashtag rule (count and required tags); common US spellings; whether the graphic records the official logo; missing photo or logo files.
+- **Needs owner review:** figures, guarantees, superlatives, measured results, and product names without approved claims.
+- **Needs your judgement:** whether the image looks like a real UK commercial setting. The graphic is shown for you to inspect.
+- Each finding says what was found, where (caption version and paragraph, or graphic version), why it matters and who can fix it. *Send to Quill* and *Send to Prism* open the existing revision controls with the fix pre-filled for you to edit.
+- If the caption or graphic changes, the earlier review is marked outdated and kept in the history. Calibre never approves; you do.
+- **Artwork:** `public/assets/agents/reviewer.svg` is interim, locally drawn artwork (a precision inspection lens). Replace it with a rendered character in the Milestone 6 style (446 × 695 portrait, lens centred near (223, 262)); see `public/js/agents.js`.
+
+`HQ_TEST_DATE=YYYY-MM-DD` on the server fixes "today" for offer and review checks in a test workspace, and the app shows a banner while it's set.
+
 ## Robotic team redesign (milestone 6)
 
 HQ follows the approved mockup (`design/approved-hq-mockup.png`). Vektor is the full-width centrepiece, with Quill and Prism side by side below him, then **New brief** and **Plan a content week**. On desktop all three sit in one row at equal height.
@@ -107,6 +127,7 @@ npm run test:m3      # Milestone 3 Photo layout suite (desktop, phone-sized and 
 npm run test:m4      # Milestone 4 shared workspace: desktop + iPhone-emulation browsers, server restart, signed-out access, import (own server on :4177)
 npm run test:m5      # Milestone 5 weekly planning: template plan, edits, forced failure + retry, approvals, second browser, AI-path (mock) on phone (own server on :4178)
 npm run test:m6      # Milestone 6 redesign: phone/desktop framing, keyboard, state-driven motion, reduced motion; saves design/previews/ (own server on :4179)
+npm run test:m7      # Milestone 7: profile versions, expired-offer review on a fixed test date, phone controls (own server on :4181)
 npm run test:api     # Anthropic SDK path against a local stub API with a dummy key (no network, no cost)
 npm start   # then, in a second terminal:
 npm run test:e2e   # Milestone 1 desktop + phone suite, demo mode on :4173
@@ -137,6 +158,8 @@ The mock provider (`QUILL_PROVIDER=mock`, `server/quill-mock.js`) returns canned
 - `server/quill.js`: provider selection, prompt, Anthropic SDK call, error mapping. `server/quill-mock.js`: test fixture.
 - `public/js/store.js`: jobs, linked tasks, versions, feedback, approvals, persistence, caption request dispatch and retry.
 - `public/js/app.js`: views (HQ stage, agent workspace, review, Photo layout studio, calendar, full-screen graphic viewer).
+- `public/js/profile.js` (profile helpers, offer dates, targeted change impact) and `public/js/review.js` (Calibre's rules).
+- `public/data/profile-seed.json`: the starting business profile.
 - `public/js/agents.js`: character artwork, workspace hero, thumbnails and state-driven effect layers.
 - `public/js/plan.js`: Europe/London week dates, Nexai's schedule, template planner.
 - `public/js/photo.js`: Photo layout renderer (shared by preview and PNG export), upload processing, IndexedDB image store.

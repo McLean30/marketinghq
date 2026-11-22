@@ -19,9 +19,19 @@ const ART = {
     window: { top: 40, h: 370 }, // workspace hero shows the aperture, hands and projection
     card: { top: 0, h: 670 },
   },
+  reviewer: {
+    // Interim artwork (public/assets/agents/reviewer.svg), drawn locally. Swap for a rendered character in the
+    // Milestone 6 style: same file name or update src/w/h, and keep the lens centre at (223, 262), radius ~104.
+    src: 'assets/agents/reviewer.svg', w: 446, h: 695, alt: 'Calibre, a gunmetal robot whose head is a precision inspection lens with a cyan reticle',
+    thumb: { cx: 223, cy: 262, size: 280 },
+    window: { top: 110, h: 330 },
+    card: { top: 0, h: 670 },
+    banner: { top: 118, h: 290 }, // phone: wide strip centred on the lens
+  },
 };
 
 const pct = (n) => `${+n.toFixed(3)}%`;
+let uidSeq = 0;
 
 /** A box of the artwork re-drawn on top of itself (for effects that move part of the image). */
 function cropLayer(a, x, y, w, h, cls, extra = '') {
@@ -45,14 +55,23 @@ function effects(id) {
       <circle class="fx-anim stylus-tip" cx="400" cy="455" r="6"/>
     </svg>`;
   }
+  if (id === 'reviewer') {
+    // A scan line sweeps the lens and the reticle turns while a review runs.
+    return `<svg class="fx fx-reviewer" viewBox="0 0 ${a.w} ${a.h}" preserveAspectRatio="none" aria-hidden="true">
+      <clipPath id="rv-lens-${uidSeq++}"><circle cx="223" cy="262" r="104"/></clipPath>
+      <g clip-path="url(#rv-lens-${uidSeq - 1})"><rect class="fx-anim lens-scan" x="110" y="150" width="226" height="10" rx="5"/></g>
+      <circle class="fx-anim reticle-spin" cx="223" cy="262" r="62" fill="none" stroke-dasharray="3 7"/>
+    </svg>`;
+  }
   // Prism: the aperture turns and the projection comes into focus.
   return cropLayer(a, 260, 70, 110, 110, 'fx-anim aperture') +
     cropLayer(a, 106, 184, 214, 182, 'fx-anim projection', 'clip-path:polygon(2.3% 0,100% 18%,99.5% 100%,0 83%)');
 }
 
 /** The artwork block. `windowed` crops a portrait character to its focal band (workspace hero). */
-export function art(id, { windowed = false, card = false, eager = false } = {}) {
+export function art(id, { windowed = false, card = false, banner = false, eager = false } = {}) {
   const a = ART[id];
+  if (banner && a.banner) return framed(a, id, a.banner, eager);
   if (card && a.card) return framed(a, id, a.card, eager);
   const img = `<img src="${a.src}" width="${a.w}" height="${a.h}" alt="" decoding="async" ${eager ? 'fetchpriority="high"' : 'loading="lazy"'}>`;
   const inner = `<span class="agent-art-inner" style="aspect-ratio:${a.w} / ${a.h}">${img}${effects(id)}</span>`;

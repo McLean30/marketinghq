@@ -5,6 +5,9 @@
 // device last saw; if another device saved first, the server refuses it and we never overwrite silently.
 import { draftCaption, reviseCaption, draftGraphic, reviseGraphic } from './generators.js';
 import { setAssetBackend } from './photo.js';
+import { loadSeed, profileImpact } from './profile.js';
+import { runChecks, reviewFreshness } from './review.js';
+import { londonToday } from './plan.js';
 
 const KEY = 'nexai-hq:v1';
 const MODE_KEY = 'nexai-hq:mode';
@@ -19,6 +22,7 @@ export const AGENTS = {
   manager: { id: 'manager', name: 'Vektor', role: 'Marketing Manager' },
   copywriter: { id: 'copywriter', name: 'Quill', role: 'Copywriter', taskType: 'copy', label: 'Caption' },
   designer: { id: 'designer', name: 'Prism', role: 'Creative Designer', taskType: 'graphic', label: 'Graphic' },
+  reviewer: { id: 'reviewer', name: 'Calibre', role: 'Brand & Quality Reviewer' },
 };
 
 export const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X', 'Google Business Profile'];
@@ -39,6 +43,8 @@ export const deviceKind = () => (matchMedia('(pointer: coarse)').matches && Math
 
 /* ---------- Mode, auth and sync status ---------- */
 export const ws = {
+  testDate: null, // fixed "today" for test workspaces (HQ_TEST_DATE on the server)
+  profileRev: 0,
   mode: 'local', // 'local' | 'shared'
   authConfigured: false,
   signedIn: false,
@@ -277,6 +283,7 @@ export async function init() {
     const r = await api('api/auth/status');
     ws.authConfigured = !!r.data.authConfigured;
     ws.signedIn = !!r.data.signedIn;
+    ws.testDate = r.data.testDate || null;
   } catch {
     ws.authConfigured = false;
   }
@@ -299,6 +306,11 @@ export async function setMode(mode) {
     await pullWorkspace(true);
   } else {
     state = loadLocal();
+    if (!state.profile?.versions?.length) {
+      const data = await loadSeed();
+      state.profile = { rev: 1, versions: [{ id: localVersionId(1, data), n: 1, savedAt: Date.now(), savedBy: 'seed', data }] };
+      saveLocal(false);
+    }
   }
   notify();
 }
@@ -342,6 +354,7 @@ async function pullWorkspace(initial = false) {
     ws.synced[e.id] = { rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy };
   }
   state.brand = { ...(snap.brand.data || {}) };
+  if (snap.profile) { state.profile = snap.profile; ws.profileRev = snap.profile.rev; }
   for (const e of snap.plans || []) {
     if ((ws.planSynced[e.id] || 0) >= e.rev || planLocks.has(e.id)) continue;
     const i = state.plans.findIndex((p) => p.id === e.id);
@@ -373,6 +386,7 @@ export async function createJob({ id, brief, platform, targetDate, title, planId
   const now = Date.now();
   const job = { id: id || uid('job'), brief: brief.trim(), platform, targetDate, createdAt: now, delegatedAt: now + DELEGATE_MS, taskIds: {}, approval: null, approvals: [] };
   if (title) job.title = title;
+  job.profileVersion = profileRef();
   if (planId) { job.planId = planId; job.planDay = planDay; }
   const res = await commit(job.id, () => {
     if (getJob(job.id)) return false;
@@ -452,14 +466,14 @@ export function tick(now = Date.now()) {
       const n = t.versions.length + 1;
       let output;
       if (t.type === 'copy') {
-        output = t.pending.kind === 'initial' ? draftCaption(job) : reviseCaption(job, prev.content, t.pending.feedback, n);
+        output = t.pending.kind === 'initial' ? draftCaption(job, currentProfile()?.data, job.targetDate) : reviseCaption(job, prev.content, t.pending.feedback, n, currentProfile()?.data, job.targetDate);
       } else {
         // A simulated revision builds on the latest simulated design, even if Photo layout versions came after it.
         const lastSim = [...t.versions].reverse().find((x) => x.content.mode !== 'photo');
         const base = lastSim ? lastSim.content : draftGraphic(job).content;
-        output = t.pending.kind === 'initial' ? draftGraphic(job) : reviseGraphic(job, base, t.pending.feedback, n);
+        output = t.pending.kind === 'initial' ? draftGraphic(job, currentProfile()?.data) : reviseGraphic(job, base, t.pending.feedback, n);
       }
-      t.versions.push({ n, content: output.content, notes: output.notes, feedback: t.pending.feedback || null, by: AGENTS[t.agent].name, simulated: true, source: 'demo', createdAt: t.pending.readyAt });
+      t.versions.push({ n, content: output.content, notes: output.notes, feedback: t.pending.feedback || null, by: AGENTS[t.agent].name, simulated: true, source: 'demo', createdAt: t.pending.readyAt, profileVersion: profileRef() });
       t.pending = null;
       log(job.id, t.agent, `${AGENTS[t.agent].label} v${n} delivered for review.`);
       return true;
@@ -489,7 +503,7 @@ export function editCaption(taskId, text) {
     const t = getTask(taskId);
     const prev = currentVersion(t);
     if (!prev || prev.content.text === text) return false;
-    t.versions.push({ n: t.versions.length + 1, content: { ...prev.content, text }, notes: ['Edited directly by you'], feedback: null, by: 'You', simulated: false, source: 'human', createdAt: Date.now() });
+    t.versions.push({ n: t.versions.length + 1, content: { ...prev.content, text }, notes: ['Edited directly by you'], feedback: null, by: 'You', simulated: false, source: 'human', createdAt: Date.now(), profileVersion: profileRef() });
     log(t.jobId, 'manager', 'Caption edited by hand. The pair needs fresh approval.');
     return true;
   }, { action: 'edit' });
@@ -522,6 +536,13 @@ export async function approveJob(jobId) {
 }
 
 export function agentState(agentId, now = Date.now()) {
+  if (agentId === 'reviewer') {
+    if (reviewing.size) return 'working';
+    const items = reviewQueue();
+    if (items.some((x) => x.kind === 'findings')) return 'awaiting_review';
+    if (items.length) return 'queued';
+    return 'idle';
+  }
   if (agentId === 'manager') {
     if (state.jobs.some((j) => now < j.delegatedAt)) return 'delegating';
     if (state.tasks.some((t) => t.pending && !t.pending.error && now >= t.pending.startAt)) return 'working';
@@ -578,7 +599,10 @@ async function dispatchAi(taskId, now) {
     currentCaption: live.pending.kind === 'revision' ? prev?.content.text : undefined,
     currentVersion: prev?.n,
     feedback: live.pending.kind === 'revision' ? live.pending.feedback : undefined,
+    targetDate: job.targetDate,
+    profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null,
   };
+  const usedProfile = profileRef();
   let outcome;
   try {
     const r = await fetch('api/quill/caption', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify(body) });
@@ -595,7 +619,7 @@ async function dispatchAi(taskId, now) {
     if (outcome.data) {
       const d = outcome.data;
       const n = t.versions.length + 1;
-      t.versions.push({ n, content: { text: d.caption, opts: null }, notes: d.notes ? [`v${n}: ${d.notes}`] : [], feedback: t.pending.feedback || null, by: AGENTS.copywriter.name, simulated: d.provider !== 'anthropic', source: d.provider, model: d.model, createdAt: Date.now() });
+      t.versions.push({ n, content: { text: d.caption, opts: null }, notes: d.notes ? [`v${n}: ${d.notes}`] : [], feedback: t.pending.feedback || null, by: AGENTS.copywriter.name, simulated: d.provider !== 'anthropic', source: d.provider, model: d.model, createdAt: Date.now(), profileVersion: usedProfile });
       t.pending = null;
       log(t.jobId, 'copywriter', `Caption v${n} delivered for review (${d.provider === 'anthropic' ? 'AI-generated' : 'mock'}).`);
     } else {
@@ -654,7 +678,7 @@ export async function saveGraphicVersion(taskId, content, notes, baseVersions) {
     const t = getTask(taskId);
     if (baseVersions != null && t.versions.length !== baseVersions) return false;
     const n = t.versions.length + 1;
-    version = { n, content: { ...content, mode: 'photo' }, notes, feedback: null, by: 'You with Prism', simulated: false, source: 'photo', createdAt: Date.now() };
+    version = { n, content: { ...content, mode: 'photo' }, notes, feedback: null, by: 'You with Prism', simulated: false, source: 'photo', createdAt: Date.now(), profileVersion: profileRef() };
     t.versions.push(version);
     log(t.jobId, 'designer', `Photo layout saved as graphic v${n}.`);
     return true;
@@ -755,7 +779,7 @@ function restorePlan(planId, plan) {
 }
 
 export async function createPlan({ weekStart, brief, method, days, model }) {
-  const plan = { id: uid('plan'), weekStart, brief: brief.trim(), method, model: model || null, status: 'draft', createdAt: Date.now(), days };
+  const plan = { id: uid('plan'), weekStart, brief: brief.trim(), method, model: model || null, status: 'draft', createdAt: Date.now(), days, profileVersion: profileRef() };
   const res = await commitPlan(plan.id, () => { if (getPlan(plan.id)) return false; state.plans.unshift(plan); return true; });
   return res.ok ? { ok: true, plan: getPlan(plan.id) } : res;
 }
@@ -764,7 +788,7 @@ export async function createPlan({ weekStart, brief, method, days, model }) {
 export async function requestAiPlan(brief, weekStart, days) {
   let r;
   try {
-    r = await fetch('api/vektor/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify({ brief, weekStart, days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName })) }) });
+    r = await fetch('api/vektor/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify({ brief, weekStart, days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName })), profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null }) });
   } catch {
     return { ok: false, error: 'Can’t reach the HQ server. Nothing was charged; try again when connected.' };
   }
@@ -816,4 +840,130 @@ export async function confirmPlan(planId) {
   } finally {
     confirming.delete(planId);
   }
+}
+
+
+/* ---------- Business profile ---------- */
+export const today = () => ws.testDate || londonToday();
+export const currentProfile = () => { const v = state.profile?.versions; return v?.length ? v[v.length - 1] : null; };
+export const profileVersion = (id) => state.profile?.versions?.find((v) => v.id === id) || null;
+export const profileRef = () => currentProfile()?.id || null;
+function localVersionId(n, data) {
+  let h = 2166136261;
+  for (const ch of JSON.stringify(data)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  return `pv${n}-${(h >>> 0).toString(16).padStart(8, '0').slice(0, 6)}`;
+}
+
+/** Save the profile as a new version. Resolves { ok, version } or { ok: false, conflict | error }. */
+export async function saveProfile(data) {
+  if (ws.mode === 'local') {
+    const n = state.profile.versions.length + 1;
+    const v = { id: localVersionId(n, data), n, savedAt: Date.now(), savedBy: deviceKind(), data };
+    state.profile.versions.push(v);
+    state.profile.rev = (state.profile.rev || 0) + 1;
+    try { saveLocal(true); } catch (e) { state.profile.versions.pop(); return { ok: false, error: e.message }; }
+    notify();
+    return { ok: true, version: v };
+  }
+  const r = await api('api/workspace/profile', { method: 'PUT', body: JSON.stringify({ baseRev: ws.profileRev, data }) });
+  if (r.ok) {
+    state.profile = r.data.profile;
+    ws.profileRev = r.data.profile.rev;
+    ws.rev = Math.max(ws.rev, r.data.wsRev);
+    notify();
+    return { ok: true, version: currentProfile() };
+  }
+  if (r.status === 409 && r.data.current) return { ok: false, conflict: true, current: r.data.current };
+  return { ok: false, error: r.data.error || `Saving the profile failed (${r.status}).` };
+}
+export function adoptProfile(p) { state.profile = p; ws.profileRev = p.rev; notify(); }
+
+/** The newest profile version this post's content or review was based on (null for pre-profile posts). */
+export function jobProfileRef(job) {
+  const { copy, graphic } = jobTasks(job);
+  const ids = [job.profileVersion, currentVersion(copy)?.profileVersion, currentVersion(graphic)?.profileVersion, (job.reviews || []).at(-1)?.profileVersion].filter(Boolean);
+  const versions = ids.map(profileVersion).filter(Boolean).sort((a, b) => b.n - a.n);
+  return versions[0] || null;
+}
+/** Profile changes since this post was drafted or reviewed that touch what the post actually says. */
+export function jobProfileImpact(job) {
+  const ref = jobProfileRef(job);
+  const cur = currentProfile();
+  if (!ref || !cur || ref.id === cur.id) return [];
+  const copy = currentVersion(jobTasks(job).copy);
+  return profileImpact({ caption: copy?.content?.text || '', platform: job.platform, refData: ref.data, curData: cur.data, refId: ref.id, curId: cur.id, date: reviewDate(job) });
+}
+
+/* ---------- Brand & Quality Reviewer ---------- */
+const reviewing = new Set();
+export const isReviewing = (jobId) => reviewing.has(jobId);
+/** Offers must be valid on the post date (or today, if the post date has passed). */
+export const reviewDate = (job) => (job.targetDate && job.targetDate > today() ? job.targetDate : today());
+export const latestReview = (job) => (job.reviews || []).at(-1) || null;
+export function reviewStatus(job) {
+  const { copy, graphic } = jobTasks(job);
+  const r = latestReview(job);
+  const fr = reviewFreshness(r, copy.versions.length, graphic.versions.length);
+  return { review: r, ...fr, open: r && fr.fresh ? r.findings.filter((f) => f.status === 'fail' || f.status === 'owner') : [] };
+}
+
+/** Reviews that need attention: never reviewed, outdated, findings to act on, or touched by a profile change. */
+export function reviewQueue() {
+  const out = [];
+  for (const job of state.jobs) {
+    const { copy, graphic } = jobTasks(job);
+    if (!copy?.versions.length || !graphic?.versions.length || copy.pending || graphic.pending) continue;
+    const st = jobStatus(job);
+    const rs = reviewStatus(job);
+    const impact = jobProfileImpact(job);
+    if (impact.length) out.push({ job, kind: 'profile', text: impact.map((x) => x.text).join(' ') });
+    else if (rs.open.length) out.push({ job, kind: 'findings', text: `${rs.open.length} finding${rs.open.length === 1 ? '' : 's'} to act on` });
+    else if (rs.review && !rs.fresh && st !== 'approved') out.push({ job, kind: 'outdated', text: `Review #${rs.review.n} is outdated: ${rs.reasons.join(', ')}` });
+    else if (!rs.review && st !== 'approved') out.push({ job, kind: 'new', text: 'Not reviewed yet' });
+  }
+  return out;
+}
+
+/** Run the Reviewer's checks on the exact current versions and append the result to the post's review history. */
+export async function runReview(jobId) {
+  const job = getJob(jobId);
+  if (!job || reviewing.has(jobId)) return { ok: false, busy: true };
+  const { copy, graphic } = jobTasks(job);
+  const cv = currentVersion(copy);
+  const gv = currentVersion(graphic);
+  if (!cv || !gv || copy.pending || graphic.pending) return { ok: false, error: 'Wait for Quill and Prism to finish before reviewing.' };
+  reviewing.add(jobId);
+  notify();
+  try {
+    const ids = gv.content.mode === 'photo' ? [gv.content.photoId, gv.content.logoId].filter(Boolean) : [];
+    const present = new Set(await assetsPresent(ids));
+    await new Promise((r) => setTimeout(r, 700)); // a beat so the Reviewer is visibly at work
+    const profile = currentProfile();
+    const date = reviewDate(job);
+    const result = runChecks({ job, copyVersion: cv, graphicVersion: gv, profile, brand: state.brand || {}, date, present });
+    return await commit(jobId, () => {
+      const j = getJob(jobId);
+      const t = jobTasks(j);
+      if (t.copy.versions.length !== cv.n || t.graphic.versions.length !== gv.n) return false; // changed meanwhile
+      const n = (j.reviews || []).length + 1;
+      j.reviews = [...(j.reviews || []), { id: `rv_${j.id.slice(4)}_${n}`, n, at: Date.now(), by: AGENTS.reviewer.name, checkDate: date, today: today(), copyVersion: cv.n, graphicVersion: gv.n, profileVersion: profile.id, ...result }];
+      log(j.id, 'reviewer', `Review #${n}: ${result.findings.filter((f) => f.status === 'fail').length} problem(s), ${result.findings.filter((f) => f.status === 'owner').length} for owner review.`);
+      return true;
+    }, { action: 'review' });
+  } finally {
+    reviewing.delete(jobId);
+    notify();
+  }
+}
+
+async function assetsPresent(ids) {
+  if (!ids.length) return [];
+  if (ws.mode === 'shared') {
+    const r = await api('api/assets/check', { method: 'POST', body: JSON.stringify({ ids }) }).catch(() => null);
+    return r?.ok ? r.data.present : [];
+  }
+  const { getLocalAsset } = await import('./photo.js');
+  const out = [];
+  for (const id of ids) if (await getLocalAsset(id).catch(() => null)) out.push(id);
+  return out;
 }

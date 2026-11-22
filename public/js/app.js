@@ -3,6 +3,7 @@ import { briefTitle, sceneLabel } from './generators.js';
 import { renderGraphic } from './graphics.js';
 import * as P from './photo.js';
 import * as PL from './plan.js';
+import * as PF from './profile.js';
 import * as AG from './agents.js';
 
 const $main = document.getElementById('main');
@@ -77,6 +78,7 @@ function route() {
   if (a === 'calendar') return { view: 'calendar' };
   if (a === 'workspace') return { view: 'workspace' };
   if (a === 'week' && b) return { view: 'week', id: b };
+  if (a === 'profile') return { view: 'profile' };
   if (a === 'agent' && b) return { view: 'hq', agent: b, base: '#/' };
   return { view: 'hq' };
 }
@@ -94,12 +96,12 @@ const CHEVRON = '<span class="agent-go" aria-hidden="true"><svg viewBox="0 0 24 
 function character(agentId, { size = 'card' } = {}) {
   const a = S.AGENTS[agentId];
   const st = S.agentState(agentId);
-  const label = STATE_TEXT[st];
+  const label = agentId === 'reviewer' ? ({ working: 'Reviewing', queued: 'Reviews waiting', awaiting_review: 'Findings to act on' }[st] || STATE_TEXT[st]) : STATE_TEXT[st];
   const meta = `<span class="char-meta"><span class="char-name">${a.name}</span><span class="char-role">${a.role}</span>
     <span class="state-badge state-${st}"><span class="dot" aria-hidden="true"></span>${label}</span></span>`;
   if (size === 'xs') return `<span class="char char-${agentId} size-xs" data-state="${st}">${AG.thumb(agentId)}<span class="xs-dot" aria-hidden="true"></span></span>`;
   if (size === 'hero') return `<div class="char char-${agentId} size-hero" data-state="${st}" role="img" aria-label="${esc(AG.altText(agentId))}. Status: ${label}">${AG.art(agentId, { windowed: true, eager: true })}${meta}</div>`;
-  return `<a class="char char-${agentId} size-card agent-card" data-agent="${agentId}" data-state="${st}" href="${agentHref(agentId)}" aria-label="${a.name}, ${a.role}. Status: ${label}. Open workspace">${AG.art(agentId, { eager: true, card: true })}${meta}${CHEVRON}</a>`;
+  return `<a class="char char-${agentId} size-card agent-card" data-agent="${agentId}" data-state="${st}" href="${agentHref(agentId)}" aria-label="${a.name}, ${a.role}. Status: ${label}. Open workspace">${agentId === 'reviewer' ? `<span class="art-portrait">${AG.art(agentId, { eager: true, card: true })}</span><span class="art-banner">${AG.art(agentId, { banner: true })}</span>` : AG.art(agentId, { eager: true, card: true })}${meta}${CHEVRON}</a>`;
 }
 
 function managerLine() {
@@ -117,13 +119,18 @@ function renderHQ() {
     ${character('manager')}
     ${character('copywriter')}
     ${character('designer')}
-  </section>
+    ${character('reviewer')}
   <div class="hq-actions">
     <button type="button" class="action-btn" data-focus-brief><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M7 3h7l5 5v13H7z M14 3v5h5 M10 12h6 M10 15.5h6 M10 19h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg><span>New brief</span></button>
     <a class="action-btn" href="#/week/new" data-testid="plan-week-link"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 9.5h17 M8 3v4 M16 3v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.5 13h1.5 M11.25 13h1.5 M15 13h1.5 M7.5 16.5h1.5 M11.25 16.5h1.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Plan a content week</span></a>
   </div>
+  </section>
+  <nav class="hq-links" aria-label="Settings">
+    <a href="#/profile" data-testid="profile-link" data-profile-link>Business profile <span class="mini">${esc(S.currentProfile()?.id || '')}</span></a>
+    <a class="ws-inline" href="#/workspace" data-testid="ws-inline">Workspace: ${esc(wsPillText())}</a>
+  </nav>
+  ${S.ws.testDate ? `<p class="test-date" data-testid="test-date">Test date in use: ${esc(PF.fmt(S.ws.testDate))}. Offer and review checks treat this as today.</p>` : ''}
   <p class="manager-line" aria-live="polite"><span class="who">Vektor</span> ${esc(managerLine())}</p>
-  <a class="ws-inline" href="#/workspace">Workspace: ${esc(wsPillText())}</a>
 
   <div class="hq-grid">
     <section class="panel brief-panel" id="brief-panel" aria-labelledby="new-brief-h">
@@ -167,7 +174,24 @@ function renderAgentSheet(agentId) {
   const a = S.AGENTS[agentId];
   if (!a) return '';
   let body;
-  if (agentId === 'manager') {
+  if (agentId === 'reviewer') {
+    const q = S.reviewQueue();
+    const history = S.getState().jobs.flatMap((j) => (j.reviews || []).map((r) => ({ j, r }))).sort((x, y) => y.r.at - x.r.at);
+    const kindText = { new: 'Not reviewed yet', outdated: 'Review outdated', findings: 'Findings to act on', profile: 'Business profile changed' };
+    body = `
+      <h3>Assigned reviews</h3>
+      ${q.length ? `<ul class="deleg reviews-q" data-testid="review-queue">${q.map((x) => `<li><a href="#/job/${x.job.id}"><strong>${esc(jobTitle(x.job))}</strong></a>
+        <span class="mini">${esc(x.job.platform)}, ${fmtDate(x.job.targetDate)} · ${kindText[x.kind]}</span>${x.text !== kindText[x.kind] ? `<span>${esc(x.text)}</span>` : ''}</li>`).join('')}</ul>` : '<p class="empty">Nothing waiting. Posts appear here when they’re ready, change, or are affected by a business profile edit.</p>'}
+      <h3>How I check</h3>
+      <ul class="check-legend">
+        <li><span class="kind kind-rule">Rule</span> I check it myself: offer dates, LinkedIn hashtags, British spelling, logo metadata, missing files.</li>
+        <li><span class="kind kind-owner">Owner</span> Needs your review: figures, guarantees and product claims the profile doesn’t back.</li>
+        <li><span class="kind kind-human">You</span> Needs your eyes: whether the image looks like a real UK commercial setting.</li>
+      </ul>
+      <p class="mini">I never approve anything. Final approval is always yours.</p>
+      <h3>History</h3>
+      ${history.length ? `<ol class="activity">${history.map(({ j, r }) => `<li><span class="mini">${fmtTime(r.at)} · review #${r.n} · caption v${r.copyVersion} · graphic v${r.graphicVersion} · profile ${esc(r.profileVersion)}</span><a href="#/job/${j.id}">${esc(jobTitle(j))}</a> ${r.findings.filter((f) => f.status === 'fail').length} problem(s), ${r.findings.filter((f) => f.status === 'owner').length} for owner review</li>`).join('')}</ol>` : '<p class="empty">No reviews yet.</p>'}`;
+  } else if (agentId === 'manager') {
     const log = S.getState().log.slice(0, 30);
     const jobs = S.getState().jobs;
     body = `
@@ -234,7 +258,7 @@ function outputBlock(task, v, { compact = false } = {}) {
   if (task.type === 'copy') {
     return `<div class="caption-out${compact ? ' compact' : ''}">
       ${sourceTag(v)}
-      <div class="caption-text" data-testid="caption-text">${esc(v.content.text)}</div></div>`;
+      <div class="caption-text" data-testid="caption-text">${highlightCaption(task, v)}</div></div>`;
   }
   const isPhoto = v.content.mode === 'photo';
   return `<div class="graphic-out">
@@ -322,11 +346,14 @@ function renderJob(id) {
     <h1>${esc(jobTitle(job))}</h1>
     ${job.planId ? `<p class="plan-link" data-testid="plan-link">Part of <a href="#/week/${job.planId}">${esc(PL.fmtWeek(S.getPlan(job.planId)?.weekStart || job.targetDate))}</a> · ${esc(job.planDay.dayName)} · ${esc(job.platform)}. Audience: ${esc(job.planDay.audience)}.</p>` : ''}
     <details class="brief-detail" data-key="brief-${job.id}"><summary>Your brief</summary><p>${esc(job.brief)}</p></details>
+    <p class="profile-chip" data-testid="job-profile">Business profile: ${S.jobProfileRef(job) ? `<a href="#/profile" data-profile-link>${esc(S.jobProfileRef(job).id)}</a>${S.jobProfileRef(job).id !== S.currentProfile()?.id ? ` (current: ${esc(S.currentProfile()?.id || '')})` : ' (current)'}` : 'none recorded: this post was created before the business profile'}</p>
   </header>
+  ${profileImpactNotice(job)}
   <div class="review-grid">
     ${assetPanel(job, copy)}
     ${assetPanel(job, graphic)}
   </div>
+  ${reviewPanel(job)}
   <div class="approve-bar" data-status="${st}">
     <p>${esc(approveText)}</p>
     ${st === 'approved' ? `<a class="btn" href="#/calendar">View calendar</a>` : `<button class="btn btn-primary" data-approve="${job.id}" ${canApprove ? '' : 'disabled'}>${st === 'needs_reapproval' ? 'Approve changed pair' : 'Approve pair'}</button>`}
@@ -554,6 +581,27 @@ document.addEventListener('input', (e) => {
   st.dirty = true;
   syncStudioOutputs();
   requestDraw();
+});
+
+function onProfileField(e) {
+  const t = e.target;
+  if (!t.dataset?.pf || !ui.profileDraft) return;
+  const path = t.dataset.pf;
+  let v = t.type === 'checkbox' ? t.checked : t.value;
+  if (path === 'brand.linkedinHashtags.required') v = t.value.split(/\s+/).filter(Boolean);
+  setPath(ui.profileDraft, path, v);
+  ui.profileDirty = true;
+  if (t.type === 'checkbox' || t.type === 'date') render(); // refresh the offer's live/expired note
+}
+document.addEventListener('input', (e) => { if (e.target.type !== 'checkbox' && e.target.type !== 'date') onProfileField(e); });
+document.addEventListener('change', (e) => { if (e.target.type === 'checkbox' || e.target.type === 'date') onProfileField(e); });
+// Remember the post you came from so the profile screen can take you straight back.
+document.addEventListener('click', (e) => {
+  const a = e.target.closest?.('a[data-profile-link]');
+  if (!a) return;
+  const r = route();
+  ui.returnTo = r.view === 'job' ? location.hash : null;
+  ui.profileSaved = null;
 });
 
 document.addEventListener('change', (e) => {
@@ -831,8 +879,152 @@ function planEditsFromDom(pl) {
   };
 }
 
+/* ---------- Brand & Quality Reviewer: on the post ---------- */
+const FIXER = { copywriter: 'Quill (Copywriter)', designer: 'Prism (Creative Designer)', owner: 'You (owner)' };
+const KIND = { rule: ['Rule', 'Checked by the app'], owner: ['Owner', 'Needs owner review'], human: ['You', 'Needs your judgement'] };
+
+/** Mark lines of the current caption that a fresh review found problems in. */
+function highlightCaption(task, v) {
+  const job = S.getJob(task.jobId);
+  const rs = job ? S.reviewStatus(job) : null;
+  const quotes = rs?.fresh && rs.review.copyVersion === v.n ? rs.review.findings.filter((f) => f.quote && (f.status === 'fail' || f.status === 'owner') && f.where.startsWith('Caption')).map((f) => f.quote) : [];
+  if (!quotes.length) return esc(v.content.text);
+  return v.content.text.split('\n').map((line) => (quotes.some((q) => line.includes(q) || q.includes(line.trim()) && line.trim()) ? `<mark class="flagged" data-testid="flagged-line">${esc(line)}</mark>` : esc(line))).join('\n');
+}
+
+function profileImpactNotice(job) {
+  const impact = S.jobProfileImpact(job);
+  if (!impact.length) return '';
+  return `<div class="sync-box update" role="status" data-testid="profile-impact"><p><strong>The business profile changed in a way that affects this post.</strong></p>
+    <ul>${impact.map((x) => `<li><strong>${esc(x.field)}:</strong> ${esc(x.text)}</li>`).join('')}</ul>
+    <p class="mini">Run the review to check it against ${esc(S.currentProfile().id)}. Nothing has been changed or un-approved for you.</p></div>`;
+}
+
+function reviewPanel(job) {
+  const { copy, graphic } = S.jobTasks(job);
+  const ready = copy.versions.length && graphic.versions.length && !copy.pending && !graphic.pending;
+  const rs = S.reviewStatus(job);
+  const busy = S.isReviewing(job.id);
+  const older = (job.reviews || []).slice(0, -1).reverse();
+  const stLabel = busy ? 'reviewing' : !rs.review ? 'not_reviewed' : !rs.fresh ? 'outdated' : rs.open.length ? 'findings' : 'clear';
+  const stText = { reviewing: 'Reviewing…', not_reviewed: 'Not reviewed yet', outdated: 'Review outdated', findings: `${rs.open.length} to act on`, clear: 'No problems found' }[stLabel];
+  return `<section class="panel review-panel" id="review-panel" aria-labelledby="rv-h" data-testid="review-panel">
+    <header class="asset-head">
+      <a class="mini-char" href="${agentHref('reviewer')}" aria-label="Open Calibre's workspace">${character('reviewer', { size: 'xs' })}</a>
+      <div><h2 id="rv-h">Brand &amp; quality review</h2><span class="pill rv-${stLabel}" data-testid="review-state">${stText}</span></div>
+    </header>
+    ${ready ? `<div class="row-actions"><button class="btn btn-primary" data-run-review="${job.id}" ${busy ? 'disabled' : ''}>${busy ? 'Reviewing…' : rs.review ? 'Run review again' : 'Run review'}</button>
+      <span class="mini">Checks caption v${copy.versions.length} with graphic v${graphic.versions.length} against business profile ${esc(S.currentProfile()?.id || '')}. You keep final approval.</span></div>` : '<p class="mini">The review opens when the caption and graphic are both ready.</p>'}
+    ${rs.review ? renderReview(job, rs.review, rs) : ''}
+    ${older.length ? `<details class="hist-wrap" data-key="rvh-${job.id}"><summary>Earlier reviews (${older.length})</summary>${older.map((r) => renderReview(job, r, { fresh: false, reasons: ['superseded by a later review'], historic: true })).join('')}</details>` : ''}
+  </section>`;
+}
+
+function renderReview(job, r, rs) {
+  const group = (status, heading) => {
+    const items = r.findings.filter((f) => f.status === status);
+    return items.length ? `<h3 class="rv-group">${heading} (${items.length})</h3>${items.map((f) => renderFinding(job, r, f, rs.fresh)).join('')}` : '';
+  };
+  return `<div class="review-result${rs.fresh ? '' : ' outdated'}" data-testid="review-${r.n}">
+    <p class="review-meta" data-testid="review-meta">Review #${r.n} · <strong>caption v${r.copyVersion}</strong> · <strong>graphic v${r.graphicVersion}</strong> · <strong>profile ${esc(r.profileVersion)}</strong> · offers checked for ${esc(PF.fmt(r.checkDate))}${S.ws.testDate && r.today === S.ws.testDate ? ' (test date in use)' : ''} · ${fmtTime(r.at)}</p>
+    ${!rs.fresh && !rs.historic ? `<p class="outdated-note" data-testid="review-outdated"><strong>Outdated:</strong> the ${esc(rs.reasons.join(' and the '))} since this review. Its findings are kept for the record. Run the review again.</p>` : ''}
+    ${group('fail', 'Problems found')}
+    ${group('owner', 'Needs owner review')}
+    ${group('human', 'Needs your judgement')}
+    <details class="checks" data-key="rvc-${job.id}-${r.n}"><summary>Checks (${r.checks.filter((c) => c.kind === 'rule').length} ran automatically, ${r.checks.filter((c) => c.kind !== 'rule').length} need you)</summary>
+      <ul class="check-list">${r.checks.map((c) => `<li><span class="kind kind-${c.kind}" title="${KIND[c.kind][1]}">${KIND[c.kind][0]}</span> <strong>${esc(c.label)}</strong>: <span class="res res-${c.result}">${{ pass: 'Passed', fail: 'Problem found', na: 'Not applicable', owner: 'Needs owner review', human: 'Needs your judgement' }[c.result]}</span> <span class="mini">${esc(c.detail)}</span></li>`).join('')}</ul></details>
+  </div>`;
+}
+
+function renderFinding(job, r, f, fresh) {
+  const route = fresh && (f.fixer === 'copywriter' || f.fixer === 'designer');
+  const reviewedGraphic = f.check === 'visual' ? S.jobTasks(job).graphic.versions[r.graphicVersion - 1] : null;
+  return `<article class="finding f-${f.status}" data-testid="finding-${f.check}">
+    <h4>${esc(f.title)}</h4>
+    ${f.quote ? `<blockquote class="finding-quote">${esc(f.quote)}</blockquote>` : ''}
+    <dl><dt>Where</dt><dd>${esc(f.where)}</dd><dt>Why it matters</dt><dd>${esc(f.why)}</dd><dt>Who can fix it</dt><dd>${FIXER[f.fixer]}</dd></dl>
+    ${reviewedGraphic ? `<button class="graphic-btn small" data-lightbox="${S.jobTasks(job).graphic.id}:${reviewedGraphic.n}" aria-label="Inspect graphic v${reviewedGraphic.n} full screen">${graphicMarkup(S.jobTasks(job).graphic, reviewedGraphic)}</button>` : ''}
+    ${route ? `<div class="row-actions">${f.fixer === 'copywriter' ? `<button class="btn" data-route-finding="${job.id}|${r.n}|${f.id}">Send to Quill</button>` : `<a class="btn" href="#/job/${job.id}/studio">Open Photo layout</a><button class="btn btn-ghost" data-route-finding="${job.id}|${r.n}|${f.id}">Send to Prism</button>`}</div>` : ''}
+  </article>`;
+}
+
+/* ---------- Business profile screen ---------- */
+const getPath = (o, path) => path.split('.').reduce((x, k) => (x == null ? x : x[k]), o);
+function setPath(o, path, v) {
+  const ks = path.split('.');
+  const last = ks.pop();
+  const t = ks.reduce((x, k) => x[k], o);
+  t[last] = v;
+}
+const field = (path, label, { type = 'text', area = false, rows = 3, placeholder = '' } = {}) => {
+  const id = `pf-${path.replace(/\./g, '-')}`;
+  const v = getPath(ui.profileDraft, path) ?? '';
+  const dis = profileReadOnly() ? 'disabled' : '';
+  if (type === 'checkbox') return `<label class="pf-check"><input type="checkbox" id="${id}" data-pf="${path}" ${v ? 'checked' : ''} ${dis}> ${label}</label>`;
+  return `<label for="${id}">${label}</label>${area ? `<textarea id="${id}" data-pf="${path}" rows="${rows}" placeholder="${esc(placeholder)}" ${dis}>${esc(v)}</textarea>` : `<input id="${id}" type="${type}" data-pf="${path}" value="${esc(Array.isArray(v) ? v.join(' ') : v)}" placeholder="${esc(placeholder)}" ${dis}>`}`;
+};
+const profileReadOnly = () => S.ws.authConfigured && S.ws.mode !== 'shared';
+
+function renderProfile() {
+  const cur = S.currentProfile();
+  if (!cur) return '<p class="empty">Loading the business profile…</p>';
+  if (!ui.profileDraft || (!ui.profileDirty && ui.profileDraftBase !== cur.id)) {
+    ui.profileDraft = JSON.parse(JSON.stringify(cur.data));
+    ui.profileDraftBase = cur.id;
+    ui.profileDirty = false;
+  }
+  const d = ui.profileDraft;
+  const ro = profileReadOnly();
+  const missing = PF.missingWording(cur.data);
+  const date = S.today();
+  const versions = [...(S.getState().profile?.versions || [])].reverse();
+  const affected = ui.profileSaved ? S.getState().jobs.map((j) => ({ j, impact: S.jobProfileImpact(j) })).filter((x) => x.impact.length) : [];
+  const offerStatus = (o) => { const st = PF.offerState(o, date); return st.live ? `Live on ${PF.fmt(date)}` : `Not live on ${PF.fmt(date)}: ${st.why}`; };
+  return `<nav class="crumbs">${ui.returnTo ? `<a href="${ui.returnTo}" data-testid="back-to-post">← Back to post</a>` : '<a href="#/">← HQ</a>'}</nav>
+  <header class="cal-head">
+    <h1>Business profile</h1>
+    <p class="profile-meta" data-testid="profile-meta">Version ${cur.n} · <code>${esc(cur.id)}</code> · saved ${esc(fmtTime(cur.savedAt))}${cur.savedBy === 'seed' ? ' (starting profile)' : ` on ${devName(cur.savedBy)}`}</p>
+    <p class="mini">${S.ws.mode === 'shared' ? 'Shared workspace: changes apply on your laptop and phone. Vektor, Quill, Prism and Calibre use the latest version, and every new output records which version it used.' : ro ? 'You’re signed out, so this is read-only. <a href="#/workspace">Sign in</a> to edit the shared profile.' : 'This browser only (local demo).'}</p>
+    ${missing.length ? `<p class="missing-wording" data-testid="missing-wording"><strong>Missing wording:</strong> ${missing.join(' and ')}. Quill uses working stand-ins until you add Nexai’s original text below.</p>` : ''}
+    ${S.ws.testDate ? `<p class="test-date">Test date in use: ${esc(PF.fmt(S.ws.testDate))}.</p>` : ''}
+  </header>
+  ${ui.profileConflict ? `<div class="sync-box conflict" role="alert"><p><strong>Not saved.</strong> The profile was changed on another device (now ${esc(S.currentProfile().id)}).</p><div class="row-actions"><button class="btn btn-primary" data-pf-load-latest>Load the latest profile (discard my edits)</button></div></div>` : ''}
+  ${ui.profileSaved ? `<div class="sync-box update" role="status" data-testid="profile-saved"><p><strong>Saved as version ${ui.profileSaved.n} (${esc(ui.profileSaved.id)}).</strong> Changed: ${esc(ui.profileSaved.fields.map((f) => PF.FIELD_LABEL[f] || f).join(', ') || 'nothing')}.</p>
+    ${affected.length ? `<p>Posts to review because of this change:</p><ul data-testid="affected-posts">${affected.map(({ j, impact }) => `<li><a href="#/job/${j.id}">${esc(jobTitle(j))}</a>: ${esc(impact.map((x) => x.text).join(' '))}</li>`).join('')}</ul>` : '<p data-testid="no-affected">No existing posts are affected by this change.</p>'}</div>` : ''}
+  <form id="profile-form" class="profile-form" novalidate>
+    <fieldset><legend>Services</legend>
+      ${d.services.map((sv, i) => `<div class="pf-row">${field(`services.${i}.name`, 'Service')}${field(`services.${i}.description`, 'Description', { area: true, rows: 3 })}${ro ? '' : `<button type="button" class="btn btn-ghost btn-small" data-pf-remove="services|${i}">Remove service</button>`}</div>`).join('')}
+      ${ro ? '' : '<button type="button" class="btn btn-small" data-pf-add="services">Add a service</button>'}
+    </fieldset>
+    <fieldset><legend>Audience</legend>${field('audience.summary', 'Who we serve')}${field('audience.size', 'Company size')}${field('audience.buyers', 'Buyers')}</fieldset>
+    <fieldset><legend>Proof</legend><p class="mini">Quill and Calibre use product names only until you add approved claims or links.</p>
+      ${d.proof.map((pr, i) => `<div class="pf-row">${field(`proof.${i}.name`, 'Product')}${field(`proof.${i}.claims`, 'Approved claims', { area: true, rows: 2, placeholder: 'None approved yet: posts use the product name only' })}${field(`proof.${i}.link`, 'Approved link', { type: 'url', placeholder: 'None yet' })}</div>`).join('')}
+    </fieldset>
+    <fieldset><legend>Website call to action</legend>${field('cta.main', 'Main CTA')}${field('cta.organic', 'Guidance for organic posts', { area: true, rows: 2 })}</fieldset>
+    <fieldset><legend>Brand rules</legend>${field('brand.language', 'Language')}
+      <div class="pf-inline">${field('brand.linkedinHashtags.min', 'LinkedIn hashtags: at least', { type: 'number' })}${field('brand.linkedinHashtags.max', 'at most', { type: 'number' })}</div>
+      ${field('brand.linkedinHashtags.required', 'Required LinkedIn hashtags (space separated)', { placeholder: 'e.g. #NexaiDigital' })}
+      ${field('brand.imagery', 'Imagery', { area: true, rows: 2 })}
+      <p class="pf-logo">Official logo: <strong>${S.brand().logoName ? esc(S.brand().logoName) : 'not supplied yet'}</strong>. <span class="mini">Prism’s Photo layout sets and reuses it; Calibre checks graphics against it.</span></p>
+    </fieldset>
+    <fieldset data-testid="offers"><legend>Offers</legend>
+      ${d.offers.length ? d.offers.map((o, i) => `<div class="pf-row offer" data-testid="offer-${i}">${field(`offers.${i}.wording`, 'Exact wording', { area: true, rows: 2 })}
+        <div class="pf-inline">${field(`offers.${i}.start`, 'Start date', { type: 'date' })}${field(`offers.${i}.end`, 'End date', { type: 'date' })}</div>${field(`offers.${i}.active`, 'Active', { type: 'checkbox' })}
+        <p class="mini offer-status">${esc(offerStatus(o))}</p>${ro ? '' : `<button type="button" class="btn btn-ghost btn-small" data-pf-remove="offers|${i}">Remove offer</button>`}</div>`).join('') : '<p class="empty">No offers yet.</p>'}
+      ${ro ? '' : '<button type="button" class="btn btn-small" data-pf-add="offers" data-testid="add-offer">Add an offer</button>'}
+    </fieldset>
+    <fieldset><legend>Writing guidance</legend>
+      ${field('writing.process', `Winner’s Writing Process${!d.writing.process?.trim() ? ' <span class="missing-tag">Missing: add Nexai’s original wording</span>' : ''}`, { area: true, rows: 5, placeholder: 'Paste Nexai’s original Winner’s Writing Process here.' })}
+      ${field('writing.checklist', `Self-review checklist${!d.writing.checklist?.trim() ? ' <span class="missing-tag">Missing: add Nexai’s original wording</span>' : ''}`, { area: true, rows: 5, placeholder: 'Paste Nexai’s original self-review checklist here.' })}
+    </fieldset>
+    ${ro ? '' : `<div class="approve-bar profile-bar"><p>${ui.profileDirty ? 'Unsaved changes.' : 'No unsaved changes.'} Saving creates version ${cur.n + 1}; earlier versions are kept.</p><button class="btn btn-primary" type="submit" data-testid="save-profile" ${ui.profileSaving ? 'disabled' : ''}>${ui.profileSaving ? 'Saving…' : `Save as version ${cur.n + 1}`}</button></div>`}
+  </form>
+  <section class="panel" aria-labelledby="pv-h"><h2 id="pv-h">Version history</h2>
+    <ol class="activity" data-testid="profile-versions">${versions.map((v, i) => { const prev = versions[i + 1]; const ch = prev ? PF.changedFields(prev.data, v.data).map((f) => PF.FIELD_LABEL[f] || f) : []; return `<li><span class="mini">${esc(fmtTime(v.savedAt))}${v.savedBy === 'seed' ? ' · starting profile' : ` · ${devName(v.savedBy)}`}</span><strong>Version ${v.n}</strong> <code>${esc(v.id)}</code>${ch.length ? ` · changed ${esc(ch.join(', '))}` : ''}</li>`; }).join('')}</ol></section>`;
+}
+
 /* ---------- Shared workspace: sync notices, sign-in, import ---------- */
-const ACTION_TEXT = { approve: 'Not approved.', 'save-graphic': 'Design not saved yet.', revision: 'Feedback not sent yet.', edit: 'Caption edit not saved yet.', retry: 'Not retried.', cancel: 'Not cancelled.', create: 'Not saved.', save: 'Not saved.' };
+const ACTION_TEXT = { review: 'Review not saved.', approve: 'Not approved.', 'save-graphic': 'Design not saved yet.', revision: 'Feedback not sent yet.', edit: 'Caption edit not saved yet.', retry: 'Not retried.', cancel: 'Not cancelled.', create: 'Not saved.', save: 'Not saved.' };
 const ago = (ts) => {
   if (!ts) return '';
   const s = Math.round((Date.now() - ts) / 1000);
@@ -984,7 +1176,7 @@ let lastSig = '';
 function signature() {
   const s = S.getState();
   const w = S.ws;
-  return [(s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
+  return [S.currentProfile()?.id, S.agentState('reviewer'), s.jobs.map((j) => `${(j.reviews || []).length}${S.isReviewing(j.id) ? 'r' : ''}`).join(), S.ws.testDate, (s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
 }
 
 function render() {
@@ -1003,7 +1195,7 @@ function render() {
   const pill = document.getElementById('ws-pill');
   if (pill) { pill.textContent = wsPillText(); pill.dataset.mode = S.ws.mode; pill.dataset.status = S.ws.status; }
   if (!S.ws.ready) { $main.innerHTML = '<p class="empty">Loading your workspace…</p>'; return; }
-  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'calendar' ? renderCalendar() : r.view === 'workspace' ? renderWorkspace() : r.view === 'week' ? renderWeek(r.id) : renderHQ();
+  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'calendar' ? renderCalendar() : r.view === 'workspace' ? renderWorkspace() : r.view === 'week' ? renderWeek(r.id) : r.view === 'profile' ? renderProfile() : renderHQ();
   $sheet.innerHTML = (r.agent ? renderAgentSheet(r.agent) : '') + (ui.lightbox ? renderLightbox() : '');
   document.body.classList.toggle('no-scroll', !!(r.agent || ui.lightbox));
 
@@ -1040,6 +1232,30 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) S.po
 let submitLock = false;
 document.addEventListener('submit', (e) => {
   const f = e.target;
+  if (f.id === 'profile-form') {
+    e.preventDefault();
+    if (ui.profileSaving || profileReadOnly()) return;
+    const before = S.currentProfile();
+    const draft = JSON.parse(JSON.stringify(ui.profileDraft));
+    draft.brand.linkedinHashtags.min = Number(draft.brand.linkedinHashtags.min) || 0;
+    draft.brand.linkedinHashtags.max = Number(draft.brand.linkedinHashtags.max) || 0;
+    if (!Array.isArray(draft.brand.linkedinHashtags.required)) draft.brand.linkedinHashtags.required = String(draft.brand.linkedinHashtags.required || '').split(/\s+/).filter(Boolean);
+    ui.profileSaving = true;
+    ui.profileConflict = false;
+    render();
+    S.saveProfile(draft).then((res) => {
+      ui.profileSaving = false;
+      if (res.ok) {
+        ui.profileSaved = { id: res.version.id, n: res.version.n, fields: PF.changedFields(before.data, res.version.data) };
+        ui.profileDirty = false;
+        ui.profileDraft = null;
+        toast(`Business profile saved as version ${res.version.n}.`);
+      } else if (res.conflict) { S.adoptProfile(res.current); ui.profileConflict = true; } else toast(res.error);
+      render();
+      window.scrollTo(0, 0);
+    });
+    return;
+  }
   if (f.id === 'week-form') {
     e.preventDefault();
     if (ui.planning) return; // one tap, one plan (and at most one paid request)
@@ -1062,7 +1278,7 @@ document.addEventListener('submit', (e) => {
         planDays = days.map((d, i) => ({ ...d, ...r.days[i], include: true, jobId: null }));
         model = r.model;
         usedMethod = r.provider === 'anthropic' ? 'ai' : 'mock';
-      } else planDays = PL.templatePlan(brief, weekStart);
+      } else planDays = PL.templatePlan(brief, weekStart, S.currentProfile()?.data);
       const res = await S.createPlan({ weekStart, brief, method: usedMethod, days: planDays, model });
       ui.planning = null;
       if (!res.ok) { ui.weekError = res.error || 'The plan wasn’t saved.'; render(); return; }
@@ -1207,6 +1423,42 @@ document.addEventListener('click', (e) => {
     })();
     return;
   }
+  if (t.dataset.runReview) {
+    const id = t.dataset.runReview;
+    S.runReview(id).then((res) => { if (res.error) toast(res.error); else if (res.ok) toast('Review finished.'); render(); document.querySelector('[data-testid="review-panel"]')?.scrollIntoView({ block: 'start' }); });
+    render();
+    return;
+  }
+  if (t.dataset.routeFinding) {
+    // Hand a finding to Quill or Prism through the existing revision controls, with the fix pre-filled for you to edit.
+    const [jobId, rn, fid] = t.dataset.routeFinding.split('|');
+    const job = S.getJob(jobId);
+    const f = (job.reviews || [])[Number(rn) - 1]?.findings.find((x) => x.id === fid);
+    if (!f) return;
+    const task = S.jobTasks(job)[f.fixer === 'copywriter' ? 'copy' : 'graphic'];
+    ui.revision[task.id] = true;
+    ui.editing[task.id] = false;
+    render();
+    const ta = document.getElementById(`fb-${task.id}`);
+    if (ta) { ta.value = f.fix; ta.focus(); ta.scrollIntoView({ block: 'center' }); }
+    return;
+  }
+  if (t.dataset.pfAdd) {
+    const k = t.dataset.pfAdd;
+    if (k === 'offers') ui.profileDraft.offers.push({ id: `of_${Date.now().toString(36)}`, wording: '', start: S.today(), end: '', active: true });
+    else ui.profileDraft.services.push({ id: `svc_${Date.now().toString(36)}`, name: '', description: '' });
+    ui.profileDirty = true;
+    render();
+    return;
+  }
+  if (t.dataset.pfRemove) {
+    const [k, i] = t.dataset.pfRemove.split('|');
+    ui.profileDraft[k].splice(Number(i), 1);
+    ui.profileDirty = true;
+    render();
+    return;
+  }
+  if (t.matches('[data-pf-load-latest]')) { ui.profileDraft = null; ui.profileDirty = false; ui.profileConflict = false; render(); return; }
   if (t.dataset.loadLatest) {
     const id = t.dataset.loadLatest;
     S.loadLatest(id);

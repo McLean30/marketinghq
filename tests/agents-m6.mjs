@@ -28,7 +28,7 @@ async function fresh(page) {
   await page.evaluate(() => localStorage.clear());
   await page.reload();
   await page.waitForSelector('.agent-card.char-manager img');
-  await page.waitForFunction(() => [...document.querySelectorAll('.agent-card img')].every((i) => i.complete && i.naturalWidth > 0));
+  await page.waitForFunction(() => [...document.querySelectorAll('.agent-card img')].every((i) => !i.offsetParent || (i.complete && i.naturalWidth > 0)));
 }
 async function sendBrief(page) {
   await page.click('button[data-focus-brief]');
@@ -90,7 +90,7 @@ s=Image.new('RGB',(a.width+m.width+24,a.height),(0,0,0)); s.paste(m,(0,0)); s.pa
   await fresh(dp);
   await dp.screenshot({ path: path.join(PREV, 'm6-desktop-hq.jpg'), type: 'jpeg', quality: 85 });
   const heights = await dp.locator('.agent-card').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().height)));
-  assert(Math.max(...heights) - Math.min(...heights) <= 2, `Desktop: three cards in one row at equal height (${heights.join(', ')}px)`);
+  assert(Math.max(...heights) - Math.min(...heights) <= 2, `Desktop: four cards in one row at equal height (${heights.join(', ')}px)`);
   const btn = await dp.locator('[data-testid="plan-week-link"]').boundingBox();
   assert(btn.y + btn.height <= 900, 'Desktop: both actions visible without scrolling');
 
@@ -102,16 +102,16 @@ s=Image.new('RGB',(a.width+m.width+24,a.height),(0,0,0)); s.paste(m,(0,0)); s.pa
     order.push(await dp.evaluate(() => document.activeElement.dataset.agent || document.activeElement.textContent.trim().slice(0, 22)));
   }
   const iv = order.indexOf('manager');
-  assert(iv >= 0 && order[iv + 1] === 'copywriter' && order[iv + 2] === 'designer' && order[iv + 3] === 'New brief' && order[iv + 4] === 'Plan a content week', `Tab order: … ${order.slice(iv, iv + 5).join(' → ')}`);
+  assert(iv >= 0 && order[iv + 1] === 'copywriter' && order[iv + 2] === 'designer' && order[iv + 3] === 'reviewer' && order[iv + 4] === 'New brief' && order[iv + 5] === 'Plan a content week', `Tab order: … ${order.slice(iv, iv + 6).join(' → ')}`);
   while ((await dp.evaluate(() => document.activeElement.dataset.agent)) !== 'copywriter') await dp.keyboard.press('Shift+Tab');
   const ring = await dp.evaluate(() => getComputedStyle(document.activeElement).outlineStyle);
   assert(ring !== 'none', 'Focused card shows a visible focus ring');
-  for (const [id, name, key] of [['copywriter', 'Quill', 'Enter'], ['designer', 'Prism', 'Enter'], ['manager', 'Vektor', 'Enter']]) {
+  for (const [id, name, key] of [['copywriter', 'Quill', 'Enter'], ['designer', 'Prism', 'Enter'], ['manager', 'Vektor', 'Enter'], ['reviewer', 'Calibre', 'Enter']]) {
     await dp.locator(`.agent-card.char-${id}`).focus();
     await dp.keyboard.press(key);
     await dp.waitForSelector('.sheet .size-hero');
     assert(dp.url().endsWith(`#/agent/${id}`) && (await dp.locator('.sheet .size-hero .char-name').innerText()) === name, `${name} card opens ${name}’s workspace with the same artwork`);
-    assert(await dp.locator(`.sheet .size-hero img[src$="${id === 'manager' ? 'vektor' : id === 'copywriter' ? 'quill' : 'prism'}.webp"]`).count() === 1, `${name} workspace uses the same artwork file`);
+    assert(await dp.locator(`.sheet .size-hero img[src$="${id === 'manager' ? 'vektor.webp' : id === 'copywriter' ? 'quill.webp' : id === 'designer' ? 'prism.webp' : 'reviewer.svg'}"]`).count() === 1, `${name} workspace uses the same artwork file`);
     await dp.keyboard.press('Escape');
     await dp.waitForSelector('.sheet', { state: 'detached' });
   }

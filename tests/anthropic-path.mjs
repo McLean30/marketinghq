@@ -51,7 +51,8 @@ try {
   assert(!log.includes('dummy-test-key'), 'Server log never prints the key');
 
   const brief = 'Write for an M&E service manager who gets to Friday afternoon with three completed jobs still waiting on engineer photos.';
-  let r = await post({ kind: 'revision', brief, platform: 'LinkedIn', currentCaption: 'Old caption v1', currentVersion: 1, feedback: 'Cut it to under 100 words.' });
+  const profile = { versionId: 'pv3-abc123', data: { services: [{ name: 'Custom Business Software', description: 'Job management' }], audience: { summary: 'UK commercial building maintenance firms', size: '30–75 employees', buyers: 'Owners, MDs and Operations Directors' }, proof: [{ name: 'JobTrack Pro', claims: '' }], cta: { main: 'Request a Free Workflow Review', organic: 'No hard selling.' }, brand: { language: 'British English', linkedinHashtags: { min: 3, max: 5, required: ['#NexaiDigital'] } }, offers: [{ id: 'o1', wording: 'Live offer wording.', start: '2026-12-01', end: '2026-12-31', active: true }, { id: 'o2', wording: 'Expired offer wording.', start: '2026-10-01', end: '2026-11-30', active: true }], writing: { process: '', checklist: 'Owner checklist item.' } } };
+  let r = await post({ kind: 'revision', brief, platform: 'LinkedIn', currentCaption: 'Old caption v1', currentVersion: 1, feedback: 'Cut it to under 100 words.', targetDate: '2026-12-04', profile });
   const out = await r.json();
   assert(r.status === 200 && out.provider === 'anthropic' && out.caption.startsWith('Stub caption'), 'Structured JSON response parsed into a caption');
   const req = seen.at(-1);
@@ -63,6 +64,9 @@ try {
   assert(/British English/.test(req.body.system) && /Never invent results/.test(req.body.system), 'System prompt carries Nexai voice and no-invented-results rule');
   const msg = req.body.messages[0].content;
   assert(msg.includes(brief) && msg.includes('Platform: LinkedIn') && msg.includes('Old caption v1') && msg.includes('Cut it to under 100 words.'), 'Revision prompt includes brief, platform, current caption and exact feedback');
+  assert(msg.includes('Nexai business profile (pv3-abc123)') && msg.includes('Owners, MDs and Operations Directors') && msg.includes('JobTrack Pro (name only, no approved claims)') && msg.includes('#NexaiDigital'), 'Configured-provider prompt carries the business profile');
+  assert(msg.includes('"Live offer wording."') && !msg.includes('Expired offer wording.'), 'Only offers live on the post date reach the prompt');
+  assert(msg.includes('Owner checklist item.') && /Winner's Writing Process: not supplied yet/.test(msg), 'Owner wording used where supplied; missing wording flagged as stand-in');
   assert(req.headers.authorization === 'Bearer dummy-test-key-not-real', 'Server-env key sent by the server (SDK 1.x uses Authorization: Bearer)');
 
   const planDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map((dayName, i) => ({ dayName, date: `2026-11-2${3 + i}`, platform: ['LinkedIn', 'Facebook', 'Google Business Profile', 'Facebook', 'LinkedIn'][i] }));

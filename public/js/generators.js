@@ -1,3 +1,4 @@
+import { activeOffers } from './profile.js';
 // LOCAL DEMO GENERATORS. No live AI is called in milestone 1.
 // Captions are assembled from templates keyed off the brief; graphics are SVG specs
 // rendered by graphics.js. Every output is flagged `simulated` in the UI.
@@ -120,16 +121,53 @@ function compose(theme, platform, opts) {
   return { text: parts.join('\n\n'), opts: { hookIdx, ctaIdx, tagIdx, short, friendly, numberPrompt } };
 }
 
-export function draftCaption(job) {
+/**
+ * Apply the business profile to a composed caption: the exact wording of an active offer when the brief asks for
+ * one (inserted before the closing question), and the LinkedIn hashtag rule (count and required tags).
+ */
+function applyProfile(text, job, profile, date, offerId) {
+  if (!profile) return { text, offerId: null };
+  let parts = text.split('\n\n');
+  let usedOffer = null;
+  const live = activeOffers(profile, date || job.targetDate);
+  const offer = offerId ? live.find((o) => o.id === offerId) : /\boffer\b/i.test(job.brief) ? live[0] : null;
+  if (offer) {
+    usedOffer = offer.id;
+    const at = parts.length >= 2 ? parts.length - 2 : parts.length;
+    parts.splice(at, 0, offer.wording);
+  }
+  const rule = profile.brand?.linkedinHashtags;
+  if (job.platform === 'LinkedIn' && rule) {
+    const last = parts[parts.length - 1];
+    const tags = last.startsWith('#') ? last.split(/\s+/) : [];
+    const merged = [...new Set([...(rule.required || []), ...tags])].slice(0, Math.max(rule.max || 5, (rule.required || []).length));
+    if (tags.length) parts[parts.length - 1] = merged.join(' '); else parts.push(merged.join(' '));
+  }
+  return { text: parts.join('\n\n'), offerId: usedOffer };
+}
+
+/** Remove lines containing text the feedback quotes and asks to remove (e.g. an expired offer). */
+function removeQuoted(text, feedback) {
+  if (!/\b(remove|delete|take out|drop)\b/i.test(feedback)) return null;
+  const quotes = [...feedback.matchAll(/[“"]([^”"]{6,})[”"]/g)].map((m) => m[1]);
+  let out = text;
+  for (const q of quotes) out = out.split('\n').filter((line) => !line.includes(q)).join('\n');
+  return out === text ? null : out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+export function draftCaption(job, profile = null, date = null) {
   const theme = THEMES[themeFor(job.brief)];
-  const { text, opts } = compose(theme, job.platform, {});
+  const composed = compose(theme, job.platform, {});
+  const applied = applyProfile(composed.text, job, profile, date);
   return {
-    content: { text, opts, audience: audienceFrom(job.brief) },
-    notes: [`Drafted for ${audienceFrom(job.brief)} on ${job.platform}`, 'Hook → problem → practical fixes → question → hashtags'],
+    content: { text: applied.text, opts: composed.opts, audience: audienceFrom(job.brief), offerId: applied.offerId },
+    notes: [`Drafted for ${audienceFrom(job.brief)} on ${job.platform}`, 'Hook → problem → practical fixes → question → hashtags', ...(profile ? ['Used the business profile (offers, hashtag rule)'] : [])],
   };
 }
 
-export function reviseCaption(job, prev, feedback, n) {
+export function reviseCaption(job, prev, feedback, n, profile = null, date = null) {
+  const removed = removeQuoted(prev.text, feedback);
+  if (removed) return { content: { ...prev, text: removed, offerId: null }, notes: [`v${n}: Removed the quoted wording; everything else kept as it was`] };
   const theme = THEMES[themeFor(job.brief)];
   const o = { ...(prev.opts || {}) };
   const notes = [];
@@ -145,10 +183,11 @@ export function reviseCaption(job, prev, feedback, n) {
     notes.push('Rewrote the opening line');
   }
   const { text, opts } = compose(theme, job.platform, o);
-  return { content: { ...prev, text, opts }, notes: [`v${n}: ${notes.join('; ')}`] };
+  const applied = applyProfile(text, job, profile, date, prev.offerId || null);
+  return { content: { ...prev, text: applied.text, opts, offerId: applied.offerId }, notes: [`v${n}: ${notes.join('; ')}`] };
 }
 
-export function draftGraphic(job) {
+export function draftGraphic(job, profile = null) {
   const key = themeFor(job.brief);
   const theme = THEMES[key];
   return {
@@ -162,7 +201,7 @@ export function draftGraphic(job) {
       logoScale: 1,
       platform: job.platform,
     },
-    notes: ['Plant-room scene, engineer with tablet', 'Headline left, Nexai logo bottom left'],
+    notes: ['Plant-room scene, engineer with tablet', 'Headline left, Nexai logo bottom left', ...(profile?.brand?.imagery ? [`Visual brief from the business profile: ${profile.brand.imagery}`] : [])],
   };
 }
 

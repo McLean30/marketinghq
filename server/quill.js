@@ -77,6 +77,8 @@ ${WRITING_PROCESS}
 
 ${SELF_REVIEW}
 
+The user message includes Nexai's business profile. Use it for audience, services and brand rules. If it contains Nexai's own Winner's Writing Process or self-review checklist, follow those instead of the stand-ins above. Mention an offer only if the brief asks for it, quote it exactly, and never mention an offer that isn't active on the post date. Don't claim results for Nexai's products unless the profile lists approved claims.
+
 Return only the finished caption in the "caption" field, ready to paste. Put a one-sentence summary of your approach or changes in "notes".`;
 
 const OUTPUT_SCHEMA = {
@@ -89,8 +91,30 @@ const OUTPUT_SCHEMA = {
   additionalProperties: false,
 };
 
+/** Plain-text summary of the business profile fields that matter for writing. */
+function profileBlock(p, date) {
+  if (!p || typeof p !== 'object') return '';
+  const d = p.data || {};
+  const s = (x) => String(x ?? '').slice(0, 1200);
+  const on = (o) => o.active && (!o.start || o.start <= date) && (!o.end || o.end >= date);
+  const active = (d.offers || []).filter(on);
+  const tags = d.brand?.linkedinHashtags || {};
+  return [
+    `Nexai business profile (${s(p.versionId)}). Use it; don't recite it.`,
+    `Services: ${(d.services || []).map((x) => `${s(x.name)} (${s(x.description)})`).join('; ')}`,
+    `Audience: ${s(d.audience?.summary)}; ${s(d.audience?.size)}; buyers: ${s(d.audience?.buyers)}`,
+    `Proof: ${(d.proof || []).map((x) => (x.claims ? `${s(x.name)} (approved claims: ${s(x.claims)})` : `${s(x.name)} (name only, no approved claims)`)).join('; ')}`,
+    `Website call to action: "${s(d.cta?.main)}". ${s(d.cta?.organic)}`,
+    `Brand: ${s(d.brand?.language)}. LinkedIn posts end with ${tags.min ?? 3} to ${tags.max ?? 5} hashtags${(tags.required || []).length ? `, always including ${tags.required.map(s).join(' ')}` : ''}.`,
+    active.length ? `Offers active on ${date} (quote exactly if the brief asks for an offer): ${active.map((o) => `"${s(o.wording)}"`).join('; ')}` : `No offers are active on ${date}. Don't mention any offer.`,
+    d.writing?.process ? `Nexai's Winner's Writing Process (owner's wording):\n${s(d.writing.process)}` : "Nexai's Winner's Writing Process: not supplied yet (use the stand-in).",
+    d.writing?.checklist ? `Nexai's self-review checklist (owner's wording):\n${s(d.writing.checklist)}` : "Nexai's self-review checklist: not supplied yet (use the stand-in).",
+  ].join('\n');
+}
+
 function buildUserMessage(req) {
-  const lines = [`Platform: ${req.platform}`, `Job brief (from the Nexai team):\n"""\n${req.brief}\n"""`];
+  const lines = [`Platform: ${req.platform}`, `Post date: ${req.targetDate || 'not set'}`, `Job brief (from the Nexai team):\n"""\n${req.brief}\n"""`];
+  if (req.profile) lines.push(profileBlock(req.profile, req.targetDate || ''));
   if (req.kind === 'revision') {
     lines.push(`Current caption (version ${req.currentVersion}):\n"""\n${req.currentCaption}\n"""`);
     lines.push(`Reviewer feedback, quoted exactly:\n"""\n${req.feedback}\n"""`);
@@ -125,6 +149,8 @@ function validate(body) {
       currentCaption: kind === 'revision' ? currentCaption : undefined,
       currentVersion: Number(body.currentVersion) || 1,
       feedback: kind === 'revision' ? feedback.trim() : undefined,
+      targetDate: /^\d{4}-\d{2}-\d{2}$/.test(body.targetDate || '') ? body.targetDate : null,
+      profile: body.profile && typeof body.profile === 'object' && JSON.stringify(body.profile).length < 80000 ? body.profile : null,
     },
   };
 }
@@ -182,7 +208,7 @@ async function generate(body) {
   return { ...out, provider: 'anthropic' };
 }
 
-module.exports = { generate, providerInfo, QuillError, buildUserMessage, SYSTEM_PROMPT, validate };
+module.exports = { generate, providerInfo, QuillError, buildUserMessage, profileBlock, SYSTEM_PROMPT, validate };
 
 
 /* ---------- Vektor: weekly plan (one explicit request) ---------- */
@@ -227,8 +253,9 @@ async function planWeek(body) {
   if (PROVIDER === 'demo') throw new QuillError('No AI provider is configured on the server.', { status: 503, retryable: false, code: 'not_configured' });
   const { value, error } = validatePlanRequest(body);
   if (error) throw new QuillError(error, { status: 400, retryable: false, code: 'invalid' });
-  if (PROVIDER === 'mock') return { days: await mock.planWeek(value), provider: 'mock', model: 'mock-vektor' };
-  const user = `Week beginning ${value.weekStart} (Europe/London).\n\nBrief from the Nexai team:\n"""\n${value.brief}\n"""\n\nDays to plan, in order:\n${value.days.map((d, i) => `${i + 1}. ${d.dayName} ${d.date}: ${d.platform}`).join('\n')}`;
+  if (PROVIDER === 'mock') return { days: await mock.planWeek({ ...value, profile: body.profile || null }), provider: 'mock', model: 'mock-vektor' };
+  const prof = body.profile && typeof body.profile === 'object' && JSON.stringify(body.profile).length < 80000 ? `\n\n${profileBlock(body.profile, value.weekStart)}` : '';
+  const user = `Week beginning ${value.weekStart} (Europe/London).${prof}\n\nBrief from the Nexai team:\n"""\n${value.brief}\n"""\n\nDays to plan, in order:\n${value.days.map((d, i) => `${i + 1}. ${d.dayName} ${d.date}: ${d.platform}`).join('\n')}`;
   let response;
   try {
     response = await client.messages.create({

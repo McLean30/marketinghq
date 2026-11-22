@@ -47,9 +47,11 @@ function topicsFrom(brief) {
   if (!m) return [];
   return m[1].split(/,\s*|\s+and\s+/i).map((t) => t.trim().replace(/^the\s+/i, '')).filter((t) => t.length > 2).slice(0, 3);
 }
-function audienceFrom(brief) {
+function audienceFrom(brief, profile) {
   const m = /for\s+((?:uk\s+)?[a-z&\s-]*?(?:directors|managers|owners|leaders|teams))/i.exec(brief);
-  return m ? m[1].trim().replace(/^uk/i, 'UK') : 'UK commercial maintenance leaders';
+  if (m) return m[1].trim().replace(/^uk/i, 'UK');
+  if (profile?.audience?.buyers) return `${profile.audience.buyers} at ${profile.audience.summary}`;
+  return 'UK commercial maintenance leaders';
 }
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -66,8 +68,10 @@ const GENERIC_TOPICS = [
  * Build an editable plan for the week. Monday frames the problem, Tuesday to Thursday take one topic each,
  * Friday pulls it together. Wednesday (Google Business Profile) is written for local clients.
  */
-export function templatePlan(brief, weekStart) {
-  const audience = audienceFrom(brief);
+export function templatePlan(brief, weekStart, profile = null) {
+  const audience = audienceFrom(brief, profile);
+  // Visual briefs follow the profile's imagery and logo rules.
+  const visualRule = profile?.brand ? ' Realistic UK commercial setting, no stock-photo clichés; official Nexai logo.' : '';
   const topics = topicsFrom(brief);
   while (topics.length < 3) topics.push(['missing paperwork', 'late client sign-off', 'unclear handovers'][topics.length]);
   const topicDay = (t) => {
@@ -82,7 +86,7 @@ export function templatePlan(brief, weekStart) {
       const t = topicDay(topics[i - 1]);
       item = { audience: i === 2 ? 'Local facilities managers and clients' : audience, ...t };
     }
-    return { ...d, ...item, include: true, jobId: null };
+    return { ...d, ...item, visual: `${item.visual}${visualRule}`, include: true, jobId: null };
   });
   return days;
 }

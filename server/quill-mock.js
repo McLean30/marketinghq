@@ -7,7 +7,35 @@ const calls = [];
 
 const TAGS = '#BuildingServices #FacilitiesManagement #FieldService #MEP #CommercialMaintenance';
 
+const activeOffers = (req) => ((req.profile?.data?.offers) || []).filter((o) => o.active && (!o.start || o.start <= (req.targetDate || '')) && (!o.end || o.end >= (req.targetDate || '')));
+function profileTags(req) {
+  const req2 = req.profile?.data?.brand?.linkedinHashtags?.required || [];
+  const base = TAGS.split(' ');
+  return [...new Set([...req2, ...base])].slice(0, Math.max(5, req2.length)).join(' ');
+}
+/** Remove text the feedback quotes and asks to remove (e.g. an expired offer line). */
+function removeQuoted(caption, feedback) {
+  if (!/\b(remove|delete|take out|drop)\b/i.test(feedback)) return null;
+  const quotes = [...feedback.matchAll(/[“"]([^”"]{6,})[”"]/g)].map((m) => m[1]);
+  let out = caption;
+  for (const q of quotes) out = out.split('\n').filter((line) => !line.includes(q)).join('\n');
+  return out === caption ? null : out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function draftFor(req) {
+  if (/\boffer\b/i.test(req.brief) && activeOffers(req).length) {
+    const o = activeOffers(req)[0];
+    return {
+      caption: [
+        'Finished jobs that can’t be invoiced are cash you’ve already earned, waiting on admin.',
+        'Most of the delay comes from one missing photo or an unsigned job sheet. Fix the handover and the invoice follows.',
+        o.wording,
+        'What’s the one thing that most often holds up your invoices?',
+        req.platform === 'LinkedIn' ? profileTags(req) : '#FacilitiesManagement',
+      ].join('\n\n'),
+      notes: 'Mock draft including the active offer wording exactly as the profile states it.',
+    };
+  }
   const angle = /^Angle: (.+)$/m.exec(req.brief);
   const takeaway = /^Practical takeaway: (.+)$/m.exec(req.brief);
   if (angle && takeaway) {
@@ -43,6 +71,8 @@ function draftFor(req) {
 }
 
 function revisionFor(req) {
+  const removed = removeQuoted(req.currentCaption, req.feedback);
+  if (removed) return { caption: removed, notes: 'Removed the quoted wording; everything else kept as it was.' };
   const fb = req.feedback.toLowerCase();
   if (/4\s?pm/.test(fb)) {
     return {
@@ -78,7 +108,12 @@ async function planWeek(req) {
   ];
   return req.days.map((d, i) => {
     const [audience, angle, takeaway] = angles[i % angles.length];
-    return { audience, angle, takeaway, visual: `Engineer on a UK commercial site for ${d.platform}: plant room or rooftop, natural light, no text.` };
+    const prof = req.profile?.data;
+    return {
+      audience: prof?.audience?.buyers ? `${audience} (${prof.audience.buyers})` : audience,
+      angle, takeaway,
+      visual: `Engineer on a UK commercial site for ${d.platform}: plant room or rooftop, natural light, no text.${prof?.brand ? ' Official Nexai logo.' : ''}`,
+    };
   });
 }
 

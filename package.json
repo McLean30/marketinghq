@@ -1,8 +1,8 @@
 {
   "name": "nexai-marketing-hq",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
-  "description": "Nexai Digital's private internal AI marketing dashboard (milestone 6: robotic team redesign).",
+  "description": "Nexai Digital's private internal AI marketing dashboard (milestone 7: business profile and Brand & Quality Reviewer).",
   "scripts": {
     "start": "node server.js",
     "start:env": "node --env-file=.env server.js",
@@ -14,7 +14,8 @@
     "set-password": "node scripts/set-owner-password.cjs",
     "test:m4": "node tests/shared-m4.mjs",
     "test:m5": "node tests/week-m5.mjs",
-    "test:m6": "node tests/agents-m6.mjs"
+    "test:m6": "node tests/agents-m6.mjs",
+    "test:m7": "node tests/review-m7.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0"

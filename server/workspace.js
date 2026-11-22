@@ -14,6 +14,15 @@ const MAX_ASSET = 15 * 1024 * 1024;
 
 let ws = readJson(FILE, { version: 1, rev: 0, jobs: {}, brand: { rev: 0, data: {} } });
 ws.plans = ws.plans || {};
+
+/* ---------- Business profile: every save is a new, identified version ---------- */
+const crypto = require('crypto');
+const SEED = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'public', 'data', 'profile-seed.json'), 'utf8'));
+const versionId = (n, data) => `pv${n}-${crypto.createHash('sha1').update(JSON.stringify(data)).digest('hex').slice(0, 6)}`;
+if (!ws.profile) {
+  ws.profile = { rev: 1, versions: [{ id: versionId(1, SEED), n: 1, savedAt: Date.now(), savedBy: 'seed', data: SEED }] };
+  writeAtomic(FILE, JSON.stringify(ws));
+}
 const persist = () => writeAtomic(FILE, JSON.stringify(ws));
 
 class WsError extends Error {
@@ -25,7 +34,7 @@ const entry = (id, e) => ({ id, rev: e.rev, updatedAt: e.updatedAt, updatedBy: e
 function snapshot() {
   const jobs = Object.entries(ws.jobs).map(([id, e]) => entry(id, e)).sort((a, b) => b.bundle.job.createdAt - a.bundle.job.createdAt);
   const plans = Object.entries(ws.plans).map(([id, e]) => ({ id, rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy, plan: e.plan })).sort((a, b) => b.plan.createdAt - a.plan.createdAt);
-  return { rev: ws.rev, jobs, brand: ws.brand, plans };
+  return { rev: ws.rev, jobs, brand: ws.brand, plans, profile: ws.profile };
 }
 
 const getJob = (id) => (ws.jobs[id] ? entry(id, ws.jobs[id]) : null);
@@ -59,6 +68,9 @@ function checkAppendOnly(prev, next) {
   const pa = prev.job.approvals || [];
   const na = next.job.approvals || [];
   if (na.length < pa.length || pa.some((x, i) => JSON.stringify(x) !== JSON.stringify(na[i]))) throw new WsError(422, 'This save would rewrite the approval history, so it was refused.');
+  const pr = prev.job.reviews || [];
+  const nr = next.job.reviews || [];
+  if (nr.length < pr.length || pr.some((x, i) => JSON.stringify(x) !== JSON.stringify(nr[i]))) throw new WsError(422, 'This save would rewrite the review history, so it was refused.');
 }
 
 function putJob(id, baseRev, bundle, device) {
@@ -100,6 +112,29 @@ function putPlan(id, baseRev, plan, device) {
   ws.rev += 1;
   persist();
   return { rev: curRev + 1, wsRev: ws.rev, updatedAt: ws.plans[id].updatedAt };
+}
+
+function validateProfile(d) {
+  const bad = (m) => { throw new WsError(400, `Invalid business profile: ${m}.`); };
+  if (!d || typeof d !== 'object') bad('shape');
+  if (Buffer.byteLength(JSON.stringify(d)) > 120 * 1024) bad('too large');
+  if (!Array.isArray(d.services) || d.services.length > 20) bad('services');
+  if (!Array.isArray(d.proof) || !Array.isArray(d.offers) || d.offers.length > 50) bad('proof or offers');
+  for (const o of d.offers) {
+    if (!o || typeof o.wording !== 'string' || o.wording.length > 600) bad('offer wording');
+    for (const k of ['start', 'end']) if (o[k] && !/^\d{4}-\d{2}-\d{2}$/.test(o[k])) bad('offer dates');
+  }
+  if (!d.audience || !d.cta || !d.brand || !d.writing) bad('sections');
+}
+function putProfile(baseRev, data, device) {
+  validateProfile(data);
+  if (Number(baseRev) !== ws.profile.rev) throw new WsError(409, 'The business profile was changed on another device.', { current: ws.profile });
+  const n = ws.profile.versions.length + 1;
+  ws.profile.versions.push({ id: versionId(n, data), n, savedAt: Date.now(), savedBy: device, data });
+  ws.profile.rev += 1;
+  ws.rev += 1;
+  persist();
+  return { profile: ws.profile, wsRev: ws.rev };
 }
 
 function putBrand(baseRev, data, device) {
@@ -164,4 +199,4 @@ function readAsset(id) {
 
 const hasAsset = (id) => ASSET_ID.test(id) && fs.existsSync(metaPath(id));
 
-module.exports = { snapshot, getJob, putJob, putPlan, putBrand, importBundles, saveAsset, readAsset, hasAsset, WsError, MAX_ASSET };
+module.exports = { snapshot, getJob, putJob, putPlan, putProfile, putBrand, importBundles, saveAsset, readAsset, hasAsset, WsError, MAX_ASSET };

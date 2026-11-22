@@ -54,7 +54,8 @@ async function handleApi(req, res, urlPath) {
   const signedIn = !!auth.session(req);
 
   /* --- Sign-in --- */
-  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn });
+  // HQ_TEST_DATE (YYYY-MM-DD) fixes "today" for offer and review checks in test workspaces.
+  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null });
   if (urlPath === '/api/auth/login' && method === 'POST') {
     const body = await readJsonBody(req);
     const r = auth.login(req, body.password, deviceOf(req));
@@ -121,6 +122,10 @@ async function handleApi(req, res, urlPath) {
   if (m && method === 'PUT') {
     const body = await readJsonBody(req);
     return sendJson(res, 200, wsStore.putPlan(m[1], body.baseRev, body.plan, deviceOf(req)));
+  }
+  if (urlPath === '/api/workspace/profile' && method === 'PUT') {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, wsStore.putProfile(body.baseRev, body.data, deviceOf(req)));
   }
   if (urlPath === '/api/workspace/brand' && method === 'PUT') {
     const body = await readJsonBody(req);
