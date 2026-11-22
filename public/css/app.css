@@ -347,3 +347,51 @@ main[data-view="job"] ~ #toast { bottom: 110px; }
 .state-failed { color: #1E1300; background: var(--warn); border-color: var(--warn); }
 .state-failed .dot { background: #1E1300; }
 .char[data-state="failed"] .eye { opacity: .6; fill: var(--warn); }
+
+/* Milestone 3: Prism Photo layout */
+.demo-tag.photo { color: var(--ok); border: 1px solid rgba(87, 231, 177, .6); }
+.graphic-btn img { display: block; width: 100%; height: auto; }
+.graphic-btn.portrait { max-width: 460px; }
+.graphic-btn.small img { max-width: 220px; }
+.thumb img { display: block; width: 100%; height: auto; }
+.photo-pending { display: flex; align-items: center; justify-content: center; aspect-ratio: 1080 / 1350; width: 100%; background: var(--navy-2); color: var(--muted); font-size: .9rem; padding: 8px; text-align: center; }
+.photo-pending.error { color: var(--warn); }
+.asset-warn { display: block; padding: 6px 10px; background: rgba(255, 193, 94, .12); color: var(--warn); font-size: .85rem; }
+.lb-img img { width: auto; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain; }
+.lb-img .photo-pending { max-width: 480px; }
+
+.studio-head h1 { margin-bottom: .3em; }
+.studio { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); gap: 24px; align-items: start; margin-top: 16px; }
+.studio-preview { position: sticky; top: 80px; display: grid; gap: 10px; justify-items: center; }
+.studio-preview canvas { display: block; width: auto; height: min(74vh, 900px); max-width: 100%; aspect-ratio: 1080 / 1350; border-radius: 12px; border: 1px solid var(--line); background: var(--navy-2); touch-action: none; cursor: grab; box-shadow: 0 20px 50px rgba(0, 0, 0, .45); }
+.studio-preview canvas:active { cursor: grabbing; }
+.missing-note { margin: 0; padding: 10px 14px 10px 30px; border: 1px dashed var(--cyan); border-radius: 10px; color: var(--text); background: rgba(46, 230, 255, .06); max-width: 560px; }
+.missing-note li + li { margin-top: 6px; }
+.studio-controls { background: rgba(9, 19, 38, .82); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 18px; }
+.studio-controls fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 4px 14px 14px; margin: 0 0 14px; }
+.studio-controls legend { font-family: var(--display); font-weight: 600; padding: 0 6px; }
+.studio-controls input[type=range] { padding: 0; height: 36px; accent-color: var(--cyan); background: transparent; border: 0; }
+.studio-controls output { color: var(--cyan); font-weight: 600; margin-left: 6px; }
+.asset-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.asset-row > div { display: grid; min-width: 0; }
+.asset-label { font-weight: 600; }
+.asset-name { color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.asset-name .missing { color: var(--warn); font-weight: 600; }
+.file-btn { position: relative; flex: none; cursor: pointer; }
+.file-input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; padding: 0; }
+.file-btn:focus-within { outline: 3px solid var(--cyan); outline-offset: 3px; }
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
+.seg-opt { margin: 0; }
+.seg-opt input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.seg-opt span { display: flex; align-items: center; justify-content: center; min-height: 44px; border-radius: 10px; border: 1px solid var(--line); background: var(--navy-2); font-weight: 600; cursor: pointer; }
+.seg-opt input:checked + span { background: var(--cyan); color: #021022; border-color: var(--cyan); }
+.seg-opt input:focus-visible + span { outline: 3px solid var(--cyan); outline-offset: 2px; }
+.studio-error { color: var(--warn); min-height: 1.2em; margin: 8px 0; }
+.studio-error:empty { display: none; }
+
+@media (max-width: 900px) {
+  .studio { grid-template-columns: 1fr; }
+  .studio-preview { top: 58px; z-index: 5; background: linear-gradient(var(--black) 85%, transparent); padding: 6px 0 12px; }
+  .studio-preview canvas { height: 40vh; }
+  .studio-preview > .mini { margin: 0; text-align: center; }
+}

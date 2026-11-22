@@ -1,6 +1,7 @@
 import * as S from './store.js';
 import { briefTitle, sceneLabel } from './generators.js';
 import { renderGraphic } from './graphics.js';
+import * as P from './photo.js';
 import { scorpion, writer, designer } from './characters.js';
 
 const $main = document.getElementById('main');
@@ -31,6 +32,18 @@ function toast(msg) {
 
 const pill = (status) => `<span class="pill pill-${status}">${esc(S.STATUS_LABEL[status] || status)}</span>`;
 const demoTag = `<span class="demo-tag" title="Generated locally by a demo template, not a live AI model">Simulated demo output</span>`;
+const photoTag = `<span class="demo-tag photo" title="Built by you in Prism from a supplied photo and logo">Photo layout</span>`;
+
+/** Markup for any graphic version: inline SVG for simulated, a rendered PNG for Photo layout. */
+function graphicMarkup(task, v, { title } = {}) {
+  if (v.content.mode !== 'photo') return renderGraphic(v.content, title ? { title } : undefined);
+  const r = P.renderedVersion(`${task.id}:${v.n}`, v.content, () => render());
+  if (!r) return `<span class="photo-pending" role="img" aria-label="Rendering graphic v${v.n}">Rendering…</span>`;
+  if (r.error) return `<span class="photo-pending error" role="img" aria-label="Graphic v${v.n} could not be rendered">Couldn’t render v${v.n}: ${esc(r.error)}</span>`;
+  const warn = r.missing?.length ? `<span class="asset-warn">Missing from this browser: ${r.missing.join(' and ')}</span>` : '';
+  return `<img src="${r.url}" width="${P.W}" height="${P.H}" alt="${esc(title || `Graphic v${v.n}`)}: ${esc(v.content.headline)}" data-photo-version="${v.n}">${warn}`;
+}
+
 // "claude-sonnet-5-5" -> "Claude Sonnet 5.5"
 function modelName(m) {
   const match = /^claude-([a-z]+)-(\d+(?:-\d+)?)/.exec(m || '');
@@ -57,6 +70,7 @@ function route() {
   const h = location.hash.replace(/^#/, '') || '/';
   const [, a, b] = h.split('/');
   const parts = h.split('/');
+  if (a === 'job' && b && parts[3] === 'studio') return { view: 'studio', id: b, base: `#/job/${b}` };
   if (a === 'job' && b) return { view: 'job', id: b, agent: parts[3] === 'agent' ? parts[4] : null, base: `#/job/${b}` };
   if (a === 'calendar') return { view: 'calendar' };
   if (a === 'agent' && b) return { view: 'hq', agent: b, base: '#/' };
@@ -177,13 +191,14 @@ function renderAgentSheet(agentId) {
         </div>
         <h3>Output ${v ? `<span class="mini">v${v.n} of ${current.versions.length}</span>` : ''}</h3>
         ${v ? outputBlock(current, v, { compact: true }) : `<p class="empty working-note">${a.name} is ${st === 'queued' ? 'waiting for the Manager’s hand-off' : 'working on the first version'}…</p>`}
-        <a class="btn btn-primary" href="#/job/${job.id}">Review caption and graphic together</a>
+        ${agentId === 'designer' ? `<a class="btn btn-primary" href="#/job/${job.id}/studio">Open Photo layout for this job</a>` : ''}
+        <a class="btn${agentId === 'designer' ? '' : ' btn-primary'}" href="#/job/${job.id}">Review caption and graphic together</a>
         ${current.versions.length > 1 ? `<h3>Version history</h3>${historyList(current, job)}` : ''}
         <h3>Previous work</h3>
         ${others.length ? `<ul class="prev-work">${others.map((t) => {
           const j = S.getJob(t.jobId);
           const tv = S.currentVersion(t);
-          return `<li><a href="#/job/${j.id}">${t.type === 'graphic' && tv ? `<span class="thumb">${renderGraphic(tv.content)}</span>` : ''}
+          return `<li><a href="#/job/${j.id}">${t.type === 'graphic' && tv ? `<span class="thumb">${graphicMarkup(t, tv)}</span>` : ''}
             <span><strong>${esc(briefTitle(j.brief))}</strong><span class="mini">${j.platform}, ${fmtDate(j.targetDate)} · ${t.versions.length} version${t.versions.length === 1 ? '' : 's'}</span>${pill(S.taskStatus(t))}</span></a></li>`;
         }).join('')}</ul>` : '<p class="empty">No earlier work yet.</p>'}`;
     }
@@ -206,10 +221,11 @@ function outputBlock(task, v, { compact = false } = {}) {
       ${sourceTag(v)}
       <div class="caption-text" data-testid="caption-text">${esc(v.content.text)}</div></div>`;
   }
+  const isPhoto = v.content.mode === 'photo';
   return `<div class="graphic-out">
-    ${demoTag}
-    <button class="graphic-btn" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${renderGraphic(v.content, { title: `Graphic v${v.n}` })}</button>
-    <p class="mini">Setting: ${esc(sceneLabel(v.content.scene))}. Tap to view full size.</p></div>`;
+    ${isPhoto ? photoTag : demoTag}
+    <button class="graphic-btn${isPhoto ? ' portrait' : ''}" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${graphicMarkup(task, v, { title: `Graphic v${v.n}` })}</button>
+    <p class="mini">${isPhoto ? `Photo: ${esc(v.content.photoName)}. Logo: ${esc(v.content.logoName)}. 1080 × 1350.` : `Setting: ${esc(sceneLabel(v.content.scene))}.`} Tap to view full size.</p></div>`;
 }
 
 function historyList(task, job) {
@@ -217,11 +233,11 @@ function historyList(task, job) {
   return `<ol class="history" reversed>${[...task.versions].reverse().map((v) => `
     <li class="hist-item">
       <details data-key="h-${task.id}-${v.n}">
-        <summary><span class="hist-v">v${v.n}</span> <span class="mini">${esc(v.by)} · ${fmtTime(v.createdAt)}</span>${task.type === 'copy' ? ` <span class="src-mini">${esc(({ anthropic: 'AI', mock: 'Mock', human: 'You', demo: 'Demo' })[v.source || (v.simulated ? 'demo' : 'human')])}</span>` : ''}
+        <summary><span class="hist-v">v${v.n}</span> <span class="mini">${esc(v.by)} · ${fmtTime(v.createdAt)}</span>${task.type === 'copy' ? ` <span class="src-mini">${esc(({ anthropic: 'AI', mock: 'Mock', human: 'You', demo: 'Demo' })[v.source || (v.simulated ? 'demo' : 'human')])}</span>` : ` <span class="src-mini">${v.content.mode === 'photo' ? 'Photo layout' : 'Simulated'}</span>`}
           ${v.n === task.versions.length ? '<span class="tag">Current</span>' : ''}${v.n === approvedN ? '<span class="tag tag-ok">Approved</span>' : ''}</summary>
         ${v.feedback ? `<p class="feedback-quote">Your feedback: “${esc(v.feedback)}”</p>` : ''}
         ${v.notes?.length ? `<ul class="notes">${v.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
-        ${task.type === 'copy' ? `<div class="caption-text small">${esc(v.content.text)}</div>` : `<button class="graphic-btn small" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${renderGraphic(v.content)}</button>`}
+        ${task.type === 'copy' ? `<div class="caption-text small">${esc(v.content.text)}</div>` : `<button class="graphic-btn small" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${graphicMarkup(task, v)}</button>`}
       </details>
     </li>`).join('')}</ol>`;
 }
@@ -251,12 +267,12 @@ function assetPanel(job, task) {
     ${v && !busy ? `
       <div class="asset-actions">
         <button class="btn" data-toggle-rev="${task.id}" aria-expanded="${!!revOpen}">Request revision</button>
-        ${task.type === 'copy' ? `<button class="btn" data-toggle-edit="${task.id}" aria-expanded="${!!editOpen}">Edit caption</button>` : ''}
+        ${task.type === 'copy' ? `<button class="btn" data-toggle-edit="${task.id}" aria-expanded="${!!editOpen}">Edit caption</button>` : `<a class="btn btn-primary" href="#/job/${job.id}/studio">Open Photo layout</a>`}
       </div>
       ${revOpen ? `<form class="rev-form" data-rev-form="${task.id}">
         <label for="fb-${task.id}">Feedback for ${a.name}</label>
         <textarea id="fb-${task.id}" rows="3" required placeholder="${task.type === 'copy' ? 'e.g. Make it shorter and end on a sharper question' : 'e.g. Show the engineer at the van outside the client’s building'}"></textarea>
-        <p class="mini">Only the ${a.label.toLowerCase()} changes. The ${task.type === 'copy' ? 'graphic' : 'caption'} stays exactly as it is.</p>
+        <p class="mini">Only the ${a.label.toLowerCase()} changes. The ${task.type === 'copy' ? 'graphic' : 'caption'} stays exactly as it is.${task.type === 'graphic' ? ' This revises the simulated graphic; use Photo layout to work with your own photo.' : ''}</p>
         <div class="row-actions"><button class="btn btn-primary" type="submit">Send to ${a.name}</button><button class="btn btn-ghost" type="button" data-toggle-rev="${task.id}">Cancel</button></div>
       </form>` : ''}
       ${editOpen ? `<form class="rev-form" data-edit-form="${task.id}">
@@ -344,8 +360,9 @@ function renderCalendar() {
   <div class="agenda">
     ${agendaDays.length ? agendaDays.map((iso) => `<section class="agenda-day"><h3>${fmtDate(iso, { weekday: 'long', day: 'numeric', month: 'long' })}</h3>
       ${byDay[iso].map((j) => {
-        const g = S.getTask(j.taskIds.graphic).versions[j.approval.graphicVersion - 1];
-        return `<div class="agenda-item">${g ? `<span class="thumb">${renderGraphic(g.content)}</span>` : ''}${entry(j)}</div>`;
+        const gt = S.getTask(j.taskIds.graphic);
+        const g = gt.versions[j.approval.graphicVersion - 1];
+        return `<div class="agenda-item">${g ? `<span class="thumb">${graphicMarkup(gt, g)}</span>` : ''}${entry(j)}</div>`;
       }).join('')}</section>`).join('') : `<p class="empty">No approved posts in ${monthName}${ui.calPlatform !== 'All' ? ` for ${ui.calPlatform}` : ''}.</p>`}
   </div>`;
 }
@@ -357,10 +374,269 @@ function renderLightbox() {
   const v = task?.versions[Number(n) - 1];
   if (!v) return '';
   return `<div class="lightbox" role="dialog" aria-modal="true" aria-label="Graphic v${v.n} full size">
-    <div class="lb-bar"><span>Graphic v${v.n} · ${demoTag}</span>
-      <span class="row-actions"><button class="btn" data-download="${ui.lightbox}">Download SVG</button><button class="icon-btn" data-close-lb aria-label="Close full-size graphic">✕</button></span></div>
-    <div class="lb-img">${renderGraphic(v.content, { title: `Graphic v${v.n}` })}</div>
+    <div class="lb-bar"><span>Graphic v${v.n} · ${v.content.mode === 'photo' ? photoTag : demoTag}</span>
+      <span class="row-actions"><button class="btn" data-download="${ui.lightbox}">${v.content.mode === 'photo' ? 'Download PNG (1080 × 1350)' : 'Download SVG'}</button><button class="icon-btn" data-close-lb aria-label="Close full-size graphic">✕</button></span></div>
+    <div class="lb-img">${graphicMarkup(task, v, { title: `Graphic v${v.n}` })}</div>
   </div>`;
+}
+
+/* ---------- Prism Photo layout studio ---------- */
+const clamp01 = (x) => Math.min(1, Math.max(0, x));
+
+function initStudio(job, task) {
+  if (ui.studio?.jobId === job.id) return ui.studio;
+  const last = [...task.versions].reverse().find((x) => x.content.mode === 'photo')?.content;
+  const lastSim = [...task.versions].reverse().find((x) => x.content.mode !== 'photo')?.content;
+  const brand = S.brand();
+  const stored = (id, name) => (id ? { id, name, bitmap: null, stored: true } : null);
+  ui.studio = {
+    jobId: job.id,
+    taskId: task.id,
+    photo: last ? stored(last.photoId, last.photoName) : null,
+    logo: brand.logoId ? stored(brand.logoId, brand.logoName) : last ? stored(last.logoId, last.logoName) : null,
+    logoReused: !!brand.logoId,
+    headline: last ? last.headline : lastSim?.headline ? lastSim.headline.join(' ') : '',
+    headlinePos: last?.headlinePos || P.DEFAULT_SPEC.headlinePos,
+    crop: { ...(last?.crop || P.DEFAULT_SPEC.crop) },
+    logoScale: last?.logoScale || P.DEFAULT_SPEC.logoScale,
+    error: '',
+    saving: false,
+  };
+  return ui.studio;
+}
+
+const studioSpec = (st) => ({ headline: st.headline, headlinePos: st.headlinePos, crop: { ...st.crop }, logoScale: st.logoScale });
+
+function renderStudio(jobId) {
+  const job = S.getJob(jobId);
+  if (!job) return `<section class="panel"><h1>Job not found</h1><p><a href="#/">Back to HQ</a></p></section>`;
+  const task = S.getTask(job.taskIds.graphic);
+  const st = initStudio(job, task);
+  const next = task.versions.length + 1;
+  const pct = (x) => Math.round(x * 100);
+  const missing = [];
+  if (!st.photo) missing.push('<li><strong>Photo not chosen.</strong> Add the site photo you want as the main visual.</li>');
+  if (!st.logo) missing.push('<li><strong>Official Nexai logo not supplied yet.</strong> The dashed box shows where it will sit. Add the logo file to save this design; it’s remembered for your next job.</li>');
+  const busy = !!task.pending;
+  return `
+  <nav class="crumbs"><a href="#/job/${job.id}">← Back to review</a></nav>
+  <header class="studio-head">
+    <h1>Photo layout</h1>
+    <p class="mini">Prism · ${esc(briefTitle(job.brief))} · ${job.platform}, ${fmtDate(job.targetDate)}. Saving creates graphic v${next}. Earlier versions and Quill’s caption stay exactly as they are.</p>
+  </header>
+  <div class="studio">
+    <div class="studio-preview">
+      <canvas id="studio-canvas" width="${P.W}" height="${P.H}" role="img" aria-label="Live preview of the 1080 by 1350 graphic" data-testid="studio-canvas"></canvas>
+      <p class="mini">${st.photo ? 'Drag the photo to reposition it. ' : ''}This preview is the exact 1080 × 1350 export.</p>
+      ${missing.length ? `<ul class="missing-note" role="status" data-testid="missing-assets">${missing.join('')}</ul>` : ''}
+    </div>
+    <form class="studio-controls" id="studio-form" novalidate>
+      <fieldset>
+        <legend>Assets</legend>
+        <div class="asset-row">
+          <div><span class="asset-label">Photo</span><span class="asset-name" data-testid="photo-name">${st.photo ? esc(st.photo.name) : 'No photo chosen'}</span></div>
+          <label class="btn file-btn">${st.photo ? 'Change photo' : 'Choose photo'}<input type="file" id="st-photo" accept="image/*" class="file-input" data-testid="photo-input"></label>
+        </div>
+        <div class="asset-row">
+          <div><span class="asset-label">Logo</span><span class="asset-name" data-testid="logo-name">${st.logo ? `${esc(st.logo.name)}${st.logoReused && st.logo.stored ? ' <span class="mini">(saved logo, reused)</span>' : ''}` : '<span class="missing">Official logo not supplied yet</span>'}</span></div>
+          <label class="btn file-btn">${st.logo ? 'Replace logo' : 'Choose logo'}<input type="file" id="st-logo" accept="image/png,image/svg+xml,image/*" class="file-input" data-testid="logo-input"></label>
+        </div>
+        <p class="mini">PNG with a transparent background works best for the logo.</p>
+      </fieldset>
+
+      <label for="st-headline">Graphic headline</label>
+      <textarea id="st-headline" rows="2" maxlength="80" placeholder="e.g. Job finished. Report still waiting.">${esc(st.headline)}</textarea>
+      <p class="mini"><span id="st-count">${st.headline.length}</span>/80. Shown on the image only; Quill’s caption is separate.</p>
+
+      <fieldset>
+        <legend>Photo crop</legend>
+        <label for="st-zoom">Zoom <output id="st-zoom-out">${pct(st.crop.zoom)}%</output></label>
+        <input type="range" id="st-zoom" min="100" max="300" step="5" value="${pct(st.crop.zoom)}">
+        <label for="st-fx">Show more of the left ↔ right</label>
+        <input type="range" id="st-fx" min="0" max="100" step="1" value="${pct(st.crop.fx)}">
+        <label for="st-fy">Show more of the top ↔ bottom</label>
+        <input type="range" id="st-fy" min="0" max="100" step="1" value="${pct(st.crop.fy)}">
+        <button type="button" class="btn btn-ghost" data-crop-reset>Reset crop</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Headline position</legend>
+        <div class="seg" role="radiogroup" aria-label="Headline position">
+          ${['top', 'middle', 'bottom'].map((p) => `<label class="seg-opt"><input type="radio" name="st-pos" value="${p}" ${st.headlinePos === p ? 'checked' : ''}><span>${p[0].toUpperCase() + p.slice(1)}</span></label>`).join('')}
+        </div>
+      </fieldset>
+
+      <label for="st-logo-scale">Logo size <output id="st-logo-out">${pct(st.logoScale)}%</output></label>
+      <input type="range" id="st-logo-scale" min="60" max="180" step="5" value="${pct(st.logoScale)}">
+
+      <p class="studio-error" role="alert" id="st-error">${esc(st.error)}</p>
+      ${busy ? '<p class="mini">Prism is finishing a simulated revision. Save becomes available when it’s done.</p>' : ''}
+      <div class="row-actions">
+        <button class="btn btn-primary" type="submit" id="st-save" ${st.saving || busy ? 'disabled' : ''}>${st.saving ? 'Saving…' : `Save as graphic v${next}`}</button>
+        <a class="btn btn-ghost" href="#/job/${job.id}" data-studio-cancel>Cancel</a>
+      </div>
+    </form>
+  </div>`;
+}
+
+let drawToken = 0;
+async function drawStudio() {
+  const st = ui.studio;
+  const canvas = document.getElementById('studio-canvas');
+  if (!st || !canvas) return;
+  const token = ++drawToken;
+  for (const key of ['photo', 'logo']) {
+    const a = st[key];
+    if (a && !a.bitmap && a.id) {
+      a.bitmap = await P.loadBitmap(a.id);
+      if (!a.bitmap) { st[key] = null; st.error = `The saved ${key} is no longer in this browser’s storage. Choose it again.`; render(); return; }
+    }
+  }
+  if (token !== drawToken) return;
+  // Draw off-screen, then copy in one step so the visible canvas never shows a half-drawn frame.
+  const off = await P.renderToCanvas(studioSpec(st), { photo: st.photo?.bitmap || null, logo: st.logo?.bitmap || null });
+  if (token !== drawToken) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, P.W, P.H);
+  ctx.drawImage(off, 0, 0);
+  canvas.dataset.rendered = String(token);
+}
+let drawQueued = false;
+function requestDraw() {
+  if (drawQueued) return;
+  drawQueued = true;
+  requestAnimationFrame(() => { drawQueued = false; drawStudio(); });
+}
+function hydrateStudio() { requestDraw(); }
+
+function syncStudioOutputs() {
+  const st = ui.studio;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set('st-fx', Math.round(st.crop.fx * 100));
+  set('st-fy', Math.round(st.crop.fy * 100));
+  const zo = document.getElementById('st-zoom-out'); if (zo) zo.textContent = `${Math.round(st.crop.zoom * 100)}%`;
+  const lo = document.getElementById('st-logo-out'); if (lo) lo.textContent = `${Math.round(st.logoScale * 100)}%`;
+}
+
+document.addEventListener('input', (e) => {
+  const st = ui.studio;
+  if (!st || !e.target.closest('#studio-form')) return;
+  const t = e.target;
+  if (t.id === 'st-headline') { st.headline = t.value; document.getElementById('st-count').textContent = t.value.length; }
+  else if (t.id === 'st-zoom') st.crop.zoom = Number(t.value) / 100;
+  else if (t.id === 'st-fx') st.crop.fx = Number(t.value) / 100;
+  else if (t.id === 'st-fy') st.crop.fy = Number(t.value) / 100;
+  else if (t.id === 'st-logo-scale') st.logoScale = Number(t.value) / 100;
+  else if (t.name === 'st-pos') st.headlinePos = t.value;
+  else return;
+  syncStudioOutputs();
+  requestDraw();
+});
+
+document.addEventListener('change', async (e) => {
+  const st = ui.studio;
+  const t = e.target;
+  if (!st || (t.id !== 'st-photo' && t.id !== 'st-logo') || !t.files?.[0]) return;
+  const kind = t.id === 'st-photo' ? 'photo' : 'logo';
+  st.error = '';
+  try {
+    const prepared = await P.prepareUpload(t.files[0], kind);
+    st[kind] = { ...prepared, stored: false };
+    if (kind === 'photo') st.crop = { ...P.DEFAULT_SPEC.crop };
+    if (kind === 'logo') st.logoReused = false;
+  } catch (err) {
+    st.error = err.message;
+  }
+  render();
+});
+
+let drag = null;
+document.addEventListener('pointerdown', (e) => {
+  const c = e.target.closest?.('#studio-canvas');
+  if (!c || !ui.studio?.photo?.bitmap) return;
+  drag = { id: e.pointerId, x: e.clientX, y: e.clientY, fx: ui.studio.crop.fx, fy: ui.studio.crop.fy, k: P.W / c.getBoundingClientRect().width };
+  c.setPointerCapture(e.pointerId);
+});
+document.addEventListener('pointermove', (e) => {
+  if (!drag || e.pointerId !== drag.id || !ui.studio?.photo?.bitmap) return;
+  const st = ui.studio;
+  const b = st.photo.bitmap;
+  const r = P.coverRect(b.width, b.height, st.crop);
+  const ox = P.W - r.dw;
+  const oy = P.H - r.dh;
+  if (ox < 0) st.crop.fx = clamp01(drag.fx + ((e.clientX - drag.x) * drag.k) / ox);
+  if (oy < 0) st.crop.fy = clamp01(drag.fy + ((e.clientY - drag.y) * drag.k) / oy);
+  syncStudioOutputs();
+  requestDraw();
+});
+const endDrag = () => (drag = null);
+document.addEventListener('pointerup', endDrag);
+document.addEventListener('pointercancel', endDrag);
+
+async function saveStudio() {
+  const st = ui.studio;
+  if (!st || st.saving) return; // one tap, one save
+  const job = S.getJob(st.jobId);
+  const task = S.getTask(st.taskId);
+  const problems = [];
+  if (!st.photo) problems.push('choose a photo');
+  if (!st.logo) problems.push('add the official Nexai logo');
+  if (!st.headline.trim()) problems.push('write a headline');
+  if (problems.length) { st.error = `To save, ${problems.join(', ')}.`; render(); return; }
+  st.saving = true;
+  st.error = '';
+  render();
+  try {
+    for (const key of ['photo', 'logo']) {
+      const a = st[key];
+      if (!a.stored) {
+        await P.putAsset({ id: a.id, kind: a.kind, name: a.name, blob: a.blob, w: a.w, h: a.h, createdAt: a.createdAt });
+        a.stored = true;
+        P.rememberBitmap(a.id, a.bitmap);
+      }
+    }
+    const spec = studioSpec(st);
+    const content = { ...spec, photoId: st.photo.id, photoName: st.photo.name, logoId: st.logo.id, logoName: st.logo.name, w: P.W, h: P.H };
+    const notes = [`Photo layout: headline at ${spec.headlinePos}, crop ${Math.round(spec.crop.zoom * 100)}% zoom, logo ${Math.round(spec.logoScale * 100)}%.`];
+    const version = S.saveGraphicVersion(task.id, content, notes);
+    if (S.brand().logoId !== st.logo.id) {
+      try { S.setBrandLogo(st.logo.id, st.logo.name); } catch { toast('Design saved, but the logo couldn’t be remembered for the next job.'); }
+    }
+    P.seedRendered(`${task.id}:${version.n}`, await P.renderToPngBlob(spec, { photo: st.photo.bitmap, logo: st.logo.bitmap }));
+    ui.studio = null;
+    toast(`Saved as graphic v${version.n}.`);
+    location.hash = `#/job/${job.id}`;
+  } catch (err) {
+    st.saving = false;
+    st.error = err.message || 'The design wasn’t saved.';
+    render();
+  }
+}
+
+async function downloadPhotoVersion(task, v, btn) {
+  btn.disabled = true;
+  try {
+    const key = `${task.id}:${v.n}`;
+    let r = P.renderedVersion(key, v.content);
+    let blob = r && !r.error && !r.missing?.length ? r.blob : null;
+    if (!blob) {
+      const [photo, logo] = await Promise.all([P.loadBitmap(v.content.photoId), P.loadBitmap(v.content.logoId)]);
+      if (!photo || !logo) throw new Error(`Can’t export v${v.n}: its ${!photo ? 'photo' : 'logo'} is no longer in this browser’s storage.`);
+      blob = await P.renderToPngBlob(v.content, { photo, logo });
+    }
+    const job = S.getJob(task.jobId);
+    const slug = briefTitle(job.brief).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `nexai-${slug}-graphic-v${v.n}-1080x1350.png` });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toast(`Downloaded graphic v${v.n} as PNG.`);
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* ---------- Render loop ---------- */
@@ -374,7 +650,7 @@ function render() {
   const r = route();
   // Preserve in-progress typing, focus and open <details> across re-renders.
   const keep = {};
-  document.querySelectorAll('input[id], textarea[id], select[id]').forEach((el) => (keep[el.id] = el.value));
+  document.querySelectorAll('input[id]:not([type=file]), textarea[id], select[id]').forEach((el) => (keep[el.id] = el.value));
   const openDetails = new Set([...document.querySelectorAll('details[data-key]')].filter((d) => d.open).map((d) => d.dataset.key));
   const closedDetails = new Set([...document.querySelectorAll('details[data-key]')].filter((d) => !d.open).map((d) => d.dataset.key));
   const focusId = document.activeElement?.id;
@@ -382,7 +658,7 @@ function render() {
 
   document.querySelectorAll('[data-nav]').forEach((a) => a.toggleAttribute('aria-current', a.dataset.nav === (r.view === 'calendar' ? 'calendar' : r.view === 'hq' ? 'hq' : '')));
   $main.dataset.view = r.view;
-  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'calendar' ? renderCalendar() : renderHQ();
+  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'calendar' ? renderCalendar() : renderHQ();
   $sheet.innerHTML = (r.agent ? renderAgentSheet(r.agent) : '') + (ui.lightbox ? renderLightbox() : '');
   document.body.classList.toggle('no-scroll', !!(r.agent || ui.lightbox));
 
@@ -395,10 +671,12 @@ function render() {
   const sb = document.querySelector('.sheet-body');
   if (sb && sheetScroll) sb.scrollTop = sheetScroll;
   lastSig = signature();
+  if (r.view === 'studio') hydrateStudio();
 }
 
 setInterval(() => {
   const changed = S.tick();
+  if (route().view === 'studio') return; // never rebuild the editor under the user's fingers
   if (changed || signature() !== lastSig) render();
 }, 400);
 
@@ -406,6 +684,11 @@ setInterval(() => {
 let submitLock = false;
 document.addEventListener('submit', (e) => {
   const f = e.target;
+  if (f.id === 'studio-form') {
+    e.preventDefault();
+    saveStudio();
+    return;
+  }
   if (f.id === 'brief-form') {
     e.preventDefault();
     if (submitLock) return; // a double-tap must not create two jobs
@@ -456,6 +739,11 @@ document.addEventListener('click', (e) => {
   if (t.matches('[data-close]')) { location.hash = route().base || '#/'; return; }
   if (t.dataset.toggleRev) { const id = t.dataset.toggleRev; ui.revision[id] = !ui.revision[id]; ui.editing[id] = false; render(); document.getElementById(`fb-${id}`)?.focus(); return; }
   if (t.dataset.toggleEdit) { const id = t.dataset.toggleEdit; ui.editing[id] = !ui.editing[id]; ui.revision[id] = false; render(); document.getElementById(`ed-${id}`)?.focus(); return; }
+  if (t.matches('[data-crop-reset]') && ui.studio) {
+    ui.studio.crop = { ...P.DEFAULT_SPEC.crop };
+    render();
+    return;
+  }
   if (t.dataset.retry) {
     t.disabled = true;
     if (S.retryTask(t.dataset.retry)) toast(`Retrying with ${S.AGENTS[S.getTask(t.dataset.retry).agent].name}.`);
@@ -468,7 +756,9 @@ document.addEventListener('click', (e) => {
   if (t.matches('[data-close-lb]')) { ui.lightbox = null; render(); return; }
   if (t.dataset.download) {
     const [taskId, n] = t.dataset.download.split(':');
-    const v = S.getTask(taskId).versions[Number(n) - 1];
+    const task = S.getTask(taskId);
+    const v = task.versions[Number(n) - 1];
+    if (v.content.mode === 'photo') { downloadPhotoVersion(task, v, t); return; }
     const blob = new Blob([renderGraphic(v.content)], { type: 'image/svg+xml' });
     const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `nexai-graphic-v${n}.svg` });
     a.click();
@@ -493,6 +783,7 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('hashchange', () => {
   ui.lightbox = null;
   const r = route();
+  if (r.view !== 'studio') ui.studio = null; // unsaved studio drafts are discarded on leaving
   if (r.view === 'calendar') ui.calMonth = null;
   render();
   if (r.agent) document.querySelector('.sheet [data-close]')?.focus();

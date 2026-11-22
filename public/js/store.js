@@ -15,7 +15,7 @@ export const AGENTS = {
 
 export const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X'];
 
-const empty = () => ({ jobs: [], tasks: [], log: [] });
+const empty = () => ({ jobs: [], tasks: [], log: [], brand: {} });
 
 /* ---------- Quill provider (server-side AI) ---------- */
 // provider: 'anthropic' (live AI), 'mock' (test fixture) or 'demo' (local templates, no server AI).
@@ -56,6 +56,18 @@ function save() {
     /* storage unavailable: app still works for this tab */
   }
   listeners.forEach((fn) => fn());
+}
+
+/** Save and report failure (used where a silent failure would wrongly claim success). */
+function saveStrict() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(state));
+  } catch (e) {
+    const full = e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message || ''));
+    throw new Error(full ? 'This browser’s storage is full, so the design wasn’t saved. Your job and earlier versions are unchanged.' : 'This browser blocked saving, so the design wasn’t saved. Your job and earlier versions are unchanged.');
+  } finally {
+    listeners.forEach((fn) => fn());
+  }
 }
 
 export const subscribe = (fn) => listeners.add(fn);
@@ -171,7 +183,10 @@ export function tick(now = Date.now()) {
     if (task.type === 'copy') {
       output = task.pending.kind === 'initial' ? draftCaption(job) : reviseCaption(job, prev.content, task.pending.feedback, n);
     } else {
-      output = task.pending.kind === 'initial' ? draftGraphic(job) : reviseGraphic(job, prev.content, task.pending.feedback, n);
+      // A simulated revision builds on the latest simulated design, even if Photo layout versions came after it.
+      const lastSim = [...task.versions].reverse().find((x) => x.content.mode !== 'photo');
+      const base = lastSim ? lastSim.content : draftGraphic(job).content;
+      output = task.pending.kind === 'initial' ? draftGraphic(job) : reviseGraphic(job, base, task.pending.feedback, n);
     }
     task.versions.push({
       n,
@@ -345,3 +360,37 @@ export function cancelFailedRevision(taskId) {
   task.pending = null;
   save();
 }
+
+
+/* ---------- Prism Photo layout ---------- */
+/** Append a Photo layout version. Throws (and leaves state untouched) if it can't be persisted. */
+export function saveGraphicVersion(taskId, content, notes) {
+  const task = getTask(taskId);
+  if (!task || task.type !== 'graphic') throw new Error('Graphic task not found.');
+  if (task.pending) throw new Error('Prism is still working on this graphic. Wait for it to finish, then save.');
+  const n = task.versions.length + 1;
+  const version = { n, content: { ...content, mode: 'photo' }, notes, feedback: null, by: 'You with Prism', simulated: false, source: 'photo', createdAt: Date.now() };
+  task.versions.push(version);
+  const prevLog = state.log.slice();
+  log(task.jobId, 'designer', `Photo layout saved as graphic v${n}.`);
+  try {
+    saveStrict();
+  } catch (e) {
+    task.versions.pop();
+    state.log = prevLog;
+    throw e;
+  }
+  return version;
+}
+
+export function setBrandLogo(id, name) {
+  const prev = state.brand;
+  state.brand = { ...state.brand, logoId: id, logoName: name, logoSavedAt: Date.now() };
+  try {
+    saveStrict();
+  } catch (e) {
+    state.brand = prev;
+    throw e;
+  }
+}
+export const brand = () => state.brand || {};

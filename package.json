@@ -1,14 +1,16 @@
 {
   "name": "nexai-marketing-hq",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Nexai Digital's private internal AI marketing dashboard (milestone 2: Quill AI captions).",
+  "description": "Nexai Digital's private internal AI marketing dashboard (milestone 3: Prism Photo layout).",
   "scripts": {
     "start": "node server.js",
     "start:env": "node --env-file=.env server.js",
     "test:e2e": "node tests/acceptance.mjs",
     "test:m2": "node tests/quill-m2.mjs",
-    "test:api": "node tests/anthropic-path.mjs"
+    "test:api": "node tests/anthropic-path.mjs",
+    "test:m3": "node tests/prism-m3.mjs",
+    "fixtures": "node tests/make-fixtures.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0"
