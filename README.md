@@ -1,4 +1,4 @@
-# Nexai AI Marketing HQ (milestone 5)
+# Nexai AI Marketing HQ (milestone 6)
 
 Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer). Review both together, request revisions with feedback, approve the pair, and see it on the private content calendar.
 
@@ -54,6 +54,15 @@ From a job, open **Photo layout** from the Graphic panel, or from Prism's worksp
 
 Limits: images live only in this browser, so they don't sync between devices, and clearing site data removes them. The headline font (Chakra Petch) loads from Google Fonts; offline, both preview and export fall back to the same system font. Only local rendering is used: no image-generation API and no publishing.
 
+## Robotic team redesign (milestone 6)
+
+HQ follows the approved mockup (`design/approved-hq-mockup.png`). Vektor is the full-width centrepiece, with Quill and Prism side by side below him, then **New brief** and **Plan a content week**. On desktop all three sit in one row at equal height.
+
+- **Artwork**: `public/assets/agents/{vektor,quill,prism}.webp` are cropped from the approved mockup, with its baked-in text removed by inpainting (`tools/make-agent-art.py`, build-time only: `pip install pillow opencv-python-headless`). Names, roles, status and chevrons are live interface text. The source is phone resolution (about 900 px wide for Vektor), which is enough for these card sizes; supply higher-resolution renders for anything larger.
+- **Each card is one link** to that agent's workspace. Tab order is Vektor → Quill → Prism → New brief → Plan a content week, and each card has a visible focus ring. The workspace opens with the same artwork as a hero (a shared-element View Transition where the browser supports it), with assignments, output and history directly below.
+- **Motion follows real task state**: while Vektor delegates, a pulse travels along his tail to the stinger; while Quill writes, the stylus traces a short line; while Prism works, the aperture turns and the projection comes into focus. Every effect stops when its task ends, and idle is still. With reduced motion, nothing animates; status stays readable as text, a status dot and a highlighted card border.
+- On phones the header matches the mockup (logo, HQ, Calendar). The workspace status moves to a link under the HQ buttons.
+
 ## Vektor's weekly planning (milestone 5)
 
 **Plan a content week** (HQ, or Vektor's workspace → Content weeks): choose a week beginning Monday and write one brief. Dates are UK calendar dates (Europe/London), and Nexai's schedule is fixed:
@@ -97,6 +106,7 @@ npm run test:m2      # Milestone 2 UI suite, desktop + phone, deterministic mock
 npm run test:m3      # Milestone 3 Photo layout suite (desktop, phone-sized and iPhone 13; starts its own server on :4176)
 npm run test:m4      # Milestone 4 shared workspace: desktop + iPhone-emulation browsers, server restart, signed-out access, import (own server on :4177)
 npm run test:m5      # Milestone 5 weekly planning: template plan, edits, forced failure + retry, approvals, second browser, AI-path (mock) on phone (own server on :4178)
+npm run test:m6      # Milestone 6 redesign: phone/desktop framing, keyboard, state-driven motion, reduced motion; saves design/previews/ (own server on :4179)
 npm run test:api     # Anthropic SDK path against a local stub API with a dummy key (no network, no cost)
 npm start   # then, in a second terminal:
 npm run test:e2e   # Milestone 1 desktop + phone suite, demo mode on :4173
@@ -127,6 +137,7 @@ The mock provider (`QUILL_PROVIDER=mock`, `server/quill-mock.js`) returns canned
 - `server/quill.js`: provider selection, prompt, Anthropic SDK call, error mapping. `server/quill-mock.js`: test fixture.
 - `public/js/store.js`: jobs, linked tasks, versions, feedback, approvals, persistence, caption request dispatch and retry.
 - `public/js/app.js`: views (HQ stage, agent workspace, review, Photo layout studio, calendar, full-screen graphic viewer).
+- `public/js/agents.js`: character artwork, workspace hero, thumbnails and state-driven effect layers.
 - `public/js/plan.js`: Europe/London week dates, Nexai's schedule, template planner.
 - `public/js/photo.js`: Photo layout renderer (shared by preview and PNG export), upload processing, IndexedDB image store.
 - `public/css/app.css`: tokens, responsive layout, reduced-motion handling.

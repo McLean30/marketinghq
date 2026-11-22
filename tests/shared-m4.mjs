@@ -42,7 +42,7 @@ async function signIn(page) {
   await page.fill('#ws-password', PASSWORD);
   await page.click('#signin-form button[type=submit]');
   await page.waitForSelector('text=You’re signed in');
-  await page.waitForSelector('#ws-pill:has-text("Shared workspace")');
+  await page.waitForFunction(() => document.getElementById('ws-pill')?.textContent === 'Shared workspace'); // pill is hidden at phone width; status lives on HQ there
 }
 async function waitDraw(page, prev) {
   await page.waitForFunction((p) => { const c = document.querySelector('#studio-canvas'); return c && c.dataset.rendered && c.dataset.rendered !== p; }, prev ?? '', { timeout: 15000 });

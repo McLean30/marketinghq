@@ -3,7 +3,7 @@ import { briefTitle, sceneLabel } from './generators.js';
 import { renderGraphic } from './graphics.js';
 import * as P from './photo.js';
 import * as PL from './plan.js';
-import { scorpion, writer, designer } from './characters.js';
+import * as AG from './agents.js';
 
 const $main = document.getElementById('main');
 const $sheet = document.getElementById('sheet-root');
@@ -11,7 +11,6 @@ const $toast = document.getElementById('toast');
 const ui = { revision: {}, editing: {}, calMonth: null, calPlatform: 'All', lightbox: null, viewVersion: {} };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const ART = { manager: scorpion, copywriter: writer, designer };
 const fmtDate = (iso, opts = { weekday: 'short', day: 'numeric', month: 'short' }) =>
   new Date(`${iso}T12:00:00`).toLocaleDateString('en-GB', opts);
 const fmtTime = (ts) => new Date(ts).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -88,15 +87,19 @@ function agentHref(agentId) {
   return r.view === 'job' ? `#/job/${r.id}/agent/${agentId}` : `#/agent/${agentId}`;
 }
 
-function character(agentId, { size = 'md', as = 'button' } = {}) {
+const STATE_TEXT = { delegating: 'Delegating', working: 'Working', revising: 'Revising', queued: 'Queued', awaiting_review: 'Awaiting your review', failed: 'Needs retry', idle: 'Idle' };
+const CHEVRON = '<span class="agent-go" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+
+/** Character in three sizes: 'card' (HQ link), 'hero' (workspace header), 'xs' (thumbnail). Same artwork throughout. */
+function character(agentId, { size = 'card' } = {}) {
   const a = S.AGENTS[agentId];
   const st = S.agentState(agentId);
-  const label = { delegating: 'Delegating', working: 'Working', revising: 'Revising', queued: 'Queued', awaiting_review: 'Awaiting your review', failed: 'Needs retry', idle: 'Idle' }[st];
-  const inner = `<span class="char-art">${ART[agentId](`${agentId}-${size}`)}</span>
-    <span class="char-meta"><span class="char-name">${a.name}</span><span class="char-role">${a.role}</span>
+  const label = STATE_TEXT[st];
+  const meta = `<span class="char-meta"><span class="char-name">${a.name}</span><span class="char-role">${a.role}</span>
     <span class="state-badge state-${st}"><span class="dot" aria-hidden="true"></span>${label}</span></span>`;
-  if (as === 'div') return `<div class="char char-${agentId} size-${size}" data-state="${st}">${inner}</div>`;
-  return `<a class="char char-${agentId} size-${size}" data-state="${st}" href="${agentHref(agentId)}" aria-label="Open ${a.name}, ${a.role}. Status: ${label}">${inner}</a>`;
+  if (size === 'xs') return `<span class="char char-${agentId} size-xs" data-state="${st}">${AG.thumb(agentId)}<span class="xs-dot" aria-hidden="true"></span></span>`;
+  if (size === 'hero') return `<div class="char char-${agentId} size-hero" data-state="${st}" role="img" aria-label="${esc(AG.altText(agentId))}. Status: ${label}">${AG.art(agentId, { windowed: true, eager: true })}${meta}</div>`;
+  return `<a class="char char-${agentId} size-card agent-card" data-agent="${agentId}" data-state="${st}" href="${agentHref(agentId)}" aria-label="${a.name}, ${a.role}. Status: ${label}. Open workspace">${AG.art(agentId, { eager: true, card: true })}${meta}${CHEVRON}</a>`;
 }
 
 function managerLine() {
@@ -110,19 +113,21 @@ function managerLine() {
 function renderHQ() {
   const jobs = S.getState().jobs;
   return `
-  <section class="stage" aria-label="Agent floor">
-    <div class="stage-floor" aria-hidden="true"></div>
-    <div class="stage-row">
-      ${character('copywriter')}
-      ${character('manager', { size: 'lg' })}
-      ${character('designer')}
-    </div>
-    <p class="manager-line" aria-live="polite"><span class="who">Vektor</span> ${esc(managerLine())}</p>
+  <section class="team stage" aria-label="Your AI marketing team">
+    ${character('manager')}
+    ${character('copywriter')}
+    ${character('designer')}
   </section>
+  <div class="hq-actions">
+    <button type="button" class="action-btn" data-focus-brief><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M7 3h7l5 5v13H7z M14 3v5h5 M10 12h6 M10 15.5h6 M10 19h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg><span>New brief</span></button>
+    <a class="action-btn" href="#/week/new" data-testid="plan-week-link"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 9.5h17 M8 3v4 M16 3v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.5 13h1.5 M11.25 13h1.5 M15 13h1.5 M7.5 16.5h1.5 M11.25 16.5h1.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Plan a content week</span></a>
+  </div>
+  <p class="manager-line" aria-live="polite"><span class="who">Vektor</span> ${esc(managerLine())}</p>
+  <a class="ws-inline" href="#/workspace">Workspace: ${esc(wsPillText())}</a>
 
   <div class="hq-grid">
-    <section class="panel brief-panel" aria-labelledby="new-brief-h">
-      <div class="panel-head"><h2 id="new-brief-h">New brief</h2><a class="btn btn-small" href="#/week/new" data-testid="plan-week-link">Plan a content week</a></div>
+    <section class="panel brief-panel" id="brief-panel" aria-labelledby="new-brief-h">
+      <h2 id="new-brief-h">New brief</h2>
       <form id="brief-form" novalidate>
         <label for="brief">What do you need?</label>
         <textarea id="brief" name="brief" rows="5" required placeholder="e.g. Create Friday’s LinkedIn post for UK commercial maintenance directors about…"></textarea>
@@ -218,11 +223,9 @@ function renderAgentSheet(agentId) {
   return `<div class="sheet-backdrop" data-close></div>
   <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-h">
     <header class="sheet-head">
-      ${character(agentId, { size: 'sm', as: 'div' })}
-      <h2 id="sheet-h" class="visually-hidden">${a.name} workspace</h2>
       <button class="icon-btn" data-close aria-label="Close workspace">✕</button>
     </header>
-    <div class="sheet-body">${body}</div>
+    <div class="sheet-body">${character(agentId, { size: 'hero' })}<h2 id="sheet-h" class="visually-hidden">${a.name} workspace</h2>${body}</div>
   </aside>`;
 }
 
@@ -263,7 +266,7 @@ function assetPanel(job, task) {
   const editOpen = ui.editing[task.id];
   return `<section class="panel asset asset-${task.type}" aria-labelledby="h-${task.id}" data-testid="panel-${task.type}">
     <header class="asset-head">
-      <a class="mini-char" href="${agentHref(task.agent)}" aria-label="Open ${a.name}'s workspace">${character(task.agent, { size: 'xs', as: 'div' })}</a>
+      <a class="mini-char" href="${agentHref(task.agent)}" aria-label="Open ${a.name}'s workspace">${character(task.agent, { size: 'xs' })}</a>
       <div><h2 id="h-${task.id}">${a.label}${v ? ` <span class="ver">v${v.n}</span>` : ''}</h2>${pill(st)}</div>
     </header>
     ${task.pending?.error ? `<div class="error-box" role="alert" data-testid="error-${task.type}">
@@ -1013,6 +1016,7 @@ function render() {
   const sb = document.querySelector('.sheet-body');
   if (sb && sheetScroll) sb.scrollTop = sheetScroll;
   lastSig = signature();
+  if (ui.vtAgent) document.querySelector('.sheet .agent-art')?.style.setProperty('view-transition-name', 'agent-art');
   if (r.view === 'studio') hydrateStudio();
 }
 
@@ -1156,6 +1160,12 @@ document.addEventListener('click', (e) => {
   if (t.matches('[data-close]')) { location.hash = route().base || '#/'; return; }
   if (t.dataset.toggleRev) { const id = t.dataset.toggleRev; ui.revision[id] = !ui.revision[id]; ui.editing[id] = false; render(); document.getElementById(`fb-${id}`)?.focus(); return; }
   if (t.dataset.toggleEdit) { const id = t.dataset.toggleEdit; ui.editing[id] = !ui.editing[id]; ui.revision[id] = false; render(); document.getElementById(`ed-${id}`)?.focus(); return; }
+  if (t.matches('[data-focus-brief]')) {
+    const panel = document.getElementById('brief-panel');
+    panel?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    document.getElementById('brief')?.focus({ preventScroll: true });
+    return;
+  }
   if (t.matches('[data-crop-reset]') && ui.studio) {
     ui.studio.crop = { ...P.DEFAULT_SPEC.crop };
     render();
@@ -1243,6 +1253,27 @@ document.addEventListener('click', (e) => {
     return;
   }
   if (t.dataset.plat) { ui.calPlatform = t.dataset.plat; render(); }
+});
+
+// Opening a workspace from an HQ card: the same artwork carries across (View Transitions where supported).
+document.addEventListener('click', (e) => {
+  const card = e.target.closest?.('a.agent-card');
+  if (!card || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  e.preventDefault();
+  const artEl = card.querySelector('.agent-art');
+  const href = card.getAttribute('href');
+  artEl.style.viewTransitionName = 'agent-art';
+  const vt = document.startViewTransition(() => {
+    artEl.style.viewTransitionName = '';
+    ui.vtAgent = card.dataset.agent;
+    location.hash = href;
+    render();
+  });
+  vt.finished.finally(() => {
+    ui.vtAgent = null;
+    document.querySelector('.sheet .agent-art')?.style.removeProperty('view-transition-name');
+  });
 });
 
 document.addEventListener('keydown', (e) => {

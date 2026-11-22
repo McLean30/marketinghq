@@ -148,7 +148,7 @@ async function run(name, contextOpts) {
   // Reduced motion: status still clear
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto(BASE + '#/');
-  const anim = await page.locator('.char-manager .eye').first().evaluate((el) => getComputedStyle(el).animationName);
+  const anim = await page.locator('.char-manager .tail-pulse').first().evaluate((el) => getComputedStyle(el).animationName);
   assert(anim === 'none', 'Reduced motion disables character animation');
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

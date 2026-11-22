@@ -41,7 +41,7 @@ async function signIn(page) {
   await page.goto(`${BASE}#/workspace`);
   await page.fill('#ws-password', PASSWORD);
   await page.click('#signin-form button[type=submit]');
-  await page.waitForSelector('#ws-pill:has-text("Shared workspace")');
+  await page.waitForFunction(() => document.getElementById('ws-pill')?.textContent === 'Shared workspace'); // pill is hidden at phone width; status lives on HQ there
 }
 const workspace = (page) => page.evaluate(async () => (await fetch('api/workspace')).json());
 const mockCalls = (page) => page.evaluate(async () => (await fetch('api/quill/mock-calls')).json());
