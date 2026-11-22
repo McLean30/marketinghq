@@ -1,0 +1,462 @@
+import * as S from './store.js';
+import { briefTitle, sceneLabel } from './generators.js';
+import { renderGraphic } from './graphics.js';
+import { scorpion, writer, designer } from './characters.js';
+
+const $main = document.getElementById('main');
+const $sheet = document.getElementById('sheet-root');
+const $toast = document.getElementById('toast');
+const ui = { revision: {}, editing: {}, calMonth: null, calPlatform: 'All', lightbox: null, viewVersion: {} };
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const ART = { manager: scorpion, copywriter: writer, designer };
+const fmtDate = (iso, opts = { weekday: 'short', day: 'numeric', month: 'short' }) =>
+  new Date(`${iso}T12:00:00`).toLocaleDateString('en-GB', opts);
+const fmtTime = (ts) => new Date(ts).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+function nextFriday() {
+  const d = new Date();
+  const add = (5 - d.getDay() + 7) % 7 || 7;
+  d.setDate(d.getDate() + add);
+  return isoLocal(d);
+}
+
+function toast(msg) {
+  $toast.textContent = msg;
+  $toast.classList.add('show');
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => $toast.classList.remove('show'), 2800);
+}
+
+const pill = (status) => `<span class="pill pill-${status}">${esc(S.STATUS_LABEL[status] || status)}</span>`;
+const demoTag = `<span class="demo-tag" title="Generated locally by a demo template, not a live AI model">Simulated demo output</span>`;
+
+/* ---------- Routing ---------- */
+function route() {
+  const h = location.hash.replace(/^#/, '') || '/';
+  const [, a, b] = h.split('/');
+  const parts = h.split('/');
+  if (a === 'job' && b) return { view: 'job', id: b, agent: parts[3] === 'agent' ? parts[4] : null, base: `#/job/${b}` };
+  if (a === 'calendar') return { view: 'calendar' };
+  if (a === 'agent' && b) return { view: 'hq', agent: b, base: '#/' };
+  return { view: 'hq' };
+}
+
+/* ---------- HQ ---------- */
+function agentHref(agentId) {
+  const r = route();
+  return r.view === 'job' ? `#/job/${r.id}/agent/${agentId}` : `#/agent/${agentId}`;
+}
+
+function character(agentId, { size = 'md', as = 'button' } = {}) {
+  const a = S.AGENTS[agentId];
+  const st = S.agentState(agentId);
+  const label = { delegating: 'Delegating', working: 'Working', revising: 'Revising', queued: 'Queued', awaiting_review: 'Awaiting your review', idle: 'Idle' }[st];
+  const inner = `<span class="char-art">${ART[agentId](`${agentId}-${size}`)}</span>
+    <span class="char-meta"><span class="char-name">${a.name}</span><span class="char-role">${a.role}</span>
+    <span class="state-badge state-${st}"><span class="dot" aria-hidden="true"></span>${label}</span></span>`;
+  if (as === 'div') return `<div class="char char-${agentId} size-${size}" data-state="${st}">${inner}</div>`;
+  return `<a class="char char-${agentId} size-${size}" data-state="${st}" href="${agentHref(agentId)}" aria-label="Open ${a.name}, ${a.role}. Status: ${label}">${inner}</a>`;
+}
+
+function managerLine() {
+  const st = S.agentState('manager');
+  const latest = S.getState().log.find((l) => l.agent === 'manager');
+  if (st === 'delegating') return 'Reading your brief and splitting it into a caption task and a graphic task…';
+  if (latest) return latest.text;
+  return 'Give me a brief. I’ll hand the caption to Quill and the graphic to Prism, then bring both back to you.';
+}
+
+function renderHQ() {
+  const jobs = S.getState().jobs;
+  return `
+  <section class="stage" aria-label="Agent floor">
+    <div class="stage-floor" aria-hidden="true"></div>
+    <div class="stage-row">
+      ${character('copywriter')}
+      ${character('manager', { size: 'lg' })}
+      ${character('designer')}
+    </div>
+    <p class="manager-line" aria-live="polite"><span class="who">Vektor</span> ${esc(managerLine())}</p>
+  </section>
+
+  <div class="hq-grid">
+    <section class="panel brief-panel" aria-labelledby="new-brief-h">
+      <h2 id="new-brief-h">New brief</h2>
+      <form id="brief-form" novalidate>
+        <label for="brief">What do you need?</label>
+        <textarea id="brief" name="brief" rows="5" required placeholder="e.g. Create Friday’s LinkedIn post for UK commercial maintenance directors about…"></textarea>
+        <div class="row-2">
+          <div><label for="platform">Platform</label>
+            <select id="platform" name="platform">${S.PLATFORMS.map((p) => `<option>${p}</option>`).join('')}</select></div>
+          <div><label for="targetDate">Target date</label>
+            <input id="targetDate" name="targetDate" type="date" required value="${nextFriday()}"></div>
+        </div>
+        <p class="form-error" id="brief-error" role="alert" hidden></p>
+        <button class="btn btn-primary" type="submit">Send brief to Vektor</button>
+      </form>
+    </section>
+
+    <section class="panel jobs-panel" aria-labelledby="jobs-h">
+      <h2 id="jobs-h">Jobs</h2>
+      ${jobs.length ? `<ul class="job-list">${jobs.map(jobRow).join('')}</ul>` : `<p class="empty">No jobs yet. Send Vektor a brief to start one.</p>`}
+    </section>
+  </div>`;
+}
+
+function jobRow(job) {
+  const { copy, graphic } = S.jobTasks(job);
+  const st = S.jobStatus(job);
+  return `<li><a class="job-row" href="#/job/${job.id}">
+    <span class="job-top"><span class="plat plat-${job.platform}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate)}</span></span>
+    <span class="job-title">${esc(briefTitle(job.brief))}</span>
+    <span class="job-sub">${pill(st)}
+      <span class="mini">Caption: ${esc(S.STATUS_LABEL[S.taskStatus(copy)])}</span>
+      <span class="mini">Graphic: ${esc(S.STATUS_LABEL[S.taskStatus(graphic)])}</span></span>
+  </a></li>`;
+}
+
+/* ---------- Agent workspace sheet ---------- */
+function renderAgentSheet(agentId) {
+  const a = S.AGENTS[agentId];
+  if (!a) return '';
+  let body;
+  if (agentId === 'manager') {
+    const log = S.getState().log.slice(0, 30);
+    const jobs = S.getState().jobs;
+    body = `
+      <h3>Delegations</h3>
+      ${jobs.length ? `<ul class="deleg">${jobs.map((j) => {
+        const { copy, graphic } = S.jobTasks(j);
+        return `<li><a href="#/job/${j.id}"><strong>${esc(briefTitle(j.brief))}</strong></a>
+          <span class="mini">${j.platform}, ${fmtDate(j.targetDate)}</span>
+          <span class="deleg-links"><a href="${agentHref('copywriter')}">Caption → Quill</a> ${pill(S.taskStatus(copy))}</span>
+          <span class="deleg-links"><a href="${agentHref('designer')}">Graphic → Prism</a> ${pill(S.taskStatus(graphic))}</span></li>`;
+      }).join('')}</ul>` : '<p class="empty">No briefs yet.</p>'}
+      <h3>Activity</h3>
+      ${log.length ? `<ol class="activity">${log.map((l) => `<li><span class="mini">${fmtTime(l.at)} · ${S.AGENTS[l.agent].name}</span>${esc(l.text)}</li>`).join('')}</ol>` : '<p class="empty">Nothing yet.</p>'}`;
+  } else {
+    const tasks = S.agentTasks(agentId);
+    const current = tasks.find((t) => t.pending) || tasks[0];
+    const others = tasks.filter((t) => t !== current);
+    if (!current) {
+      body = `<p class="empty">${a.name} has no assignments yet. Send a brief from HQ and Vektor will delegate the ${a.label.toLowerCase()} here.</p>`;
+    } else {
+      const job = S.getJob(current.jobId);
+      const st = S.taskStatus(current);
+      const v = S.currentVersion(current);
+      body = `
+        <h3>Assigned task</h3>
+        <div class="assign">
+          <p class="assign-instr">${esc(current.instruction)}</p>
+          <p class="assign-meta">${pill(st)} <span class="plat plat-${job.platform}">${job.platform}</span> <span class="mini">Due ${fmtDate(job.targetDate)}</span></p>
+          ${current.pending?.feedback ? `<p class="feedback-quote">Working on your feedback: “${esc(current.pending.feedback)}”</p>` : ''}
+        </div>
+        <h3>Output ${v ? `<span class="mini">v${v.n} of ${current.versions.length}</span>` : ''}</h3>
+        ${v ? outputBlock(current, v, { compact: true }) : `<p class="empty working-note">${a.name} is ${st === 'queued' ? 'waiting for the Manager’s hand-off' : 'working on the first version'}…</p>`}
+        <a class="btn btn-primary" href="#/job/${job.id}">Review caption and graphic together</a>
+        ${current.versions.length > 1 ? `<h3>Version history</h3>${historyList(current, job)}` : ''}
+        <h3>Previous work</h3>
+        ${others.length ? `<ul class="prev-work">${others.map((t) => {
+          const j = S.getJob(t.jobId);
+          const tv = S.currentVersion(t);
+          return `<li><a href="#/job/${j.id}">${t.type === 'graphic' && tv ? `<span class="thumb">${renderGraphic(tv.content)}</span>` : ''}
+            <span><strong>${esc(briefTitle(j.brief))}</strong><span class="mini">${j.platform}, ${fmtDate(j.targetDate)} · ${t.versions.length} version${t.versions.length === 1 ? '' : 's'}</span>${pill(S.taskStatus(t))}</span></a></li>`;
+        }).join('')}</ul>` : '<p class="empty">No earlier work yet.</p>'}`;
+    }
+  }
+  return `<div class="sheet-backdrop" data-close></div>
+  <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-h">
+    <header class="sheet-head">
+      ${character(agentId, { size: 'sm', as: 'div' })}
+      <h2 id="sheet-h" class="visually-hidden">${a.name} workspace</h2>
+      <button class="icon-btn" data-close aria-label="Close workspace">✕</button>
+    </header>
+    <div class="sheet-body">${body}</div>
+  </aside>`;
+}
+
+/* ---------- Outputs ---------- */
+function outputBlock(task, v, { compact = false } = {}) {
+  if (task.type === 'copy') {
+    return `<div class="caption-out${compact ? ' compact' : ''}">
+      ${v.simulated ? demoTag : '<span class="demo-tag human">Edited by you</span>'}
+      <div class="caption-text" data-testid="caption-text">${esc(v.content.text)}</div></div>`;
+  }
+  return `<div class="graphic-out">
+    ${demoTag}
+    <button class="graphic-btn" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${renderGraphic(v.content, { title: `Graphic v${v.n}` })}</button>
+    <p class="mini">Setting: ${esc(sceneLabel(v.content.scene))}. Tap to view full size.</p></div>`;
+}
+
+function historyList(task, job) {
+  const approvedN = job.approval ? (task.type === 'copy' ? job.approval.copyVersion : job.approval.graphicVersion) : null;
+  return `<ol class="history" reversed>${[...task.versions].reverse().map((v) => `
+    <li class="hist-item">
+      <details data-key="h-${task.id}-${v.n}">
+        <summary><span class="hist-v">v${v.n}</span> <span class="mini">${esc(v.by)} · ${fmtTime(v.createdAt)}</span>
+          ${v.n === task.versions.length ? '<span class="tag">Current</span>' : ''}${v.n === approvedN ? '<span class="tag tag-ok">Approved</span>' : ''}</summary>
+        ${v.feedback ? `<p class="feedback-quote">Your feedback: “${esc(v.feedback)}”</p>` : ''}
+        ${v.notes?.length ? `<ul class="notes">${v.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+        ${task.type === 'copy' ? `<div class="caption-text small">${esc(v.content.text)}</div>` : `<button class="graphic-btn small" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${renderGraphic(v.content)}</button>`}
+      </details>
+    </li>`).join('')}</ol>`;
+}
+
+function assetPanel(job, task) {
+  const a = S.AGENTS[task.agent];
+  const st = S.taskStatus(task);
+  const v = S.currentVersion(task);
+  const busy = !!task.pending;
+  const revOpen = ui.revision[task.id];
+  const editOpen = ui.editing[task.id];
+  return `<section class="panel asset asset-${task.type}" aria-labelledby="h-${task.id}" data-testid="panel-${task.type}">
+    <header class="asset-head">
+      <a class="mini-char" href="${agentHref(task.agent)}" aria-label="Open ${a.name}'s workspace">${character(task.agent, { size: 'xs', as: 'div' })}</a>
+      <div><h2 id="h-${task.id}">${a.label}${v ? ` <span class="ver">v${v.n}</span>` : ''}</h2>${pill(st)}</div>
+    </header>
+    ${busy ? `<div class="working-note" role="status">${a.name} is ${task.pending.kind === 'revision' ? `revising: “${esc(task.pending.feedback)}”` : st === 'queued' ? 'waiting for the hand-off' : 'producing the first version'}…</div>` : ''}
+    ${v ? outputBlock(task, v) : ''}
+    ${v?.notes?.length && v.n > 1 ? `<div class="change-note">${v.feedback ? `<p class="feedback-quote">Your feedback: “${esc(v.feedback)}”</p>` : ''}<p><strong>What changed:</strong> ${esc(v.notes.join(' '))}</p></div>` : ''}
+    ${v && !busy ? `
+      <div class="asset-actions">
+        <button class="btn" data-toggle-rev="${task.id}" aria-expanded="${!!revOpen}">Request revision</button>
+        ${task.type === 'copy' ? `<button class="btn" data-toggle-edit="${task.id}" aria-expanded="${!!editOpen}">Edit caption</button>` : ''}
+      </div>
+      ${revOpen ? `<form class="rev-form" data-rev-form="${task.id}">
+        <label for="fb-${task.id}">Feedback for ${a.name}</label>
+        <textarea id="fb-${task.id}" rows="3" required placeholder="${task.type === 'copy' ? 'e.g. Make it shorter and end on a sharper question' : 'e.g. Show the engineer at the van outside the client’s building'}"></textarea>
+        <p class="mini">Only the ${a.label.toLowerCase()} changes. The ${task.type === 'copy' ? 'graphic' : 'caption'} stays exactly as it is.</p>
+        <div class="row-actions"><button class="btn btn-primary" type="submit">Send to ${a.name}</button><button class="btn btn-ghost" type="button" data-toggle-rev="${task.id}">Cancel</button></div>
+      </form>` : ''}
+      ${editOpen ? `<form class="rev-form" data-edit-form="${task.id}">
+        <label for="ed-${task.id}">Edit caption</label>
+        <textarea id="ed-${task.id}" rows="12">${esc(v.content.text)}</textarea>
+        <p class="mini">Saving creates a new version. If this post is already approved, it will need fresh approval.</p>
+        <div class="row-actions"><button class="btn btn-primary" type="submit">Save as new version</button><button class="btn btn-ghost" type="button" data-toggle-edit="${task.id}">Cancel</button></div>
+      </form>` : ''}` : ''}
+    ${task.versions.length ? `<details class="hist-wrap" data-key="hw-${task.id}" ${task.versions.length > 1 ? 'open' : ''}><summary>History (${task.versions.length} version${task.versions.length === 1 ? '' : 's'})</summary>${historyList(task, job)}</details>` : ''}
+  </section>`;
+}
+
+/* ---------- Review ---------- */
+function renderJob(id) {
+  const job = S.getJob(id);
+  if (!job) return `<section class="panel"><h1>Job not found</h1><p>This job isn’t in this browser’s storage. <a href="#/">Back to HQ</a></p></section>`;
+  const { copy, graphic } = S.jobTasks(job);
+  const st = S.jobStatus(job);
+  const canApprove = st === 'ready_for_review' || st === 'needs_reapproval';
+  const cv = copy.versions.length, gv = graphic.versions.length;
+  let approveText;
+  if (st === 'approved') approveText = `Approved caption v${job.approval.copyVersion} with graphic v${job.approval.graphicVersion}. Scheduled on your private calendar for ${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long' })}.`;
+  else if (st === 'needs_reapproval') approveText = `Approved earlier as caption v${job.approval.copyVersion} + graphic v${job.approval.graphicVersion}. The pair has changed since, so it needs fresh approval.`;
+  else if (canApprove) approveText = `Approving caption v${cv} with graphic v${gv} puts this post on the private calendar. Nothing is published.`;
+  else approveText = 'Approval opens when both the caption and graphic are ready.';
+  return `
+  <nav class="crumbs"><a href="#/">← HQ</a></nav>
+  <header class="job-head">
+    <div class="job-head-top"><span class="plat plat-${job.platform}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>${pill(st)}</div>
+    <h1>${esc(briefTitle(job.brief))}</h1>
+    <details class="brief-detail" data-key="brief-${job.id}"><summary>Your brief</summary><p>${esc(job.brief)}</p></details>
+  </header>
+  <div class="review-grid">
+    ${assetPanel(job, copy)}
+    ${assetPanel(job, graphic)}
+  </div>
+  <div class="approve-bar" data-status="${st}">
+    <p>${esc(approveText)}</p>
+    ${st === 'approved' ? `<a class="btn" href="#/calendar">View calendar</a>` : `<button class="btn btn-primary" data-approve="${job.id}" ${canApprove ? '' : 'disabled'}>${st === 'needs_reapproval' ? 'Approve changed pair' : 'Approve pair'}</button>`}
+  </div>`;
+}
+
+/* ---------- Calendar ---------- */
+function renderCalendar() {
+  const jobs = S.getState().jobs.filter((j) => j.approval);
+  if (!ui.calMonth) {
+    const upcoming = jobs.map((j) => j.targetDate).sort()[0];
+    ui.calMonth = (upcoming || isoLocal(new Date())).slice(0, 7);
+  }
+  const [y, m] = ui.calMonth.split('-').map(Number);
+  const first = new Date(y, m - 1, 1);
+  const days = new Date(y, m, 0).getDate();
+  const lead = (first.getDay() + 6) % 7; // Monday first
+  const visible = jobs.filter((j) => j.targetDate.startsWith(ui.calMonth) && (ui.calPlatform === 'All' || j.platform === ui.calPlatform));
+  const byDay = {};
+  visible.forEach((j) => (byDay[j.targetDate] ||= []).push(j));
+  const today = isoLocal(new Date());
+  const entry = (j) => {
+    const st = S.jobStatus(j);
+    return `<a class="cal-entry plat-b-${j.platform}" href="#/job/${j.id}" data-testid="cal-entry">
+      <span class="plat plat-${j.platform}">${j.platform}</span><span class="cal-title">${esc(briefTitle(j.brief))}</span>
+      ${st === 'approved' ? '<span class="tag tag-ok">Approved</span>' : '<span class="tag tag-warn">Needs re-approval</span>'}</a>`;
+  };
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push('<div class="cal-cell pad" aria-hidden="true"></div>');
+  for (let d = 1; d <= days; d++) {
+    const iso = `${ui.calMonth}-${String(d).padStart(2, '0')}`;
+    cells.push(`<div class="cal-cell${iso === today ? ' today' : ''}" role="gridcell" aria-label="${fmtDate(iso, { weekday: 'long', day: 'numeric', month: 'long' })}"><span class="cal-d">${d}</span>${(byDay[iso] || []).map(entry).join('')}</div>`);
+  }
+  const monthName = first.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  const agendaDays = Object.keys(byDay).sort();
+  return `
+  <header class="cal-head">
+    <h1>Content calendar</h1>
+    <p class="mini">Private. Approved posts only. Nothing here is published or scheduled on a live account.</p>
+  </header>
+  <div class="cal-controls">
+    <div class="month-nav"><button class="icon-btn" data-month="-1" aria-label="Previous month">‹</button><h2>${monthName}</h2><button class="icon-btn" data-month="1" aria-label="Next month">›</button></div>
+    <div class="chips" role="group" aria-label="Filter by platform">${['All', ...S.PLATFORMS].map((p) => `<button class="chip" data-plat="${p}" aria-pressed="${ui.calPlatform === p}">${p}</button>`).join('')}</div>
+  </div>
+  <div class="cal-grid" role="grid" aria-label="${monthName}">
+    ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => `<div class="cal-dow" role="columnheader">${d}</div>`).join('')}
+    ${cells.join('')}
+  </div>
+  <div class="agenda">
+    ${agendaDays.length ? agendaDays.map((iso) => `<section class="agenda-day"><h3>${fmtDate(iso, { weekday: 'long', day: 'numeric', month: 'long' })}</h3>
+      ${byDay[iso].map((j) => {
+        const g = S.getTask(j.taskIds.graphic).versions[j.approval.graphicVersion - 1];
+        return `<div class="agenda-item">${g ? `<span class="thumb">${renderGraphic(g.content)}</span>` : ''}${entry(j)}</div>`;
+      }).join('')}</section>`).join('') : `<p class="empty">No approved posts in ${monthName}${ui.calPlatform !== 'All' ? ` for ${ui.calPlatform}` : ''}.</p>`}
+  </div>`;
+}
+
+/* ---------- Lightbox ---------- */
+function renderLightbox() {
+  const [taskId, n] = ui.lightbox.split(':');
+  const task = S.getTask(taskId);
+  const v = task?.versions[Number(n) - 1];
+  if (!v) return '';
+  return `<div class="lightbox" role="dialog" aria-modal="true" aria-label="Graphic v${v.n} full size">
+    <div class="lb-bar"><span>Graphic v${v.n} · ${demoTag}</span>
+      <span class="row-actions"><button class="btn" data-download="${ui.lightbox}">Download SVG</button><button class="icon-btn" data-close-lb aria-label="Close full-size graphic">✕</button></span></div>
+    <div class="lb-img">${renderGraphic(v.content, { title: `Graphic v${v.n}` })}</div>
+  </div>`;
+}
+
+/* ---------- Render loop ---------- */
+let lastSig = '';
+function signature() {
+  const s = S.getState();
+  return [S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
+}
+
+function render() {
+  const r = route();
+  // Preserve in-progress typing, focus and open <details> across re-renders.
+  const keep = {};
+  document.querySelectorAll('input[id], textarea[id], select[id]').forEach((el) => (keep[el.id] = el.value));
+  const openDetails = new Set([...document.querySelectorAll('details[data-key]')].filter((d) => d.open).map((d) => d.dataset.key));
+  const closedDetails = new Set([...document.querySelectorAll('details[data-key]')].filter((d) => !d.open).map((d) => d.dataset.key));
+  const focusId = document.activeElement?.id;
+  const sheetScroll = document.querySelector('.sheet-body')?.scrollTop;
+
+  document.querySelectorAll('[data-nav]').forEach((a) => a.toggleAttribute('aria-current', a.dataset.nav === (r.view === 'calendar' ? 'calendar' : r.view === 'hq' ? 'hq' : '')));
+  $main.dataset.view = r.view;
+  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'calendar' ? renderCalendar() : renderHQ();
+  $sheet.innerHTML = (r.agent ? renderAgentSheet(r.agent) : '') + (ui.lightbox ? renderLightbox() : '');
+  document.body.classList.toggle('no-scroll', !!(r.agent || ui.lightbox));
+
+  Object.entries(keep).forEach(([id, val]) => { const el = document.getElementById(id); if (el) el.value = val; });
+  document.querySelectorAll('details[data-key]').forEach((d) => {
+    if (openDetails.has(d.dataset.key)) d.open = true;
+    if (closedDetails.has(d.dataset.key)) d.open = false;
+  });
+  if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
+  const sb = document.querySelector('.sheet-body');
+  if (sb && sheetScroll) sb.scrollTop = sheetScroll;
+  lastSig = signature();
+}
+
+setInterval(() => {
+  const changed = S.tick();
+  if (changed || signature() !== lastSig) render();
+}, 400);
+
+/* ---------- Events ---------- */
+document.addEventListener('submit', (e) => {
+  const f = e.target;
+  if (f.id === 'brief-form') {
+    e.preventDefault();
+    const brief = f.brief.value.trim();
+    const err = document.getElementById('brief-error');
+    if (brief.length < 12) { err.textContent = 'Add a brief of at least a sentence so Vektor knows what to delegate.'; err.hidden = false; f.brief.focus(); return; }
+    if (!f.targetDate.value) { err.textContent = 'Choose a target date.'; err.hidden = false; return; }
+    const job = S.createJob({ brief, platform: f.platform.value, targetDate: f.targetDate.value });
+    f.brief.value = '';
+    document.getElementById('brief').value = '';
+    toast('Brief sent. Vektor is delegating.');
+    render();
+    document.querySelector('.stage')?.scrollIntoView({ block: 'start' });
+    return;
+  }
+  if (f.dataset.revForm) {
+    e.preventDefault();
+    const id = f.dataset.revForm;
+    const ta = document.getElementById(`fb-${id}`);
+    const fb = ta.value.trim();
+    if (!fb) { ta.focus(); ta.setAttribute('aria-invalid', 'true'); return; }
+    ta.value = '';
+    delete ui.revision[id];
+    S.requestRevision(id, fb);
+    toast(`Feedback sent to ${S.AGENTS[S.getTask(id).agent].name}.`);
+    render();
+    return;
+  }
+  if (f.dataset.editForm) {
+    e.preventDefault();
+    const id = f.dataset.editForm;
+    const ta = document.getElementById(`ed-${id}`);
+    S.editCaption(id, ta.value);
+    ta.value = '';
+    delete ui.editing[id];
+    toast('Saved as a new caption version.');
+    render();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('button, [data-close]');
+  if (!t) return;
+  if (t.matches('[data-close]')) { location.hash = route().base || '#/'; return; }
+  if (t.dataset.toggleRev) { const id = t.dataset.toggleRev; ui.revision[id] = !ui.revision[id]; ui.editing[id] = false; render(); document.getElementById(`fb-${id}`)?.focus(); return; }
+  if (t.dataset.toggleEdit) { const id = t.dataset.toggleEdit; ui.editing[id] = !ui.editing[id]; ui.revision[id] = false; render(); document.getElementById(`ed-${id}`)?.focus(); return; }
+  if (t.dataset.approve) { S.approveJob(t.dataset.approve); toast('Approved. Added to the private calendar.'); render(); return; }
+  if (t.dataset.lightbox) { ui.lightbox = t.dataset.lightbox; render(); document.querySelector('[data-close-lb]')?.focus(); return; }
+  if (t.matches('[data-close-lb]')) { ui.lightbox = null; render(); return; }
+  if (t.dataset.download) {
+    const [taskId, n] = t.dataset.download.split(':');
+    const v = S.getTask(taskId).versions[Number(n) - 1];
+    const blob = new Blob([renderGraphic(v.content)], { type: 'image/svg+xml' });
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `nexai-graphic-v${n}.svg` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    return;
+  }
+  if (t.dataset.month) {
+    const [y, m] = ui.calMonth.split('-').map(Number);
+    const d = new Date(y, m - 1 + Number(t.dataset.month), 1);
+    ui.calMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    render();
+    return;
+  }
+  if (t.dataset.plat) { ui.calPlatform = t.dataset.plat; render(); }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (ui.lightbox) { ui.lightbox = null; render(); } else if (route().agent) location.hash = route().base || '#/';
+});
+
+window.addEventListener('hashchange', () => {
+  ui.lightbox = null;
+  const r = route();
+  if (r.view === 'calendar') ui.calMonth = null;
+  render();
+  if (r.agent) document.querySelector('.sheet [data-close]')?.focus();
+  else if (!(ui.prevView === r.view && ui.prevId === r.id)) window.scrollTo(0, 0);
+  ui.prevView = r.view; ui.prevId = r.id;
+});
+
+S.tick();
+render();
