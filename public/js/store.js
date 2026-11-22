@@ -307,9 +307,14 @@ export async function setMode(mode) {
   } else {
     state = loadLocal();
     if (!state.profile?.versions?.length) {
-      const data = await loadSeed();
-      state.profile = { rev: 1, versions: [{ id: localVersionId(1, data), n: 1, savedAt: Date.now(), savedBy: 'seed', data }] };
-      saveLocal(false);
+      // A missing seed file must not stop HQ from starting; the profile screen reports it instead.
+      try {
+        const data = await loadSeed();
+        state.profile = { rev: 1, versions: [{ id: localVersionId(1, data), n: 1, savedAt: Date.now(), savedBy: 'seed', data }] };
+        saveLocal(false);
+      } catch {
+        ws.profileError = 'The starting business profile (data/profile-seed.json) could not be loaded.';
+      }
     }
   }
   notify();

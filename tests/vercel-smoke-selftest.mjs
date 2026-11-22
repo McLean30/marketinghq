@@ -31,6 +31,28 @@ const stubs = [
   await stub(4198, (req, res) => { res.writeHead(500, { 'content-type': 'text/plain' }); res.end('A server error has occurred\n\nFUNCTION_INVOCATION_FAILED\n'); }), // crashed function
   await stub(4199, (req, res) => { res.writeHead(401, { 'content-type': 'text/html' }); res.end('<title>Login – Vercel</title><h1>Vercel Authentication</h1><p>Log in to Vercel to continue.</p>'); }), // protection
   await stub(4201, (req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html><title>Nexai Marketing HQ</title><main id="main"></main>'); }), // blank app
+  // Vercel's 404 for "/": static files exist, but the function can't find public/index.html.
+  await stub(4203, (req, res) => {
+    const file = path.join(ROOT, 'public', req.url === '/' ? '__none__' : req.url.split('?')[0]);
+    if (req.url !== '/' && fs.existsSync(file) && fs.statSync(file).isFile()) { res.writeHead(200); res.end(fs.readFileSync(file)); return; }
+    res.writeHead(404, { 'content-type': 'text/plain' }); res.end('Not found');
+  }),
+  // A catch-all that answers every path (including /api/*) with the homepage.
+  await stub(4204, (req, res) => {
+    const p = req.url.split('?')[0];
+    const file = path.join(ROOT, 'public', p === '/' ? 'index.html' : p);
+    const types = { '.js': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.json': 'application/json', '.html': 'text/html' };
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) { res.writeHead(200, { 'content-type': types[path.extname(file)] || 'application/octet-stream' }); res.end(fs.readFileSync(file)); return; }
+    if (p.startsWith('/api/auth/status')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"authConfigured":false,"signedIn":false}'); return; }
+    if (p.startsWith('/api/quill/status')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"provider":"demo"}'); return; }
+    res.writeHead(200, { 'content-type': 'text/html' }); res.end(indexHtml);
+  }),
+  // The profile seed missing from the deployment (the .gitignore bug).
+  await stub(4205, (req, res) => {
+    const p = req.url.split('?')[0];
+    if (p.startsWith('/data/')) { res.writeHead(404, { 'content-type': 'text/plain' }); res.end('Not found'); return; }
+    fetch(`http://127.0.0.1:4197${req.url}`).then(async (r) => { res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || '' }); res.end(Buffer.from(await r.arrayBuffer())); });
+  }),
   await stub(4202, (req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(indexHtml.replace('<script type="module" src="js/app.js"></script>', '<script>throw new Error("Startup exploded")</script>')); }), // startup error
 ];
 try {
@@ -45,6 +67,12 @@ try {
   assert(r.code === 1 && /the app is blank/.test(r.out), 'Blank app → fail');
   r = await run('http://127.0.0.1:4202/');
   assert(r.code === 1 && /Startup exploded/.test(r.out), 'Uncaught startup error → fail');
+  r = await run('http://127.0.0.1:4203/');
+  assert(r.code === 1 && /RESULT: FAIL: Homepage returned HTTP 404/.test(r.out), 'GET / 404 while /index.html is 200 (the Vercel 404) → fail');
+  r = await run('http://127.0.0.1:4204/');
+  assert(r.code === 1 && /unknown API route returned 200/i.test(r.out) && /homepage HTML/.test(r.out), 'Unknown API route answered with homepage HTML → fail');
+  r = await run('http://127.0.0.1:4205/');
+  assert(r.code === 1 && /data\/profile-seed\.json returned 404/.test(r.out), 'Starting business profile missing from the deployment → fail');
   r = await run('');
   assert(r.code === 2, 'No preview URL → blocked, not pass');
   console.log('\nSmoke test self-check passed.');

@@ -18,7 +18,8 @@
     "test:m7": "node tests/review-m7.mjs",
     "test:preview": "node tests/preview-boot.mjs",
     "test:smoke": "node tests/vercel-smoke.mjs",
-    "test:smoke-selftest": "node tests/vercel-smoke-selftest.mjs"
+    "test:smoke-selftest": "node tests/vercel-smoke-selftest.mjs",
+    "test:vercel-build": "node tests/vercel-build-check.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0"

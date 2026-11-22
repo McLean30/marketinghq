@@ -967,7 +967,7 @@ const profileReadOnly = () => S.ws.authConfigured && S.ws.mode !== 'shared';
 
 function renderProfile() {
   const cur = S.currentProfile();
-  if (!cur) return '<p class="empty">Loading the business profile…</p>';
+  if (!cur) return S.ws.profileError ? `<section class="panel"><h1>Business profile</h1><p class="warn" role="alert" data-testid="profile-error">${esc(S.ws.profileError)}</p></section>` : '<p class="empty">Loading the business profile…</p>';
   if (!ui.profileDraft || (!ui.profileDirty && ui.profileDraftBase !== cur.id)) {
     ui.profileDraft = JSON.parse(JSON.stringify(cur.data));
     ui.profileDraftBase = cur.id;

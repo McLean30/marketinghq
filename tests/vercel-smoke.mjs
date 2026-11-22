@@ -4,7 +4,7 @@
 //
 // Optional env:
 //   VERCEL_AUTOMATION_BYPASS_SECRET  Vercel "Protection Bypass for Automation" secret (keeps protection on)
-//   EXPECT_REVIEWER=1                also require the Brand & Quality Reviewer and Business profile (Milestone 7+)
+//   EXPECT_REVIEWER=0                skip the Brand & Quality Reviewer and Business profile (only for pre-Milestone 7 commits)
 //   SMOKE_RESULT=path.json           where to write { status: pass|fail|blocked, summary, steps }
 //   SMOKE_SHOTS=dir                  where to save screenshots
 //
@@ -18,7 +18,7 @@ const { chromium } = require('playwright');
 
 const URL_IN = (process.env.PREVIEW_URL || '').trim();
 const BYPASS = (process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '').trim();
-const EXPECT_REVIEWER = process.env.EXPECT_REVIEWER === '1';
+const EXPECT_REVIEWER = process.env.EXPECT_REVIEWER !== '0';
 const RESULT = process.env.SMOKE_RESULT || '';
 const SHOTS = process.env.SMOKE_SHOTS || '';
 const steps = [];
@@ -69,7 +69,7 @@ try {
   }
   if (status >= 500) throw new Failed(`Homepage returned HTTP ${status}${/FUNCTION_INVOCATION_FAILED|server error/i.test(html) ? ' (serverless function crashed)' : ''}.`);
   if (status !== 200) throw new Failed(`Homepage returned HTTP ${status}.`);
-  step(true, `Homepage returned 200 (${new URL(page.url()).host})`);
+  step(true, `GET / returned 200 (${new URL(page.url()).host})`);
 
   // 2. HQ renders (not blank, no uncaught startup error)
   try {
@@ -80,10 +80,35 @@ try {
   }
   await page.waitForTimeout(800);
   if (pageErrors.length) throw new Failed(`Uncaught error while starting: ${pageErrors[0]}`);
-  const cards = await page.locator('.agent-card').count();
   const title = await page.title();
-  step(cards >= 3 && /Nexai/.test(title), `HQ dashboard rendered (${cards} agent cards, title “${title}”)`);
-  if (cards < 3) throw new Failed(`HQ rendered only ${cards} agent card(s).`);
+  const need = ['manager', 'copywriter', 'designer', ...(EXPECT_REVIEWER ? ['reviewer'] : [])];
+  const missing = [];
+  for (const id of need) if (!(await page.locator(`.agent-card.char-${id}`).count())) missing.push(id);
+  if (missing.length) throw new Failed(`HQ is missing agent card(s): ${missing.join(', ')}.`);
+  for (const [sel, label] of [['button[data-focus-brief]', 'New brief'], ['[data-testid="plan-week-link"]', 'Plan a content week'], ['#brief-form', 'the brief form']]) {
+    if (!(await page.locator(sel).first().isVisible())) throw new Failed(`HQ rendered without ${label}.`);
+  }
+  if (/Loading your workspace/.test(await page.locator('main').innerText())) throw new Failed('HQ is stuck on “Loading your workspace…”.');
+  const imgs = await page.locator('.agent-card img').evaluateAll((els) => els.filter((i) => i.offsetParent).map((i) => i.naturalWidth));
+  if (imgs.some((w) => !w)) throw new Failed('A character image on HQ failed to load.');
+  step(/Nexai/.test(title), `HQ dashboard rendered: ${need.length} agent cards with artwork, New brief, Plan a content week (title “${title}”)`);
+  // 1b. The files the dashboard needs, and API errors that stay errors.
+  const http = page.context().request;
+  const base = new URL('/', page.url()).toString();
+  const get = async (p) => { const r = await http.get(base + p, { maxRedirects: 0 }); return { status: r.status(), type: r.headers()['content-type'] || '', body: await r.text() }; };
+  const idx = await get('index.html');
+  if (idx.status !== 200 || !idx.body.includes('<title>Nexai Marketing HQ</title>')) throw new Failed(`GET /index.html returned ${idx.status}${idx.status === 200 ? ' but not the HQ page' : ''}.`);
+  if (!html.includes('js/app.js')) throw new Failed('GET / returned 200 but not the HQ page.');
+  step(true, 'GET /index.html returned 200 with the HQ page');
+  for (const [p, re] of [['js/app.js', /javascript/], ['js/store.js', /javascript/], ['css/app.css', /css/], ['assets/agents/vektor.webp', /image/], ['assets/agents/reviewer.svg', /svg/], ['data/profile-seed.json', /json/]]) {
+    const r = await get(p);
+    if (r.status !== 200 || !re.test(r.type)) throw new Failed(`GET /${p} returned ${r.status} (${r.type || 'no content type'}).`);
+  }
+  step(true, 'App scripts, styles, character art and the starting business profile all load');
+  const api = await get('api/__smoke-unknown-route');
+  if (api.status < 400 || /text\/html/.test(api.type) || /<html|<!doctype/i.test(api.body)) throw new Failed(`An unknown API route returned ${api.status} ${api.type} instead of an error (it served ${/<html|<!doctype/i.test(api.body) ? 'the homepage HTML' : 'a non-error response'}).`);
+  step(true, `Unknown API route returned an error (${api.status}, ${api.type.split(';')[0]}), not the homepage`);
+
   const mode = await page.evaluate(async () => (await fetch('api/auth/status').then((r) => r.json()).catch(() => ({}))));
   step(true, `Mode: ${mode.authConfigured ? 'shared workspace configured' : 'browser demo mode'}`);
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'hq.png') });

@@ -3,7 +3,11 @@
 
 let SEED = null;
 export async function loadSeed() {
-  if (!SEED) SEED = await fetch('data/profile-seed.json', { cache: 'no-store' }).then((r) => r.json());
+  if (!SEED) {
+    const r = await fetch('data/profile-seed.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`profile seed ${r.status}`);
+    SEED = await r.json();
+  }
   return JSON.parse(JSON.stringify(SEED));
 }
 

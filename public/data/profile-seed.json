@@ -1,0 +1,28 @@
+{
+  "services": [
+    { "id": "svc_web", "name": "Professional Websites", "description": "Fast, clear websites for commercial maintenance and building services firms that explain what you do and make it easy for facilities and property managers to get in touch." },
+    { "id": "svc_software", "name": "Custom Business Software", "description": "Software built around how your engineers and office actually work: job management, job sheets, photos, sign-off and invoicing in one place." },
+    { "id": "svc_ai", "name": "Bespoke AI Agents & Automation", "description": "AI agents and automations that take repetitive admin off your office team, such as chasing paperwork, preparing reports and keeping clients updated." }
+  ],
+  "audience": {
+    "summary": "UK commercial building maintenance and building services firms",
+    "size": "Ideally 30–75 employees",
+    "buyers": "Owners, MDs and Operations Directors"
+  },
+  "proof": [
+    { "id": "proof_jobtrack", "name": "JobTrack Pro", "claims": "", "link": "" },
+    { "id": "proof_club", "name": "Club Operations", "claims": "", "link": "" }
+  ],
+  "cta": {
+    "main": "Request a Free Workflow Review",
+    "organic": "Organic posts give practical value without hard selling. Don't push the CTA in every post."
+  },
+  "brand": {
+    "language": "British English",
+    "linkedinHashtags": { "min": 3, "max": 5, "required": [] },
+    "imagery": "Realistic UK commercial maintenance imagery: plant rooms, rooftops, risers, service vans and engineers at work. No stock-photo clichés.",
+    "logoRule": "Use the official Nexai logo (set in Prism’s Photo layout)."
+  },
+  "offers": [],
+  "writing": { "process": "", "checklist": "" }
+}
