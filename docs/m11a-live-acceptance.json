@@ -1,0 +1,63 @@
+{
+  "jobId": "job_mwtou9q5m4dn",
+  "status": "awaiting review",
+  "publications": 0,
+  "captionV1": "A PPM visit can be booked, the engineer can arrive on time, and the job can still stall because the part they need isn\u2019t on the van.\n\nThat means another visit to arrange, more time spent chasing, and a maintenance issue left open for longer.\n\nWhen planning a visit, ask the person reporting the issue to include the asset details, symptoms and any photos they can provide. Then have the office check that information against the job history and confirm likely parts before the engineer sets off.\n\nWe think good job information is what turns a planned visit into a prepared one. Where does the parts check sit in your PPM process?\n\n#FacilitiesManagement #PPM #BuildingMaintenance #FieldService",
+  "captionV2": "An engineer can arrive on time for a PPM visit and still be unable to finish because the right part isn\u2019t on the van.\n\nThat means another visit to arrange and the issue stays open longer.\n\nBefore the engineer sets off, ask the person reporting the fault for asset details, symptoms and photos. Have the office check these against job history and confirm likely parts.\n\nFacilities directors: who checks parts before a PPM visit?\n\n#FacilitiesManagement #PPM #BuildingMaintenance #FieldService",
+  "image": {
+    "photoId": "photo_mwtoukg89ca719",
+    "model": "gpt-image-2.6-flare",
+    "prompt": "plant room: Close the gap between site and office."
+  },
+  "graphicCurrent": "photo_mwtoukg89ca719",
+  "aiUsage": [
+    {
+      "at": 1795463893344,
+      "requestKey": "task_mwtou9q66g8i:1795463888842",
+      "what": "Caption",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "inputTokens": 1332,
+      "cachedTokens": 0,
+      "outputTokens": 251,
+      "reasoningTokens": 61,
+      "imageInputTokens": null,
+      "imageOutputTokens": null,
+      "totalTokens": 1583,
+      "estCostUsd": 0.00025870000000000005,
+      "priceSource": "OpenAI Standard list prices, checked 23 Nov 2026"
+    },
+    {
+      "at": 1795463900942,
+      "requestKey": "task_mwtou9q6iiq7:img:mwtoug45vyc5yu",
+      "what": "Image",
+      "provider": "openai",
+      "model": "gpt-image-2.6-flare",
+      "inputTokens": 65,
+      "cachedTokens": null,
+      "outputTokens": 1132,
+      "reasoningTokens": null,
+      "imageInputTokens": 0,
+      "imageOutputTokens": 1132,
+      "totalTokens": 1197,
+      "estCostUsd": 0.034285,
+      "priceSource": "OpenAI Standard list prices, checked 23 Nov 2026"
+    },
+    {
+      "at": 1795463905944,
+      "requestKey": "task_mwtou9q66g8i:1795463901562",
+      "what": "Caption revision",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "inputTokens": 1551,
+      "cachedTokens": 0,
+      "outputTokens": 399,
+      "reasoningTokens": 257,
+      "imageInputTokens": null,
+      "imageOutputTokens": null,
+      "totalTokens": 1950,
+      "estCostUsd": 0.0003546,
+      "priceSource": "OpenAI Standard list prices, checked 23 Nov 2026"
+    }
+  ]
+}

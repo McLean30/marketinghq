@@ -98,7 +98,7 @@ function aiImageBox(job, task) {
   const canLive = S.liveAi() && S.ws.mode === 'shared';
   const busy = S.isImaging(task.id);
   const req = task.imageRequest;
-  const scene = job.planDay?.visual || (v && v.content.mode !== 'photo' ? `${sceneLabel(v.content.scene)}: ${(v.content.headline || []).join(' ')}` : '');
+  const scene = job.planDay?.visual || `Photo for this post: ${job.brief.slice(0, 400)}`;
   const canEdit = v?.content.mode === 'photo';
   const open = ui.aiImage?.[task.id];
   return `<div class="ai-image" data-testid="prism-image-tools">
