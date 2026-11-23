@@ -125,7 +125,8 @@ jobs:
                 served = body ? body.commit : null;
                 seen = !r ? 'no response' : r.status === 401 || r.status === 403 ? `HTTP ${r.status}: preview protection answered${process.env.BYPASS ? ' and rejected the bypass secret' : ' (the VERCEL_AUTOMATION_BYPASS_SECRET repository secret isn’t set)'}`
                   : r.status === 404 ? 'HTTP 404: no deployment at that branch URL, or this build has no /api/version'
-                  : !body ? `HTTP ${r.status} without the expected JSON` : body.commit ? `it serves commit ${body.commit.slice(0, 7)}` : 'HTTP 200 but no commit: Vercel isn’t exposing VERCEL_GIT_COMMIT_SHA (Project → Settings → Environment Variables → “Automatically expose System Environment Variables”)';
+                  : !body && (/vercel\.com/.test(new URL(r.url).hostname) || r.redirected) ? `redirected to ${new URL(r.url).hostname}: preview protection sent the request to Vercel’s sign-in page${process.env.BYPASS ? ', so the bypass secret wasn’t accepted' : ' (the VERCEL_AUTOMATION_BYPASS_SECRET repository secret isn’t set)'}`
+                  : !body ? `HTTP ${r.status} without the expected JSON (${(r.headers.get('content-type') || 'no content type').split(';')[0]})` : body.commit ? `it serves commit ${body.commit.slice(0, 7)}` : 'HTTP 200 but no commit: Vercel isn’t exposing VERCEL_GIT_COMMIT_SHA (Project → Settings → Environment Variables → “Automatically expose System Environment Variables”)';
                 core.info(`/api/version: ${seen}`);
                 if (served === sha) break;
                 await sleep(15000);
