@@ -128,7 +128,7 @@ async function run(name, contextOpts) {
   await visibleEntry.click();
   await page.click('button:has-text("Edit caption")');
   const ta = page.locator('[data-testid="panel-copy"] textarea');
-  await ta.fill((await ta.inputValue()).replace('Three fixes that help:', 'Three fixes that work:'));
+  await ta.fill((await ta.inputValue()).replace(/^(.*)$/m, '$1 (edited by the owner)')); // any real change to the approved caption
   await page.click('button:has-text("Save as new version")');
   await page.waitForSelector('.approve-bar[data-status="needs_reapproval"]');
   assert(true, 'Editing approved caption flags the pair for fresh approval');
