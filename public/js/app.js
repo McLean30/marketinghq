@@ -9,6 +9,7 @@ import * as PB from './publishing.js';
 import * as AN from './analytics.js';
 import * as V from './video.js';
 import * as VO from './voice.js';
+import { BRAND, officialLogoAvailable, officialLogoKnown } from './brand.js';
 
 const $main = document.getElementById('main');
 const $sheet = document.getElementById('sheet-root');
@@ -517,10 +518,10 @@ function assetPanel(job, task) {
           ${task.pending.kind === 'revision' ? `<button class="btn btn-ghost" data-cancel-rev="${task.id}">Keep v${task.versions.length} and cancel</button>` : ''}
         </div></div>`
       : busy ? `<div class="working-note" role="status">${a.name} is ${task.pending.kind === 'revision' ? `revising: “${esc(task.pending.feedback)}”` : st === 'queued' ? 'waiting for the hand-off' : 'producing the first version'}${task.pending.engine === 'ai' && st !== 'queued' ? (S.quill.provider === 'mock' ? ' (mock provider)' : ` with ${esc(modelName(S.quill.model))}`) : ''}…</div>` : ''}
-    ${task.type === 'graphic' && !busy ? aiImageBox(job, task) : ''}
     ${task.type === 'graphic' && S.getJob(task.jobId)?.planDay?.visual ? `<p class="visual-brief"><strong>Visual brief:</strong> ${esc(S.getJob(task.jobId).planDay.visual)}</p>` : ''}
     ${v ? outputBlock(task, v) : ''}
     ${v?.notes?.length && v.n > 1 ? `<div class="change-note">${v.feedback ? `<p class="feedback-quote">Your feedback: “${esc(v.feedback)}”</p>` : ''}<p><strong>What changed:</strong> ${esc(v.notes.join(' '))}</p></div>` : ''}
+    ${task.type === 'graphic' && !busy ? aiImageBox(job, task) : ''}
     ${v && !busy ? `
       <div class="asset-actions">
         <button class="btn" data-toggle-rev="${task.id}" aria-expanded="${!!revOpen}">Request revision</button>
@@ -1098,8 +1099,9 @@ function initStudio(job, task) {
     jobId: job.id,
     taskId: task.id,
     photo: last ? stored(last.photoId, last.photoName) : null,
-    logo: brand.logoId ? stored(brand.logoId, brand.logoName) : last ? stored(last.logoId, last.logoName) : null,
-    logoReused: !!brand.logoId,
+    // Owner-set logo first, then the official brand file deployed with HQ, then the last one used on this graphic.
+    logo: brand.logoId ? stored(brand.logoId, brand.logoName) : officialLogoKnown() ? stored(BRAND.logo.id, BRAND.logo.name) : last ? stored(last.logoId, last.logoName) : null,
+    logoReused: !!brand.logoId || officialLogoKnown(),
     headline: last ? last.headline : lastSim?.headline ? lastSim.headline.join(' ') : '',
     headlinePos: last?.headlinePos || P.DEFAULT_SPEC.headlinePos,
     crop: { ...(last?.crop || P.DEFAULT_SPEC.crop) },
@@ -1593,7 +1595,7 @@ function wordingBox(job, copy) {
     ${S.liveAi() ? `<div class="row-actions"><button class="btn" data-wording-review="${job.id}" ${busy ? 'disabled' : ''} data-testid="run-wording-review">${busy ? 'Reviewing wording…' : last?.copyVersion === cv.n ? 'Review wording again' : `Review caption v${cv.n} wording with AI`}</button><span class="mini">One paid request${S.quill.provider === 'openai' ? ` to ${esc(S.quill.model)}` : ' (mock)'}. Advisory only; the rule checks still decide.</span></div>`
       : '<p class="mini">Available with live AI on the owner’s HQ server. The rule checks above work without it.</p>'}
     ${last ? `<div class="wording-out" data-testid="wording-result"><p class="mini">${last.provider === 'openai' ? `Live AI · ${esc(last.model)}` : 'Simulated: mock AI (test mode)'} · caption v${last.copyVersion}${last.copyVersion !== cv.n ? ' (older caption)' : ''}</p><p>${esc(last.summary)}</p>
-      ${last.suggestions.length ? `<ul>${last.suggestions.map((x) => `<li>“${esc(x.quote)}” → “${esc(x.suggestion)}”<span class="mini">${esc(x.why)}</span></li>`).join('')}</ul>` : '<p class="mini">No wording changes suggested.</p>'}</div>` : ''}
+      ${last.suggestions.length ? `<ul>${last.suggestions.map((x) => `<li>“${esc(x.quote)}” → “${esc(x.suggestion)}”<span class="mini">${esc(x.issue)}</span></li>`).join('')}</ul>` : '<p class="mini">No wording changes suggested.</p>'}</div>` : ''}
   </div>`;
 }
 
@@ -1684,6 +1686,7 @@ function renderProfile() {
       ${field('brand.linkedinHashtags.required', 'Required LinkedIn hashtags (space separated)', { placeholder: 'e.g. #NexaiDigital' })}
       ${field('brand.imagery', 'Imagery', { area: true, rows: 2 })}
       <p class="pf-logo">Official logo: <strong>${S.brand().logoName ? esc(S.brand().logoName) : 'not supplied yet'}</strong>. <span class="mini">Prism’s Photo layout sets and reuses it; Calibre checks graphics against it.</span></p>
+      <div class="pf-colours" data-testid="brand-colours"><p>Brand colours <span class="mini">(used in every AI image request and the HQ theme)</span></p><ul>${BRAND.colours.map((c) => `<li><span class="swatch" style="background:${c.hex}"></span><strong>${esc(c.name)}</strong> ${c.hex}<span class="mini">${esc(c.use)}</span></li>`).join('')}</ul></div>
     </fieldset>
     <fieldset data-testid="offers"><legend>Offers</legend>
       ${d.offers.length ? d.offers.map((o, i) => `<div class="pf-row offer" data-testid="offer-${i}">${field(`offers.${i}.wording`, 'Exact wording', { area: true, rows: 2 })}
@@ -2536,6 +2539,15 @@ window.addEventListener('hashchange', (e) => {
 });
 
 render();
+// The official Nexai Digital logo in the header, once the file is deployed (the vector mark stays as a fallback).
+officialLogoAvailable().then((ok) => {
+  const a = document.querySelector('.topbar .brand');
+  if (!ok || !a || a.querySelector('.brand-logo')) return;
+  a.querySelector('svg')?.remove();
+  a.insertAdjacentHTML('afterbegin', `<img class="brand-logo" src="assets/brand/${BRAND.logo.file}" alt="${BRAND.name}" data-testid="header-logo">`);
+  a.querySelector('span').innerHTML = 'Marketing HQ';
+  render();
+});
 S.init().then(async () => {
   const r = route();
   if (r.view === 'job' && !S.getJob(r.id) && S.ws.mode === 'local' && S.ws.authConfigured) ui.afterSignIn = location.hash;

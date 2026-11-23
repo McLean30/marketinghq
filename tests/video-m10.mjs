@@ -105,7 +105,7 @@ try {
   const vt = b.tasks.find((t) => t.type === 'video');
   const ct = b.tasks.find((t) => t.type === 'copy');
   assert(b.job.kind === 'video' && vt.agent === 'video' && vt.clip?.id && !vt.versions.length && vt.draft?.scenes.length === 4, 'Cue drafted a 4-scene storyboard; nothing rendered yet');
-  assert(/Template script and storyboard \(demo mode, not AI\)/.test(await dp.locator('[data-testid="storyboard-summary"]').innerText()), 'The storyboard is labelled as a demo template, not AI');
+  assert(/Template script and storyboard \(demo mode, not AI\)|Mock script and storyboard \(test mode, not AI\)/.test(await dp.locator('[data-testid="storyboard-summary"]').innerText()), 'The storyboard is labelled as not AI (mock provider here; demo template in browser demo mode)');
   await dp.waitForSelector('[data-testid="panel-copy"] [data-testid="caption-text"]', { timeout: 20000 });
   const socialCaption = (await bundleOf(dp, id)).tasks.find((t) => t.type === 'copy').versions[0].content.text;
   assert(socialCaption.length > 40 && !vt.draft.scenes.some((sc) => socialCaption.includes(sc.caption)), 'Quill’s post caption is separate from the on-screen captions');

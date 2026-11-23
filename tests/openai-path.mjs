@@ -45,7 +45,7 @@ const stub = http.createServer((req, res) => {
     const name = b.text?.format?.name;
     if (name === 'vektor_week_plan') return msg({ days: Array.from({ length: 5 }, (_, i) => ({ audience: `Audience ${i}`, angle: `Angle ${i}`, takeaway: `Takeaway ${i}`, visual: `Visual ${i}` })) });
     if (name === 'cue_storyboard') return msg({ scenes: [1, 2, 3].map((i) => ({ title: `Scene ${i}`, duration: 6, from: (i - 1) * 6, caption: `On-screen ${i}`, script: `Voice ${i}` })), notes: 'Stub script.' });
-    if (name === 'calibre_wording') return msg({ summary: 'Clear and practical.', suggestions: [{ quote: 'Stub caption.', suggestion: 'Stub caption, shorter.', why: 'Tighter.' }, { quote: 'Not in the caption', suggestion: 'x', why: 'y' }] });
+    if (name === 'calibre_wording') return msg({ summary: 'Clear and practical.', suggestions: [{ quote: 'Stub caption.', issue: 'Tighter.', suggestion: 'Stub caption, shorter.' }, { quote: 'Not in the caption', issue: 'y', suggestion: 'x' }] });
     if (name === 'vantage_interpretation') return msg({ text: mode === 'invent' ? 'The first post converted 37% better.' : 'The first post reached 1,000 people and earned 20 link clicks, a click-through of 2.0%.' });
     return msg({ caption: 'Stub caption.\n\n#BuildingServices #NexaiDigital', notes: 'Stub notes.' });
   });
@@ -136,7 +136,7 @@ try {
   req = seen.at(-1);
   assert(r.status === 200 && img.assetId && img.model === 'gpt-image-2.6-flare' && img.provider === 'openai', 'Image generated and saved as a workspace asset');
   assert(req.url === '/v1/images/generations' && req.body.model === 'gpt-image-2.6-flare' && req.body.n === 1 && req.body.size === '1024x1536' && req.body.quality === 'medium' && req.body.output_format === 'jpeg', 'POST /v1/images/generations: model, n:1, 1024x1536, quality, jpeg');
-  assert(/no text|no logos/i.test(req.body.prompt), 'Prompt tells the model to leave out text and logos (added locally)');
+  assert(/Never draw any logo/.test(req.body.prompt) && /#1E6BFF/.test(req.body.prompt), 'Prompt carries the Nexai brand palette and tells the model never to draw a logo or text (added locally)');
   const imgCost = (50 * 5 + 1000 * 30) / 1e6;
   assert(img.usage.imageOutputTokens === 1000 && Math.abs(img.usage.estCostUsd - imgCost) < 1e-12, `Image usage and cost recorded ($${imgCost.toFixed(4)})`);
   const asset = await fetch(`${BASE}api/assets/${img.assetId}`, { headers: H });

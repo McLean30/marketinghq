@@ -90,7 +90,14 @@ async function fetchServerAsset(id) {
 }
 
 export const putAsset = (rec) => (backend === 'server' ? uploadAsset(rec) : putLocalAsset(rec));
-export const getAsset = (id) => (!id ? Promise.resolve(null) : backend === 'server' ? fetchServerAsset(id) : getLocalAsset(id));
+// "brand:<file>" is an official brand file deployed with the app (public/assets/brand/), the same in every workspace.
+async function fetchBrandAsset(id) {
+  try {
+    const r = await fetch(`assets/brand/${encodeURIComponent(id.slice(6))}`, { cache: 'force-cache' });
+    return r.ok && /^image\//.test(r.headers.get('content-type') || '') ? { id, blob: await r.blob() } : null;
+  } catch { return null; }
+}
+export const getAsset = (id) => (!id ? Promise.resolve(null) : id.startsWith('brand:') ? fetchBrandAsset(id) : backend === 'server' ? fetchServerAsset(id) : getLocalAsset(id));
 
 const bitmapCache = new Map(); // asset id -> Promise<ImageBitmap|null>
 export function loadBitmap(id) {

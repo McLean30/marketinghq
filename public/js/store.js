@@ -11,6 +11,7 @@ import { londonToday } from './plan.js';
 import * as PB from './publishing.js';
 import * as AN from './analytics.js';
 import { templateStoryboard } from './video.js';
+import { BRAND, officialLogoKnown } from './brand.js';
 import { toneFor, voiceOf, hasVoiceField, DEFAULT_VOICE } from './voice.js';
 
 const KEY = 'nexai-hq:v1';
@@ -785,7 +786,8 @@ export async function setBrandLogo(id, name) {
     throw new Error(r.data.error || 'The logo couldn’t be remembered.');
   }
 }
-export const brand = () => state.brand || {};
+// The workspace logo; until the owner sets one, the official logo deployed with HQ (public/assets/brand/).
+export const brand = () => (state.brand?.logoId || !officialLogoKnown() ? state.brand || {} : { ...(state.brand || {}), logoId: BRAND.logo.id, logoName: BRAND.logo.name, official: true });
 
 /* ---------- Import this browser's work into the shared workspace ---------- */
 export function localBundles() {
@@ -1020,11 +1022,11 @@ export async function runReview(jobId) {
   notify();
   try {
     const ids = gv.content.mode === 'photo' ? [gv.content.photoId, gv.content.logoId].filter(Boolean) : gv.content.mode === 'video' ? [gv.content.videoId, gv.content.clipId].filter(Boolean) : [];
-    const present = new Set(await assetsPresent(ids));
+    const present = new Set([...(await assetsPresent(ids.filter((x) => !String(x).startsWith('brand:')))), ...ids.filter((x) => String(x).startsWith('brand:') && officialLogoKnown())]);
     await new Promise((r) => setTimeout(r, 700)); // a beat so the Reviewer is visibly at work
     const profile = currentProfile();
     const date = reviewDate(job);
-    const result = runChecks({ job, copyVersion: cv, graphicVersion: gv, profile, brand: state.brand || {}, date, present });
+    const result = runChecks({ job, copyVersion: cv, graphicVersion: gv, profile, brand: brand(), date, present });
     return await commit(jobId, () => {
       const j = getJob(jobId);
       const t = jobTasks(j);
@@ -1421,7 +1423,7 @@ export async function prismImage(taskId, { op, prompt, scene }) {
         n, by: 'Prism with live AI', simulated: d.provider !== 'openai', source: d.provider, model: d.model, usage: d.usage || null, createdAt: Date.now(), profileVersion: profileRef(), feedback: op === 'edit' ? prompt.trim() : null,
         content: {
           mode: 'photo', photoId: d.assetId, photoName: d.name, photoOrigin: d.provider === 'openai' ? 'ai' : 'mock', generated: { op, prompt: prompt.trim(), scene: scene || null, model: d.model, provider: d.provider, requestKey },
-          logoId: state.brand?.logoId || last?.content.logoId || null, logoName: state.brand?.logoName || last?.content.logoName || null,
+          logoId: state.brand?.logoId || (officialLogoKnown() ? BRAND.logo.id : null) || last?.content.logoId || null, logoName: state.brand?.logoName || (officialLogoKnown() ? BRAND.logo.name : null) || last?.content.logoName || null,
           headline: last?.content.headline || (lastSim?.content.headline || []).join(' ') || '', headlinePos: last?.content.headlinePos || 'bottom', crop: { zoom: 1, fx: 0.5, fy: 0.5 }, logoScale: last?.content.logoScale || 1,
         },
         notes: [op === 'edit' ? `v${n}: Image edited with ${d.model}: “${prompt.trim()}”. Logo, headline and crop are added locally.` : `v${n}: Image generated with ${d.model}${scene ? ` for “${scene}”` : ''}. Logo, headline and crop are added locally.`],

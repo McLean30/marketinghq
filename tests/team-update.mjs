@@ -265,8 +265,9 @@ try {
   await sp.waitForTimeout(8000);
   const ws3 = await api(sp, 'api/workspace');
   const last = (id) => ws3.jobs.find((e) => e.id === id).bundle.tasks.find((t) => t.type === 'video').draft.scenes.at(-1);
-  assert(/^Takeaway/.test(last(vjobs[0]).caption) && /Editorial voice/.test(last(vjobs[0]).script), 'Cue (editorial): the script ends on a practical takeaway');
-  assert(/Request a Free Workflow Review/.test(last(vjobs[1]).caption) && /Direct-response/.test(last(vjobs[1]).script), 'Cue (promo brief): the script ends on one booking CTA, for that job only');
+  // From M11A Cue's script comes from the configured provider (the mock here), which receives the job's tone.
+  assert(last(vjobs[0]).title === 'Takeaway' && /takeaway/i.test(last(vjobs[0]).caption), 'Cue (editorial): the script ends on a practical takeaway');
+  assert(last(vjobs[1]).title === 'Call to action' && /Request a Free Workflow Review/.test(last(vjobs[1]).caption), 'Cue (promo brief): the script ends on one booking CTA, for that job only');
   await sctx.close();
 
   console.log('\n== 4. Existing customised profiles survive the update ==');

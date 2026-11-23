@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { BRAND } = require('./public/js/brand.js'); // shared brand palette and logo rules (ES module via require)
 const quill = require('./server/quill');
 const auth = require('./server/auth');
 const wsStore = require('./server/workspace');
@@ -107,7 +108,7 @@ async function prismImage(body) {
     if (!a) throw Object.assign(new Error('The image to edit isn’t in the shared workspace.'), { status: 404, retryable: false });
     base = { mime: a.meta.type, buffer: a.buffer };
   }
-  const prompt = `${body.prompt.trim()}\n\nA realistic photograph for a UK commercial maintenance and building services company's ${body.platform || 'social'} post. Natural light, believable UK setting and PPE. No text, captions, logos or watermarks in the image: the headline and the official logo are added afterwards.`;
+  const prompt = `${body.prompt.trim()}\n\nA realistic photograph for a UK commercial maintenance and building services company's ${body.platform || 'social'} post. Believable UK setting and PPE. ${BRAND.imageDirection}`;
   let out;
   if (quill.providerInfo().provider === 'mock') {
     await new Promise((r) => setTimeout(r, Number(process.env.QUILL_MOCK_DELAY_MS || 300)));

@@ -150,9 +150,9 @@ async function videoScript(req) {
   return {
     scenes: [
       { title: 'Opening', duration: 4, from: 0, caption: 'Mock: receipts go missing between site and office.', script: 'Mock direction: open on the job screen.' },
-      { title: 'On screen', duration: 8, from: 2.5, caption: 'Mock: the engineer adds the receipt on site.', script: 'Mock direction: show the tap and the photo.' },
-      { title: 'Why it helps', duration: 5, from: 9, caption: 'Mock: the office sees it straight away.', script: 'Mock direction: office view.' },
-      { title: promo ? 'Call to action' : 'Takeaway', duration: 3, from: 16, caption: promo ? 'Mock: Request a Free Workflow Review.' : 'Mock takeaway: log receipts before you leave site.', script: 'Mock direction: close.' },
+      { title: 'On screen', duration: 7, from: 2.4, caption: 'Mock: the engineer adds the receipt on site.', script: 'Mock direction: show the tap and the photo.' },
+      { title: 'Why it helps', duration: 6, from: 9, caption: 'Mock: the office sees it straight away.', script: 'Mock direction: office view.' },
+      { title: promo ? 'Call to action' : 'Takeaway', duration: 3, from: 16.5, caption: promo ? 'Mock: Request a Free Workflow Review.' : 'Mock takeaway: log receipts before you leave site.', script: 'Mock direction: close.' },
     ],
     notes: 'Mock storyboard from the brief (test mode, not AI).',
   };
