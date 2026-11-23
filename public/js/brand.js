@@ -22,7 +22,10 @@ export const brandBrief = () => `Brand colours: ${BRAND.colours.map((c) => `${c.
 let available = null;
 export async function officialLogoAvailable() {
   if (available !== null) return available;
+  // brand.json says whether the logo file has been added, so HQ never requests a file that isn't there.
   try {
+    const m = await (await fetch('assets/brand/brand.json', { cache: 'no-store' })).json();
+    if (m?.logo !== true) return (available = false);
     const r = await fetch(`assets/brand/${BRAND.logo.file}`, { cache: 'no-store' });
     available = r.ok && /^image\//.test(r.headers.get('content-type') || '');
   } catch { available = false; }
