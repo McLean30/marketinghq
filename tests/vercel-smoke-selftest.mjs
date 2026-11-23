@@ -70,8 +70,8 @@ const stubs = [
 ];
 try {
   console.log('\n== Smoke test verdicts against local stand-ins ==');
-  let r = await run('http://127.0.0.1:4197/', { EXPECT_REVIEWER: '1', EXPECT_PUBLISHING: '1', EXPECT_SHA: 'a'.repeat(40) });
-  assert(r.code === 0 && /RESULT: PASS/.test(r.out) && /Vektor's workspace opened/.test(r.out) && /Business profile opened/.test(r.out) && /publishing controls rendered/.test(r.out), 'Working app (preview conditions), including a post’s publishing controls → pass');
+  let r = await run('http://127.0.0.1:4197/', { EXPECT_REVIEWER: '1', EXPECT_PUBLISHING: '1', EXPECT_ANALYST: '1', EXPECT_SHA: 'a'.repeat(40) });
+  assert(r.code === 0 && /RESULT: PASS/.test(r.out) && /Vektor's workspace opened/.test(r.out) && /Business profile opened/.test(r.out) && /publishing controls rendered/.test(r.out) && /Marketing Analyst workspace opened/.test(r.out), 'Working app (preview conditions), including publishing controls and the Analyst → pass');
   r = await run('http://127.0.0.1:4207/', { EXPECT_SHA: 'a'.repeat(40) });
   assert(r.code === 1 && /older or different deployment/.test(r.out), 'Deployment reporting a different commit → fail');
   r = await run('http://127.0.0.1:4208/', { EXPECT_PUBLISHING: '1' });

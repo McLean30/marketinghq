@@ -6,6 +6,7 @@
 //   VERCEL_AUTOMATION_BYPASS_SECRET  Vercel "Protection Bypass for Automation" secret (keeps protection on)
 //   EXPECT_REVIEWER=0                skip the Brand & Quality Reviewer and Business profile (only for pre-Milestone 7 commits)
 //   EXPECT_PUBLISHING=1              also open a post and check the demo publishing controls (Milestone 8+)
+//   EXPECT_ANALYST=1                 also require the Marketing Analyst card and workspace (Milestone 9+)
 //   EXPECT_SHA=<commit>              refuse a deployment that reports a different commit (/api/version)
 //   SMOKE_RESULT=path.json           where to write { status: pass|fail|blocked, summary, steps }
 //   SMOKE_SHOTS=dir                  where to save screenshots
@@ -24,6 +25,7 @@ const URL_IN = (process.env.PREVIEW_URL || '').trim();
 const BYPASS = (process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '').trim();
 const EXPECT_REVIEWER = process.env.EXPECT_REVIEWER !== '0';
 const EXPECT_PUBLISHING = process.env.EXPECT_PUBLISHING === '1';
+const EXPECT_ANALYST = process.env.EXPECT_ANALYST === '1';
 const EXPECT_SHA = (process.env.EXPECT_SHA || '').trim();
 const RESULT = process.env.SMOKE_RESULT || '';
 const SHOTS = process.env.SMOKE_SHOTS || '';
@@ -87,7 +89,7 @@ try {
   await page.waitForTimeout(800);
   if (pageErrors.length) throw new Failed(`Uncaught error while starting: ${pageErrors[0]}`);
   const title = await page.title();
-  const need = ['manager', 'copywriter', 'designer', ...(EXPECT_REVIEWER ? ['reviewer'] : [])];
+  const need = ['manager', 'copywriter', 'designer', ...(EXPECT_REVIEWER ? ['reviewer'] : []), ...(EXPECT_ANALYST ? ['analyst'] : [])];
   const missing = [];
   for (const id of need) if (!(await page.locator(`.agent-card.char-${id}`).count())) missing.push(id);
   if (missing.length) throw new Failed(`HQ is missing agent card(s): ${missing.join(', ')}.`);
@@ -159,6 +161,22 @@ try {
     if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'business-profile.png') });
   }
 
+  if (EXPECT_ANALYST) {
+    // The Analyst's workspace, with the labelled sample posts added in this test browser only.
+    await page.goto(new URL('#/', page.url()).toString());
+    await page.waitForSelector('.agent-card.char-analyst');
+    await openAgent('.agent-card.char-analyst', null, 'Marketing Analyst');
+    await page.goto(new URL('#/agent/analyst', page.url()).toString());
+    await page.waitForSelector('.sheet [data-testid="an-filters"]');
+    if (await page.locator('[data-testid="add-sample"]').count()) await page.click('[data-testid="add-sample"]');
+    try { await page.waitForSelector('.an-row[data-job="job_sampleinvoice"]', { timeout: 10000 }); } catch { throw new Failed('The Analyst’s sample comparison didn’t appear.'); }
+    const ctrs = await page.locator('.an-row [data-fig="ctr"]').allInnerTexts();
+    if (!ctrs.some((x) => x.startsWith('2.0%')) || !ctrs.some((x) => x.startsWith('1.5%')) || !(await page.locator('[data-testid="suggested-test"]').count())) throw new Failed('The Analyst workspace opened but the sample comparison or suggested test is missing.');
+    step(true, 'Marketing Analyst workspace opened: sample comparison shows 2.0% and 1.5% click-through and a rules-based suggested test');
+    if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'analyst.png') });
+    await page.keyboard.press('Escape');
+  }
+
   if (EXPECT_PUBLISHING) {
     // 4. Open a post and check the demo publishing controls render (no confirmation is given).
     const q = await page.evaluate(async () => (await fetch('api/quill/status').then((r) => r.json()).catch(() => ({}))));
@@ -201,7 +219,7 @@ try {
   if (paid.length) throw new Failed(`The app tried to call a paid AI endpoint during the smoke test (${paid[0]}).`);
   step(true, 'No uncaught errors, no 5xx responses, no paid AI calls');
   await browser.close();
-  finish('pass', `HQ rendered and ${EXPECT_REVIEWER ? 'Vektor, the Brand & Quality Reviewer and Business profile' : 'Vektor’s workspace'} opened on the preview${EXPECT_PUBLISHING ? '; a post’s demo publishing controls rendered' : ''}.`);
+  finish('pass', `HQ rendered and ${EXPECT_REVIEWER ? 'Vektor, the Brand & Quality Reviewer and Business profile' : 'Vektor’s workspace'} opened on the preview${EXPECT_PUBLISHING ? '; a post’s demo publishing controls rendered' : ''}${EXPECT_ANALYST ? '; the Marketing Analyst workspace opened' : ''}.`);
 } catch (e) {
   if (SHOTS && page) await page.screenshot({ path: path.join(SHOTS, 'failure.png') }).catch(() => {});
   await browser.close();

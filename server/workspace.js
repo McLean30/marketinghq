@@ -76,6 +76,15 @@ function validateBundle(id, b) {
       if (!Number.isFinite(p.scheduledFor)) bad('publication time');
     });
   }
+  const ms = b.job.measurements;
+  if (ms !== undefined) {
+    if (!Array.isArray(ms) || ms.length > 500) bad('results');
+    const num = (v) => v === null || (Number.isInteger(v) && v >= 0 && v < 1e12);
+    ms.forEach((m, i) => {
+      if (!m || m.n !== i + 1 || !/^ms_[a-z0-9_]{4,60}$/.test(m.id) || !['owner', 'sample'].includes(m.source)) bad('results record');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(m.measuredOn || '') || !num(m.impressions) || !num(m.clicks) || !num(m.enquiries)) bad('results figures');
+    });
+  }
 }
 const PUB_STATUS = ['scheduled', 'publishing', 'published', 'cancelled', 'held', 'attention', 'replaced'];
 const FINAL = ['published', 'cancelled', 'replaced'];
@@ -99,6 +108,10 @@ function checkAppendOnly(prev, next) {
   const pp = prev.job.publications || [];
   const np = next.job.publications || [];
   if (np.length < pp.length) throw new WsError(422, 'This save would remove a publication record, so it was refused.');
+  // Results: snapshots are only ever added; recorded figures can't be edited or removed.
+  const pm = prev.job.measurements || [];
+  const nm = next.job.measurements || [];
+  if (nm.length < pm.length || pm.some((x, i) => JSON.stringify(x) !== JSON.stringify(nm[i]))) throw new WsError(422, 'This save would change recorded results, so it was refused.');
   pp.forEach((p, i) => {
     const q = np[i];
     const refuse = () => { throw new WsError(422, `This save would rewrite publication #${p.n}’s history, so it was refused.`); };

@@ -28,6 +28,15 @@ const ART = {
     card: { top: 0, h: 670 },
     banner: { top: 118, h: 290 }, // phone: wide strip centred on the lens
   },
+  analyst: {
+    // Interim artwork (public/assets/agents/analyst.svg), drawn locally: a side-profile robot with a visor and dorsal
+    // fin studying a chart projected from its wrist. Swap for a rendered character; keep the chart panel in place.
+    src: 'assets/agents/analyst.svg', w: 446, h: 695, alt: 'Vantage, a gunmetal robot with a glowing visor studying a holographic chart projected from its wrist',
+    thumb: { cx: 150, cy: 235, size: 250 },
+    window: { top: 80, h: 360 },
+    card: { top: 0, h: 670 },
+    banner: { top: 90, h: 300 }, // phone: head, visor and chart
+  },
 };
 
 const pct = (n) => `${+n.toFixed(3)}%`;
@@ -61,6 +70,13 @@ function effects(id) {
       <clipPath id="rv-lens-${uidSeq++}"><circle cx="223" cy="262" r="104"/></clipPath>
       <g clip-path="url(#rv-lens-${uidSeq - 1})"><rect class="fx-anim lens-scan" x="110" y="150" width="226" height="10" rx="5"/></g>
       <circle class="fx-anim reticle-spin" cx="223" cy="262" r="62" fill="none" stroke-dasharray="3 7"/>
+    </svg>`;
+  }
+  if (id === 'analyst') {
+    // The trend line redraws across the projected chart and the newest point pulses while results are analysed.
+    return `<svg class="fx fx-analyst" viewBox="0 0 ${a.w} ${a.h}" preserveAspectRatio="none" aria-hidden="true">
+      <polyline class="fx-anim trend-draw" pathLength="100" points="232,232 266,196 300,214 334,160 368,176 404,128 428,116"/>
+      <circle class="fx-anim point-pulse" cx="404" cy="128" r="7"/>
     </svg>`;
   }
   // Prism: the aperture turns and the projection comes into focus.

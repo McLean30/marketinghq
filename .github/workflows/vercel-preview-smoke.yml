@@ -140,6 +140,7 @@ jobs:
         run: |
           if git cat-file -e "${SHA}:public/js/review.js" 2>/dev/null; then echo "reviewer=1" >> "$GITHUB_OUTPUT"; else echo "reviewer=0" >> "$GITHUB_OUTPUT"; fi
           if git cat-file -e "${SHA}:public/js/publishing.js" 2>/dev/null; then echo "publishing=1" >> "$GITHUB_OUTPUT"; else echo "publishing=0" >> "$GITHUB_OUTPUT"; fi
+          if git cat-file -e "${SHA}:public/js/analytics.js" 2>/dev/null; then echo "analyst=1" >> "$GITHUB_OUTPUT"; else echo "analyst=0" >> "$GITHUB_OUTPUT"; fi
 
       - uses: actions/setup-node@v4
         if: steps.dep.outputs.state == 'success'
@@ -159,6 +160,7 @@ jobs:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           EXPECT_REVIEWER: ${{ steps.expect.outputs.reviewer }}
           EXPECT_PUBLISHING: ${{ steps.expect.outputs.publishing }}
+          EXPECT_ANALYST: ${{ steps.expect.outputs.analyst }}
           EXPECT_SHA: ${{ steps.dep.outputs.sha }}
           SMOKE_RESULT: smoke-result.json
           SMOKE_SHOTS: smoke-shots

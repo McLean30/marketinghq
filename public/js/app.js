@@ -6,11 +6,12 @@ import * as PL from './plan.js';
 import * as PF from './profile.js';
 import * as AG from './agents.js';
 import * as PB from './publishing.js';
+import * as AN from './analytics.js';
 
 const $main = document.getElementById('main');
 const $sheet = document.getElementById('sheet-root');
 const $toast = document.getElementById('toast');
-const ui = { revision: {}, editing: {}, calMonth: null, calPlatform: 'All', lightbox: null, viewVersion: {}, pub: {} };
+const ui = { revision: {}, editing: {}, calMonth: null, calPlatform: 'All', lightbox: null, viewVersion: {}, pub: {}, results: {}, an: { platform: 'All', from: '', to: '', posts: 'all', window: AN.DEFAULT_WINDOW, week: null, picked: false }, weekPrefill: '' };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmtDate = (iso, opts = { weekday: 'short', day: 'numeric', month: 'short' }) =>
@@ -97,12 +98,13 @@ const CHEVRON = '<span class="agent-go" aria-hidden="true"><svg viewBox="0 0 24 
 function character(agentId, { size = 'card' } = {}) {
   const a = S.AGENTS[agentId];
   const st = S.agentState(agentId);
-  const label = agentId === 'reviewer' ? ({ working: 'Reviewing', queued: 'Reviews waiting', awaiting_review: 'Findings to act on' }[st] || STATE_TEXT[st]) : STATE_TEXT[st];
+  const label = agentId === 'reviewer' ? ({ working: 'Reviewing', queued: 'Reviews waiting', awaiting_review: 'Findings to act on' }[st] || STATE_TEXT[st])
+    : agentId === 'analyst' ? ({ working: 'Analysing', queued: 'Results to enter', awaiting_review: 'Test suggestion ready' }[st] || STATE_TEXT[st]) : STATE_TEXT[st];
   const meta = `<span class="char-meta"><span class="char-name">${a.name}</span><span class="char-role">${a.role}</span>
     <span class="state-badge state-${st}"><span class="dot" aria-hidden="true"></span>${label}</span></span>`;
   if (size === 'xs') return `<span class="char char-${agentId} size-xs" data-state="${st}">${AG.thumb(agentId)}<span class="xs-dot" aria-hidden="true"></span></span>`;
   if (size === 'hero') return `<div class="char char-${agentId} size-hero" data-state="${st}" role="img" aria-label="${esc(AG.altText(agentId))}. Status: ${label}">${AG.art(agentId, { windowed: true, eager: true })}${meta}</div>`;
-  return `<a class="char char-${agentId} size-card agent-card" data-agent="${agentId}" data-state="${st}" href="${agentHref(agentId)}" aria-label="${a.name}, ${a.role}. Status: ${label}. Open workspace">${agentId === 'reviewer' ? `<span class="art-portrait">${AG.art(agentId, { eager: true, card: true })}</span><span class="art-banner">${AG.art(agentId, { banner: true })}</span>` : AG.art(agentId, { eager: true, card: true })}${meta}${CHEVRON}</a>`;
+  return `<a class="char char-${agentId} size-card agent-card" data-agent="${agentId}" data-state="${st}" href="${agentHref(agentId)}" aria-label="${a.name}, ${a.role}. Status: ${label}. Open workspace">${agentId === 'reviewer' || agentId === 'analyst' ? `<span class="art-portrait">${AG.art(agentId, { eager: true, card: true })}</span><span class="art-banner">${AG.art(agentId, { banner: true })}</span>` : AG.art(agentId, { eager: true, card: true })}${meta}${CHEVRON}</a>`;
 }
 
 function managerLine() {
@@ -114,13 +116,14 @@ function managerLine() {
 }
 
 function renderHQ() {
-  const jobs = S.getState().jobs;
+  const jobs = S.getState().jobs.filter((j) => !j.sample); // sample posts live with the Analyst only
   return `
   <section class="team stage" aria-label="Your AI marketing team">
     ${character('manager')}
     ${character('copywriter')}
     ${character('designer')}
     ${character('reviewer')}
+    ${character('analyst')}
   <div class="hq-actions">
     <button type="button" class="action-btn" data-focus-brief><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M7 3h7l5 5v13H7z M14 3v5h5 M10 12h6 M10 15.5h6 M10 19h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg><span>New brief</span></button>
     <a class="action-btn" href="#/week/new" data-testid="plan-week-link"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 9.5h17 M8 3v4 M16 3v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.5 13h1.5 M11.25 13h1.5 M15 13h1.5 M7.5 16.5h1.5 M11.25 16.5h1.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Plan a content week</span></a>
@@ -192,9 +195,11 @@ function renderAgentSheet(agentId) {
       <p class="mini">I never approve anything. Final approval is always yours.</p>
       <h3>History</h3>
       ${history.length ? `<ol class="activity">${history.map(({ j, r }) => `<li><span class="mini">${fmtTime(r.at)} · review #${r.n} · caption v${r.copyVersion} · graphic v${r.graphicVersion} · profile ${esc(r.profileVersion)}</span><a href="#/job/${j.id}">${esc(jobTitle(j))}</a> ${r.findings.filter((f) => f.status === 'fail').length} problem(s), ${r.findings.filter((f) => f.status === 'owner').length} for owner review</li>`).join('')}</ol>` : '<p class="empty">No reviews yet.</p>'}`;
+  } else if (agentId === 'analyst') {
+    body = analystBody();
   } else if (agentId === 'manager') {
     const log = S.getState().log.slice(0, 30);
-    const jobs = S.getState().jobs;
+    const jobs = S.getState().jobs.filter((j) => !j.sample);
     body = `
       <h3>Content weeks</h3>
       ${S.allPlans().length ? `<ul class="deleg weeks">${S.allPlans().map((pl) => {
@@ -340,7 +345,8 @@ function renderJob(id) {
   else if (canApprove) approveText = `Approving caption v${cv} with graphic v${gv} puts this post on the private calendar. Nothing is published or scheduled: that’s a separate step.`;
   else approveText = 'Approval opens when both the caption and graphic are ready.';
   return `
-  <nav class="crumbs"><a href="#/">← HQ</a></nav>
+  <nav class="crumbs"><a href="#/">← HQ</a>${job.sample ? ` · <a href="#/agent/analyst">Vantage’s analysis</a>` : ''}</nav>
+  ${job.sample ? '<p class="sample-banner" data-testid="sample-banner"><strong>Sample post.</strong> Made-up content and figures for trying the Marketing Analyst. It was never published anywhere and isn’t one of your posts.</p>' : ''}
   <div id="sync-slot">${syncNotice(job.id)}</div>
   <header class="job-head">
     <div class="job-head-top"><span class="plat plat-${platSlug(job.platform)}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>${pill(st)}${pubPill(job)}</div>
@@ -359,7 +365,8 @@ function renderJob(id) {
     <p>${esc(approveText)}</p>
     ${st === 'approved' ? `<a class="btn" href="#/calendar">View calendar</a>` : `<button class="btn btn-primary" data-approve="${job.id}" ${canApprove ? '' : 'disabled'}>${st === 'needs_reapproval' ? 'Approve changed pair' : 'Approve pair'}</button>`}
   </div>
-  ${publishPanel(job)}`;
+  ${publishPanel(job)}
+  ${resultsPanel(job)}`;
 }
 
 /* ---------- Demo publishing ---------- */
@@ -497,13 +504,116 @@ function publishPanel(job) {
   </section>`;
 }
 
+/* ---------- Results and the Marketing Analyst ---------- */
+const metricCell = (v) => (v == null ? '<span class="unknown" title="Not entered: unknown, not zero">Not entered</span>' : esc(AN.fmtNum(v)));
+const sampleTag = '<span class="demo-tag sample-tag">Sample</span>';
+
+/** Results for the version that was published, entered by you as running totals on a date. */
+function resultsPanel(job) {
+  const pub = AN.publishedPub(job);
+  if (!pub) return '';
+  const { copy, graphic } = S.jobTasks(job);
+  const cv = copy.versions[pub.copyVersion - 1];
+  const gv = graphic.versions[pub.graphicVersion - 1];
+  const totals = AN.latestTotals(job);
+  const lm = AN.latestMeasurement(job);
+  const c = AN.ctr(lm);
+  const ms = AN.measurements(job);
+  const u = ui.results[job.id] || {};
+  const pOn = AN.publishedOn(job);
+  return `<section class="panel results-panel" aria-labelledby="rs-h-${job.id}" data-testid="results-panel">
+    <h2 id="rs-h-${job.id}">Results ${job.sample ? sampleTag : ''}<span class="mini">Vantage, Marketing Analyst</span></h2>
+    <div class="rs-post" data-testid="rs-post">
+      <div class="rs-thumb">${gv ? graphicMarkup(graphic, gv, { title: `Graphic v${gv.n}` }) : ''}</div>
+      <div>
+        <p><span class="plat plat-${platSlug(job.platform)}">${esc(job.platform)}</span> <strong data-testid="rs-published">Published (demo) ${esc(PB.fmtLondon(pub.publishedAt || pub.scheduledFor))}</strong></p>
+        <p class="mini" data-testid="rs-versions">Results belong to caption v${pub.copyVersion} and graphic v${pub.graphicVersion}, the version that was published${job.sample ? ' (sample)' : ''}.</p>
+        <details class="rs-caption" data-key="rsc-${job.id}"><summary>Published caption</summary><p class="pub-caption">${esc(cv?.content.text || '')}</p></details>
+      </div>
+    </div>
+    <h3>Latest totals</h3>
+    ${ms.length ? `<dl class="rs-totals" data-testid="rs-totals">${AN.METRICS.map(({ key, label }) => `<div data-metric="${key}"><dt>${label}</dt><dd><strong>${metricCell(totals[key]?.value)}</strong>${totals[key] ? `<span class="mini">measured ${esc(AN.fmtDay(totals[key].measuredOn))}, day ${totals[key].windowDays}</span>` : ''}</dd></div>`).join('')}
+      <div data-metric="ctr"><dt>Click-through</dt><dd><strong>${c.value == null ? `<span class="unknown">Can’t work out</span>` : esc(AN.fmtPct(c.value))}</strong><span class="mini">${c.value == null ? esc(c.why) : `${esc(c.formula)} on ${esc(AN.fmtDay(lm.measuredOn))}`}</span></dd></div></dl>` : '<p class="empty">No results entered yet.</p>'}
+    <form class="rs-form" data-results-form="${job.id}" novalidate>
+      <p class="mini">Enter running totals as shown on the platform on the day you looked. Leave a box empty if you don’t have that figure. Enter 0 only if you checked and it was zero. A later entry adds a new measurement; earlier ones stay in the history.</p>
+      <div class="rs-fields">
+        <label>Measured on<input type="date" id="rs-date-${job.id}" value="${esc(u.date || S.today())}" min="${pOn}" max="${S.today()}" required></label>
+        <label>Impressions<input type="text" inputmode="numeric" autocomplete="off" id="rs-imp-${job.id}" placeholder="Not entered"></label>
+        <label>Link clicks<input type="text" inputmode="numeric" autocomplete="off" id="rs-clk-${job.id}" placeholder="Not entered"></label>
+        <label>Owner-attributed enquiries<input type="text" inputmode="numeric" autocomplete="off" id="rs-enq-${job.id}" placeholder="Not entered"></label>
+      </div>
+      ${u.error ? `<p class="form-error" role="alert" data-testid="rs-error">${esc(u.error)}</p>` : ''}
+      <button class="btn btn-primary" type="submit" ${u.busy ? 'disabled' : ''}>Save measurement</button>
+    </form>
+    ${ms.length ? `<details class="rs-history" data-key="rsh-${job.id}" open data-testid="rs-history"><summary>Measurement history (${ms.length})</summary><ol>
+      ${ms.slice().reverse().map((m) => `<li data-testid="rs-history-item"><p><strong>${esc(AN.fmtDay(m.measuredOn))}</strong> · day ${m.windowDays} after publishing · ${m.source === 'sample' ? sampleTag + ' made-up figures' : 'entered by you'}</p>
+        <p class="mini">Impressions ${m.impressions == null ? 'not entered' : AN.fmtNum(m.impressions)} · link clicks ${m.clicks == null ? 'not entered' : AN.fmtNum(m.clicks)} · enquiries ${m.enquiries == null ? 'not entered' : AN.fmtNum(m.enquiries)} · caption v${m.copyVersion} + graphic v${m.graphicVersion}</p></li>`).join('')}</ol></details>` : ''}
+  </section>`;
+}
+
+function analystBody() {
+  const f = ui.an;
+  const jobs = S.getState().jobs;
+  const todo = S.resultsToEnter();
+  const { rows, excluded } = AN.comparisonRows(jobs, f);
+  const obs = AN.observations(rows, { window: f.window });
+  const week = f.week || AN.latestWeek(jobs, S.today(), f.window);
+  const sum = AN.weeklySummary(jobs, { weekStart: week, platform: f.platform, posts: f.posts, window: f.window });
+  const sg = sum.suggestion;
+  const windowLabel = f.window === 'latest' ? 'latest figures' : `${f.window}-day figures`;
+  const opt = (v, cur, label) => `<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${label}</option>`;
+  return `
+    <p class="an-intro">I compare the results you enter for published demo posts. Everything here is rules-based arithmetic on your figures: no AI, no live accounts.</p>
+    ${S.hasSampleData() ? '<p class="sample-note" data-testid="sample-note"><strong>Sample data is loaded.</strong> Two made-up LinkedIn posts, marked Sample. They’re not your results. Choose “Your posts only” to hide them.</p>'
+      : '<div class="sample-offer"><button class="btn" data-an-sample data-testid="add-sample">Add sample data (2 LinkedIn posts)</button><p class="mini">Made-up figures for trying me out, clearly marked Sample and kept apart from your posts.</p></div>'}
+    <h3>Results to enter</h3>
+    ${todo.length ? `<ul class="deleg" data-testid="results-todo">${todo.map((j) => `<li><a href="#/job/${j.id}"><strong>${esc(jobTitle(j))}</strong></a><span class="mini">${esc(j.platform)} · published ${esc(AN.fmtDay(AN.publishedOn(j)))}</span></li>`).join('')}</ul>` : '<p class="empty">Nothing waiting. Published demo posts appear here until you enter their results.</p>'}
+    <h3>Compare</h3>
+    <div class="an-filters" data-testid="an-filters">
+      <label>Platform<select data-an-filter="platform" id="an-platform" data-nokeep>${['All', ...Object.keys(PB.DEMO_ACCOUNTS)].map((p) => opt(p, f.platform, p)).join('')}</select></label>
+      <label>Published from<input type="date" data-an-filter="from" id="an-from" data-nokeep value="${esc(f.from)}"></label>
+      <label>to<input type="date" data-an-filter="to" id="an-to" data-nokeep value="${esc(f.to)}"></label>
+      <label>Posts<select data-an-filter="posts" id="an-posts" data-nokeep>${opt('all', f.posts, 'All posts')}${opt('mine', f.posts, 'Your posts only')}${opt('sample', f.posts, 'Sample posts only')}</select></label>
+      <label>Measured<select data-an-filter="window" id="an-window" data-nokeep>${AN.WINDOWS.map((w) => opt(w, f.window, `${w} day${w === 1 ? '' : 's'} after publishing`)).join('')}${opt('latest', f.window, 'Latest figures (not comparable)')}</select></label>
+    </div>
+    <p class="mini">Posts are compared only on the same platform and over the same window, using each post’s measurement taken ${f.window === 'latest' ? 'most recently' : `${f.window} days after publishing`}. Click-through = link clicks ÷ impressions, when both are known and impressions are above zero.</p>
+    ${rows.length ? `<ul class="an-rows" data-testid="an-rows">${rows.map((r) => `<li class="an-row" data-testid="an-row" data-job="${r.job.id}">
+      <a class="an-title" href="#/job/${r.job.id}" data-testid="an-open">${esc(jobTitle(r.job))}</a> ${r.job.sample ? sampleTag : ''}
+      <p class="mini"><span class="plat plat-${platSlug(r.job.platform)}">${esc(r.job.platform)}</span> Published ${esc(AN.fmtDay(r.publishedOn))} · measured ${esc(AN.fmtDay(r.m.measuredOn))} (day ${r.m.windowDays})</p>
+      <dl class="an-figs">
+        <div><dt>Impressions</dt><dd data-fig="impressions">${metricCell(r.m.impressions)}</dd></div>
+        <div><dt>Link clicks</dt><dd data-fig="clicks">${metricCell(r.m.clicks)}</dd></div>
+        <div><dt>Click-through</dt><dd data-fig="ctr">${r.ctr.value == null ? `<span class="unknown">—</span><span class="mini">${esc(r.ctr.why)}</span>` : `${esc(AN.fmtPct(r.ctr.value))}<span class="mini">${esc(r.ctr.formula)}</span>`}</dd></div>
+        <div><dt>Enquiries</dt><dd data-fig="enquiries">${metricCell(r.m.enquiries)}</dd></div>
+      </dl></li>`).join('')}</ul>` : `<p class="empty">No published posts with ${esc(windowLabel)} for these filters.</p>`}
+    ${excluded.length ? `<details class="an-excluded" data-key="an-excl"><summary>Not compared (${excluded.length})</summary><ul>${excluded.map((x) => `<li><a href="#/job/${x.job.id}">${esc(jobTitle(x.job))}</a> ${x.job.sample ? sampleTag : ''}<span class="mini">${esc(x.job.platform)} · ${esc(x.why)}</span></li>`).join('')}</ul></details>` : ''}
+    ${obs.length ? `<h3>What the figures show</h3><ul class="an-obs" data-testid="an-observations">${obs.map((o) => `<li class="obs-${o.kind}">${esc(o.text)}${o.figures.length ? `<span class="mini">${o.figures.map(esc).join(' · ')}</span>` : ''}</li>`).join('')}</ul>` : ''}
+    <section class="weekly" data-testid="weekly-summary" aria-labelledby="wk-sum-h">
+      <h3 id="wk-sum-h">Weekly summary</h3>
+      <label class="an-week">Week beginning<input type="date" id="an-week" data-an-week data-nokeep value="${esc(week)}"></label>
+      <p data-testid="weekly-head"><strong>${esc(PL.fmtWeek(week))}</strong>: ${sum.rows.length} post${sum.rows.length === 1 ? '' : 's'} published with ${esc(windowLabel)}${f.platform !== 'All' ? ` on ${esc(f.platform)}` : ''}.${sum.hasSample ? ' Includes sample data (made-up figures).' : ''}</p>
+      ${sum.observations.length ? `<ul class="an-obs compact">${sum.observations.map((o) => `<li class="obs-${o.kind}">${esc(o.text)}</li>`).join('')}</ul>` : ''}
+      <div class="suggestion" data-testid="suggested-test" data-kind="${sg.kind}">
+        <p class="sg-label"><span class="kind kind-rule">Rules-based</span> Suggested test for Vektor</p>
+        <p class="sg-title"><strong>${esc(sg.title)}</strong></p>
+        <p><strong>Why it’s worth trying:</strong> ${esc(sg.why)}</p>
+        ${sg.caution ? `<p class="sg-caution" data-testid="evidence-flag">${esc(sg.caution)}</p>` : ''}
+        ${sg.kind === 'test' ? (f.picked
+          ? `<label for="an-brief">Brief for Vektor (edit freely)</label><textarea id="an-brief" rows="8" data-testid="an-brief">${esc(sg.brief)}</textarea>
+             <div class="row-actions"><button class="btn btn-primary" data-an-send data-testid="send-to-vektor">Open in Vektor’s planner</button><button class="btn btn-ghost" data-an-unpick>Cancel</button></div>
+             <p class="mini">This only fills in the brief. You still create the plan and confirm it yourself.</p>`
+          : '<button class="btn btn-primary" data-an-pick data-testid="use-suggestion">Use this suggestion</button>') : ''}
+      </div>
+    </section>`;
+}
+
 /* ---------- Calendar ---------- */
 function calInfo(j) {
   const cs = PB.calendarState(j, S.jobStatus(j));
   return { ...cs, date: cs.at ? PB.londonParts(cs.at).date : j.targetDate };
 }
 function renderCalendar() {
-  const jobs = S.getState().jobs.filter((j) => j.approval || (j.publications || []).length);
+  const jobs = S.getState().jobs.filter((j) => !j.sample && (j.approval || (j.publications || []).length));
   if (!ui.calMonth) {
     const upcoming = jobs.map((j) => calInfo(j).date).sort()[0];
     ui.calMonth = (upcoming || isoLocal(new Date())).slice(0, 7);
@@ -940,7 +1050,8 @@ function renderWeekNew() {
       <label for="wk-start">Week beginning (a Monday, UK dates)</label>
       <input id="wk-start" type="date" value="${PL.nextMonday()}" required>
       <label for="wk-brief">Brief for the week</label>
-      <textarea id="wk-brief" rows="5" required placeholder="e.g. Plan a week for UK commercial maintenance directors about…"></textarea>
+      ${ui.weekPrefill ? '<p class="from-analyst" data-testid="brief-from-analyst">Prefilled from Vantage’s suggested test (rules-based). Edit it as you like. Nothing is planned until you create the plan, and no posts are written until you confirm it.</p>' : ''}
+      <textarea id="wk-brief" rows="${ui.weekPrefill ? 9 : 5}" required placeholder="e.g. Plan a week for UK commercial maintenance directors about…">${esc(ui.weekPrefill || '')}</textarea>
       <p class="form-error" id="wk-error" role="alert" ${ui.weekError ? '' : 'hidden'}>${esc(ui.weekError || '')}</p>
       <div class="method-choice">
         <div><button class="btn btn-primary" type="submit" name="method" value="template" ${ui.planning ? 'disabled' : ''}>Create template plan</button>
@@ -1325,14 +1436,15 @@ let lastSig = '';
 function signature() {
   const s = S.getState();
   const w = S.ws;
-  return [s.jobs.map((j) => (j.publications || []).map((p) => `${p.status}${p.events.length}${p.scheduledFor}`).join(';')).join(), S.isPubBusy && s.jobs.some((j) => S.isPubBusy(j.id)), S.currentProfile()?.id, S.agentState('reviewer'), s.jobs.map((j) => `${(j.reviews || []).length}${S.isReviewing(j.id) ? 'r' : ''}`).join(), S.ws.testDate, (s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
+  return [s.jobs.map((j) => (j.measurements || []).length).join(), S.agentState('analyst'), s.jobs.map((j) => (j.publications || []).map((p) => `${p.status}${p.events.length}${p.scheduledFor}`).join(';')).join(), S.isPubBusy && s.jobs.some((j) => S.isPubBusy(j.id)), S.currentProfile()?.id, S.agentState('reviewer'), s.jobs.map((j) => `${(j.reviews || []).length}${S.isReviewing(j.id) ? 'r' : ''}`).join(), S.ws.testDate, (s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
 }
 
 function render() {
   const r = route();
   // Preserve in-progress typing, focus and open <details> across re-renders.
   const keep = {};
-  document.querySelectorAll('input[id]:not([type=file]), textarea[id], select[id]').forEach((el) => (keep[el.id] = el.value));
+  // Controls marked data-nokeep always show the state they render from (e.g. the Analyst's filters and week).
+  document.querySelectorAll('input[id]:not([type=file]):not([data-nokeep]), textarea[id], select[id]:not([data-nokeep])').forEach((el) => (keep[el.id] = el.value));
   const openDetails = new Set([...document.querySelectorAll('details[data-key]')].filter((d) => d.open).map((d) => d.dataset.key));
   const closedDetails = new Set([...document.querySelectorAll('details[data-key]')].filter((d) => !d.open).map((d) => d.dataset.key));
   const focusId = document.activeElement?.id;
@@ -1381,6 +1493,33 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) S.po
 let submitLock = false;
 document.addEventListener('submit', (e) => {
   const f = e.target;
+  if (f.dataset.resultsForm) {
+    e.preventDefault();
+    const id = f.dataset.resultsForm;
+    const u = (ui.results[id] ||= {});
+    if (u.busy) return;
+    const read = (k) => {
+      const raw = document.getElementById(`rs-${k}-${id}`).value.trim().replace(/[,\s]/g, '');
+      if (raw === '') return null;
+      return /^\d+$/.test(raw) ? Number(raw) : NaN;
+    };
+    const vals = { measuredOn: document.getElementById(`rs-date-${id}`).value, impressions: read('imp'), clicks: read('clk'), enquiries: read('enq') };
+    if ([vals.impressions, vals.clicks, vals.enquiries].some((v) => Number.isNaN(v))) { u.error = 'Use whole numbers only (for example 1200 or 1,200), or leave the box empty.'; render(); return; }
+    u.busy = true;
+    u.error = '';
+    u.date = vals.measuredOn;
+    render();
+    S.recordMeasurement(id, vals).then((res) => {
+      u.busy = false;
+      if (res.ok) {
+        for (const k of ['imp', 'clk', 'enq']) { const el = document.getElementById(`rs-${k}-${id}`); if (el) el.value = ''; }
+        toast('Measurement saved. Latest totals updated.');
+        S.analyse();
+      } else if (!res.busy) u.error = res.conflict ? 'This post changed on another device. Load the latest version, then enter the figures again.' : res.error;
+      render();
+    });
+    return;
+  }
   if (f.dataset.pubTime) {
     e.preventDefault();
     const id = f.dataset.pubTime;
@@ -1447,6 +1586,7 @@ document.addEventListener('submit', (e) => {
       if (!res.ok) { ui.weekError = res.error || 'The plan wasn’t saved.'; render(); return; }
       const wb = document.getElementById('wk-brief');
       if (wb) wb.value = '';
+      ui.weekPrefill = '';
       location.hash = `#/week/${res.plan.id}`;
     })();
     return;
@@ -1557,6 +1697,21 @@ document.addEventListener('click', (e) => {
     return;
   }
   if (t.dataset.cancelRev) { t.disabled = true; S.cancelFailedRevision(t.dataset.cancelRev).then((res) => { if (res.ok) toast('Revision cancelled. Caption unchanged.'); else if (res.error) toast(res.error); render(); }); return; }
+  if (t.matches('[data-an-sample]')) {
+    t.disabled = true;
+    S.addSampleData().then((res) => { toast(res.ok ? 'Sample data added: two made-up LinkedIn posts, marked Sample.' : res.error); S.analyse(); render(); });
+    return;
+  }
+  if (t.matches('[data-an-pick]')) { ui.an.picked = true; render(); document.getElementById('an-brief')?.focus(); return; }
+  if (t.matches('[data-an-unpick]')) { ui.an.picked = false; render(); return; }
+  if (t.matches('[data-an-send]')) {
+    const text = document.getElementById('an-brief')?.value.trim();
+    if (!text) { toast('The brief is empty.'); return; }
+    ui.weekPrefill = text;
+    ui.an.picked = false;
+    location.hash = '#/week/new';
+    return;
+  }
   if (t.dataset.pubStep) {
     const id = t.dataset.job;
     const step = t.dataset.pubStep;
@@ -1739,6 +1894,17 @@ document.addEventListener('input', (e) => {
 });
 document.addEventListener('change', (e) => {
   const el = e.target;
+  if (el.dataset?.anFilter) {
+    const k = el.dataset.anFilter;
+    ui.an[k] = k === 'window' && el.value !== 'latest' ? Number(el.value) : el.value;
+    S.analyse();
+    render();
+    return;
+  }
+  if (el.dataset?.anWeek !== undefined && el.matches('[data-an-week]')) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(el.value)) { ui.an.week = AN.mondayOf(el.value); S.analyse(); render(); }
+    return;
+  }
   if (!el.dataset?.pubPick) return;
   const u = ui.pub[el.dataset.pubPick];
   if (u) { u.pick = Number(el.value); u.error = ''; render(); }

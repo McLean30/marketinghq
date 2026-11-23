@@ -9,6 +9,7 @@ import { loadSeed, profileImpact } from './profile.js';
 import { runChecks, reviewFreshness } from './review.js';
 import { londonToday } from './plan.js';
 import * as PB from './publishing.js';
+import * as AN from './analytics.js';
 
 const KEY = 'nexai-hq:v1';
 const MODE_KEY = 'nexai-hq:mode';
@@ -24,6 +25,7 @@ export const AGENTS = {
   copywriter: { id: 'copywriter', name: 'Quill', role: 'Copywriter', taskType: 'copy', label: 'Caption' },
   designer: { id: 'designer', name: 'Prism', role: 'Creative Designer', taskType: 'graphic', label: 'Graphic' },
   reviewer: { id: 'reviewer', name: 'Calibre', role: 'Brand & Quality Reviewer' },
+  analyst: { id: 'analyst', name: 'Vantage', role: 'Marketing Analyst' },
 };
 
 export const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X', 'Google Business Profile'];
@@ -162,6 +164,7 @@ export function describeChanges(mine, theirs) {
   const a0 = mine?.job.approval;
   const a1 = theirs.job.approval;
   if (a1 && JSON.stringify(a0) !== JSON.stringify(a1)) out.push(`Approved caption v${a1.copyVersion} with graphic v${a1.graphicVersion}`);
+  for (const m of (theirs.job.measurements || []).slice((mine?.job.measurements || []).length)) out.push(`Results measured ${AN.fmtDay(m.measuredOn)} recorded`);
   for (const p of theirs.job.publications || []) {
     const old = (mine?.job.publications || []).find((x) => x.id === p.id);
     if (!old || old.status !== p.status || old.scheduledFor !== p.scheduledFor) out.push(`${p.platform} publication #${p.n}: ${PB.PUB_LABEL[p.status]}${p.status === 'scheduled' ? ` for ${PB.fmtLondon(p.scheduledFor)}` : ''}${p.receipt && !old?.receipt ? ` (receipt ${p.receipt.id})` : ''}`);
@@ -564,6 +567,12 @@ export async function approveJob(jobId) {
 }
 
 export function agentState(agentId, now = Date.now()) {
+  if (agentId === 'analyst') {
+    if (analysing) return 'working';
+    if (resultsToEnter().length) return 'queued';
+    if (AN.suggestTest(AN.comparisonRows(state.jobs).rows).kind === 'test') return 'awaiting_review';
+    return 'idle';
+  }
   if (agentId === 'reviewer') {
     if (reviewing.size) return 'working';
     const items = reviewQueue();
@@ -872,7 +881,8 @@ export async function confirmPlan(planId) {
 
 
 /* ---------- Business profile ---------- */
-export const today = () => ws.testDate || londonToday();
+// The shared workspace follows the server's clock (so a test clock moves dates too); demo mode uses this device's.
+export const today = () => ws.testDate || (ws.mode === 'shared' ? PB.londonParts(now()).date : londonToday());
 export const currentProfile = () => { const v = state.profile?.versions; return v?.length ? v[v.length - 1] : null; };
 export const profileVersion = (id) => state.profile?.versions?.find((v) => v.id === id) || null;
 export const profileRef = () => currentProfile()?.id || null;
@@ -1104,4 +1114,97 @@ export async function retryPublication(jobId) {
   if (pubBusy.has(jobId)) return { ok: false, busy: true };
   pubBusy.add(jobId);
   try { return await runPublications(jobId); } finally { pubBusy.delete(jobId); }
+}
+
+
+/* ---------- Vantage, the Marketing Analyst ---------- */
+/** Your published demo posts that have no results entered yet (sample posts excluded). */
+export const resultsToEnter = () => state.jobs.filter((j) => !j.sample && AN.publishedPub(j) && !(j.measurements || []).length);
+export const hasSampleData = () => state.jobs.some((j) => j.sample);
+
+const measuring = new Set();
+/** Record a cumulative snapshot of a published post's results. Earlier snapshots are kept. */
+export async function recordMeasurement(jobId, values) {
+  if (measuring.has(jobId)) return { ok: false, busy: true };
+  const job = getJob(jobId);
+  if (!job) return { ok: false, error: 'Post not found.' };
+  const check = AN.validateMeasurement(job, values, today());
+  if (check.error) return { ok: false, error: check.error };
+  measuring.add(jobId);
+  try {
+    let rec;
+    const res = await commit(jobId, () => {
+      const j = getJob(jobId);
+      const again = AN.validateMeasurement(j, values, today());
+      if (again.error) return false;
+      const n = (j.measurements || []).length + 1;
+      rec = {
+        id: `ms_${j.id.slice(4)}_${n}`, n, pubId: again.pub.id, copyVersion: again.pub.copyVersion, graphicVersion: again.pub.graphicVersion,
+        platform: j.platform, publishedOn: again.publishedOn, measuredOn: values.measuredOn, windowDays: again.windowDays,
+        impressions: values.impressions, clicks: values.clicks, enquiries: values.enquiries, source: 'owner', enteredAt: Date.now(), by: deviceKind(),
+      };
+      j.measurements = [...(j.measurements || []), rec];
+      log(j.id, 'analyst', `Results measured ${AN.fmtDay(values.measuredOn)} (day ${again.windowDays}) recorded for caption v${rec.copyVersion} + graphic v${rec.graphicVersion}.`);
+      return true;
+    }, { action: 'results' });
+    if (!res.ok) return res;
+    if (res.noop) return { ok: false, error: 'The post changed while saving. Check the figures and try again.' };
+    return { ok: true, measurement: rec };
+  } finally {
+    measuring.delete(jobId);
+  }
+}
+
+/** Add the two labelled sample LinkedIn posts (made-up figures, measured 7 days after publishing). Safe to repeat. */
+export async function addSampleData() {
+  const base = AN.addDays(AN.mondayOf(today()), -14);
+  const results = [];
+  for (const sp of AN.SAMPLE_POSTS) {
+    const id = `job_sample${sp.key}`;
+    if (getJob(id)) continue;
+    const pubOn = AN.addDays(base, sp.dayOffset);
+    const at = PB.fromLondon(pubOn, '08:30').ms;
+    const job = {
+      id, sample: true, title: sp.title, brief: `Sample post (made-up figures, not a real result): LinkedIn post about ${sp.title.toLowerCase()}.`, platform: 'LinkedIn', targetDate: pubOn,
+      createdAt: at - 2 * 86400000, delegatedAt: at - 2 * 86400000, taskIds: { copy: `task_sample${sp.key}c`, graphic: `task_sample${sp.key}g` }, profileVersion: profileRef(),
+    };
+    job.approval = { copyVersion: 1, graphicVersion: 1, at: at - 86400000 };
+    job.approvals = [job.approval];
+    const pubId = `pub_sample${sp.key}_1`;
+    job.publications = [{
+      id: pubId, n: 1, action: 'schedule', platform: 'LinkedIn', account: { ...PB.accountFor('LinkedIn') }, copyVersion: 1, graphicVersion: 1, approvedAt: job.approval.at,
+      scheduledFor: at, createdAt: at - 86400000, by: 'sample', status: 'published', attempts: 1, publishedAt: at, sample: true,
+      receipt: { id: `rcpt_sample${sp.key}`, publicationId: pubId, platform: 'LinkedIn', accountId: 'demo-linkedin', acceptedAt: at, copyVersion: 1, graphicVersion: 1, scheduledFor: at, postUrl: `https://demo-publisher.invalid/linkedin/sample-${sp.key}`, simulated: true },
+      events: [{ at, type: 'published', text: 'Sample post: a made-up publication for trying the Analyst. Nothing was published anywhere.', by: 'sample' }],
+    }];
+    job.measurements = [{
+      id: `ms_sample${sp.key}_1`, n: 1, pubId, copyVersion: 1, graphicVersion: 1, platform: 'LinkedIn', publishedOn: pubOn, measuredOn: AN.addDays(pubOn, 7), windowDays: 7,
+      impressions: sp.impressions, clicks: sp.clicks, enquiries: sp.enquiries, source: 'sample', enteredAt: Date.now(), by: 'sample',
+    }];
+    const g = draftGraphic({ ...job, brief: `LinkedIn post about ${sp.title.toLowerCase()}` }, currentProfile()?.data);
+    const tasks = [
+      { id: job.taskIds.copy, jobId: id, agent: 'copywriter', type: 'copy', instruction: `Sample caption: ${sp.title}`, createdAt: job.createdAt, pending: null,
+        versions: [{ n: 1, content: { text: sp.caption, opts: null }, notes: ['Sample caption for trying the Analyst'], feedback: null, by: 'Sample', simulated: true, source: 'demo', createdAt: job.createdAt, profileVersion: profileRef() }] },
+      { id: job.taskIds.graphic, jobId: id, agent: 'designer', type: 'graphic', instruction: `Sample graphic: ${sp.title}`, createdAt: job.createdAt, pending: null,
+        versions: [{ n: 1, content: g.content, notes: ['Sample graphic'], feedback: null, by: 'Sample', simulated: true, source: 'demo', createdAt: job.createdAt, profileVersion: profileRef() }] },
+    ];
+    const res = await commit(id, () => {
+      if (getJob(id)) return false;
+      state.jobs.push(job);
+      state.jobs.sort((a, b) => b.createdAt - a.createdAt);
+      state.tasks.push(...tasks);
+      log(id, 'analyst', `Sample post “${sp.title}” added with made-up 7-day figures.`);
+      return true;
+    }, { action: 'create' });
+    results.push(res);
+  }
+  return results.every((r) => r.ok) ? { ok: true } : { ok: false, error: results.find((r) => !r.ok)?.error || 'Sample data wasn’t saved.' };
+}
+
+let analysing = false;
+/** A short visible beat while Vantage rebuilds the summary (the work itself is instant and local). */
+export function analyse(ms = 800) {
+  analysing = true;
+  notify();
+  setTimeout(() => { analysing = false; notify(); }, ms);
 }
