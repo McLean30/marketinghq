@@ -37,6 +37,15 @@ const ART = {
     card: { top: 0, h: 670 },
     banner: { top: 90, h: 300 }, // phone: head, visor and chart
   },
+  video: {
+    // Interim artwork (public/assets/agents/video.svg), drawn locally: a robot with a cinema camera rig mounted over
+    // its right shoulder. Swap for a rendered character; keep the REC lamp and lens where the effects expect them.
+    src: 'assets/agents/video.svg', w: 446, h: 695, alt: 'Cue, a gunmetal robot with a cinema camera rig mounted over its shoulder and a red REC lamp',
+    thumb: { cx: 260, cy: 215, size: 300 },
+    window: { top: 60, h: 360 },
+    card: { top: 0, h: 670 },
+    banner: { top: 70, h: 300 }, // phone: head and camera rig
+  },
 };
 
 const pct = (n) => `${+n.toFixed(3)}%`;
@@ -70,6 +79,13 @@ function effects(id) {
       <clipPath id="rv-lens-${uidSeq++}"><circle cx="223" cy="262" r="104"/></clipPath>
       <g clip-path="url(#rv-lens-${uidSeq - 1})"><rect class="fx-anim lens-scan" x="110" y="150" width="226" height="10" rx="5"/></g>
       <circle class="fx-anim reticle-spin" cx="223" cy="262" r="62" fill="none" stroke-dasharray="3 7"/>
+    </svg>`;
+  }
+  if (id === 'video') {
+    // While a video is actually rendering (or a storyboard is being drafted) the REC lamp blinks and the lens pulses.
+    return `<svg class="fx fx-video" viewBox="0 0 ${a.w} ${a.h}" preserveAspectRatio="none" aria-hidden="true">
+      <circle class="fx-anim rec-blink" cx="333" cy="187" r="9"/>
+      <ellipse class="fx-anim lens-pulse" cx="438" cy="236" rx="10" ry="46"/>
     </svg>`;
   }
   if (id === 'analyst') {

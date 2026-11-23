@@ -97,12 +97,12 @@ s=Image.new('RGB',(a.width+m.width+24,a.height),(0,0,0)); s.paste(m,(0,0)); s.pa
   console.log('\n== Keyboard: each card is one link to its own workspace ==');
   await dp.keyboard.press('Tab'); // skip link
   const order = [];
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 16; i++) {
     await dp.keyboard.press('Tab');
     order.push(await dp.evaluate(() => document.activeElement.dataset.agent || document.activeElement.textContent.trim().slice(0, 22)));
   }
   const iv = order.indexOf('manager');
-  assert(iv >= 0 && order[iv + 1] === 'copywriter' && order[iv + 2] === 'designer' && order[iv + 3] === 'reviewer' && order[iv + 4] === 'analyst' && order[iv + 5] === 'New brief' && order[iv + 6] === 'Plan a content week', `Tab order: … ${order.slice(iv, iv + 7).join(' → ')}`);
+  assert(iv >= 0 && order[iv + 1] === 'copywriter' && order[iv + 2] === 'designer' && order[iv + 3] === 'reviewer' && order[iv + 4] === 'analyst' && order[iv + 5] === 'video' && order[iv + 6] === 'New brief' && order[iv + 7] === 'Plan a content week', `Tab order: … ${order.slice(iv, iv + 8).join(' → ')}`);
   while ((await dp.evaluate(() => document.activeElement.dataset.agent)) !== 'copywriter') await dp.keyboard.press('Shift+Tab');
   const ring = await dp.evaluate(() => getComputedStyle(document.activeElement).outlineStyle);
   assert(ring !== 'none', 'Focused card shows a visible focus ring');

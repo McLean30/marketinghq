@@ -10,6 +10,7 @@ import { runChecks, reviewFreshness } from './review.js';
 import { londonToday } from './plan.js';
 import * as PB from './publishing.js';
 import * as AN from './analytics.js';
+import { templateStoryboard } from './video.js';
 
 const KEY = 'nexai-hq:v1';
 const MODE_KEY = 'nexai-hq:mode';
@@ -26,7 +27,10 @@ export const AGENTS = {
   designer: { id: 'designer', name: 'Prism', role: 'Creative Designer', taskType: 'graphic', label: 'Graphic' },
   reviewer: { id: 'reviewer', name: 'Calibre', role: 'Brand & Quality Reviewer' },
   analyst: { id: 'analyst', name: 'Vantage', role: 'Marketing Analyst' },
+  video: { id: 'video', name: 'Cue', role: 'Video Creator', taskType: 'video', label: 'Video' },
 };
+/** "Graphic" or "Video": the visual half of a post. */
+export const visualLabel = (jobOrTask) => ((jobOrTask?.kind === 'video' || jobOrTask?.type === 'video') ? 'Video' : 'Graphic');
 
 export const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X', 'Google Business Profile'];
 
@@ -125,7 +129,8 @@ function log(jobId, agent, text) {
 /* ---------- Job bundles (the unit saved to the server) ---------- */
 export const getJob = (id) => state.jobs.find((j) => j.id === id);
 export const getTask = (id) => state.tasks.find((t) => t.id === id);
-export const jobTasks = (job) => ({ copy: getTask(job.taskIds.copy), graphic: getTask(job.taskIds.graphic) });
+// `graphic` is the post's visual task: Prism's graphic, or Cue's video for a video post.
+export const jobTasks = (job) => ({ copy: getTask(job.taskIds.copy), graphic: getTask(job.taskIds.graphic || job.taskIds.video) });
 export const currentVersion = (task) => task.versions[task.versions.length - 1] || null;
 
 function bundleOf(jobId) {
@@ -154,16 +159,16 @@ export function describeChanges(mine, theirs) {
   if (!theirs) return out;
   for (const t of theirs.tasks) {
     const old = mine?.tasks.find((x) => x.id === t.id);
-    const label = t.type === 'copy' ? 'Caption' : 'Graphic';
+    const label = t.type === 'copy' ? 'Caption' : t.type === 'video' ? 'Video' : 'Graphic';
     for (const v of t.versions.slice(old ? old.versions.length : 0)) {
-      const kind = t.type === 'graphic' ? (v.content.mode === 'photo' ? 'Photo layout' : 'simulated') : ({ anthropic: 'AI', mock: 'mock', human: 'edited by you', demo: 'demo' })[v.source] || 'saved';
+      const kind = t.type === 'video' ? `${(v.content.ext || '').toUpperCase()} render` : t.type === 'graphic' ? (v.content.mode === 'photo' ? 'Photo layout' : 'simulated') : ({ anthropic: 'AI', mock: 'mock', human: 'edited by you', demo: 'demo' })[v.source] || 'saved';
       out.push(`${label} v${v.n} saved (${kind})`);
     }
     if (t.pending && !old?.pending) out.push(`${label} revision requested${t.pending.feedback ? `: “${t.pending.feedback}”` : ''}`);
   }
   const a0 = mine?.job.approval;
   const a1 = theirs.job.approval;
-  if (a1 && JSON.stringify(a0) !== JSON.stringify(a1)) out.push(`Approved caption v${a1.copyVersion} with graphic v${a1.graphicVersion}`);
+  if (a1 && JSON.stringify(a0) !== JSON.stringify(a1)) out.push(`Approved caption v${a1.copyVersion} with ${visualLabel(theirs.job).toLowerCase()} v${a1.graphicVersion}`);
   for (const m of (theirs.job.measurements || []).slice((mine?.job.measurements || []).length)) out.push(`Results measured ${AN.fmtDay(m.measuredOn)} recorded`);
   for (const p of theirs.job.publications || []) {
     const old = (mine?.job.publications || []).find((x) => x.id === p.id);
@@ -411,33 +416,35 @@ export async function poll() {
 }
 
 /* ---------- Domain actions ---------- */
-export async function createJob({ id, brief, platform, targetDate, title, planId, planDay }) {
+export async function createJob({ id, brief, platform, targetDate, title, planId, planDay, kind, clip }) {
   if (id && getJob(id)) return { ok: true, existed: true, job: getJob(id) };
   const now = Date.now();
   const job = { id: id || uid('job'), brief: brief.trim(), platform, targetDate, createdAt: now, delegatedAt: now + DELEGATE_MS, taskIds: {}, approval: null, approvals: [] };
+  if (kind === 'video') job.kind = 'video';
   if (title) job.title = title;
   job.profileVersion = profileRef();
   if (planId) { job.planId = planId; job.planDay = planDay; }
   const res = await commit(job.id, () => {
     if (getJob(job.id)) return false;
-    const tasks = ['copywriter', 'designer'].map((agentId) => {
+    const tasks = ['copywriter', job.kind === 'video' ? 'video' : 'designer'].map((agentId) => {
       const task = {
         id: id ? `task_${job.id.slice(4)}${agentId === 'copywriter' ? 'c' : 'g'}` : uid('task'),
         jobId: job.id,
         agent: agentId,
         type: AGENTS[agentId].taskType,
-        instruction: agentId === 'copywriter' ? `Write a ${platform} caption with relevant hashtags for: ${job.brief}` : `Design a branded ${platform} graphic for: ${job.brief}`,
+        instruction: agentId === 'copywriter' ? `Write a ${platform} ${job.kind === 'video' ? 'post caption (the text that sits with the video, not the words shown in it)' : 'caption'} with relevant hashtags for: ${job.brief}` : agentId === 'video' ? `Script, storyboard and render a 15–30 second ${platform} video from the supplied clip for: ${job.brief}` : `Design a branded ${platform} graphic for: ${job.brief}`,
         createdAt: now,
         versions: [],
         pending: { kind: 'initial', engine: agentId === 'copywriter' ? copyEngine() : 'demo', startAt: job.delegatedAt, readyAt: job.delegatedAt + (agentId === 'copywriter' ? COPY_MS : GRAPHIC_MS) },
       };
+      if (agentId === 'video') { if (id) task.id = `task_${job.id.slice(4)}v`; task.clip = clip || null; task.draft = null; }
       job.taskIds[task.type] = task.id;
       return task;
     });
     state.jobs.unshift(job);
     state.tasks.push(...tasks);
     log(job.id, 'manager', `New brief received for ${platform}, due ${targetDate}.`);
-    log(job.id, 'manager', 'Delegated the caption to Quill and the graphic to Prism.');
+    log(job.id, 'manager', job.kind === 'video' ? 'Delegated the post caption to Quill and the video to Cue.' : 'Delegated the caption to Quill and the graphic to Prism.');
     return job;
   }, { action: 'create' });
   return res.ok ? { ok: true, job: getJob(job.id) || job, existed: !!res.existed || !!res.noop } : res;
@@ -449,6 +456,8 @@ export function taskStatus(task, now = Date.now()) {
     if (now < task.pending.startAt) return 'queued';
     return task.pending.kind === 'revision' ? 'revising' : 'working';
   }
+  if (task.type === 'video' && rendering.has(task.id)) return 'rendering';
+  if (task.type === 'video' && !task.versions.length) return 'needs_render';
   const st = jobStatus(getJob(task.jobId), now);
   if (st === 'approved') return 'approved';
   return 'awaiting_review';
@@ -459,6 +468,7 @@ export function jobStatus(job, now = Date.now()) {
   if (now < job.delegatedAt) return 'delegating';
   if (copy.pending?.error || graphic.pending?.error) return 'needs_retry';
   if (copy.pending || graphic.pending) return 'in_production';
+  if (!graphic.versions.length) return graphic.type === 'video' ? 'needs_render' : 'in_production';
   if (job.approval) {
     const fresh = job.approval.copyVersion === copy.versions.length && job.approval.graphicVersion === graphic.versions.length;
     return fresh ? 'approved' : 'needs_reapproval';
@@ -479,6 +489,8 @@ export const STATUS_LABEL = {
   idle: 'Idle',
   failed: 'Failed, retry needed',
   needs_retry: 'Needs your retry',
+  needs_render: 'Storyboard ready: render the video',
+  rendering: 'Rendering',
 };
 
 /** Resolve agent work whose time has come (simulated outputs, AI requests). */
@@ -493,6 +505,14 @@ export function tick(now = Date.now()) {
       const t = getTask(taskId);
       if (!t?.pending || t.pending.engine === 'ai' || Date.now() < t.pending.readyAt) return false;
       const job = getJob(t.jobId);
+      if (t.type === 'video') {
+        // Cue drafts an editable script and storyboard from a labelled template. The video itself is rendered by you.
+        t.draft = templateStoryboard(job, t.clip);
+        t.draft.savedAt = Date.now();
+        t.pending = null;
+        log(job.id, 'video', `Template script and storyboard ready (${t.draft.scenes.length} scenes, demo mode). Edit it, then render.`);
+        return true;
+      }
       const prev = currentVersion(t);
       const n = t.versions.length + 1;
       let output;
@@ -567,6 +587,14 @@ export async function approveJob(jobId) {
 }
 
 export function agentState(agentId, now = Date.now()) {
+  if (agentId === 'video') {
+    if (rendering.size) return 'working'; // a render is actually running in this browser
+    const mine = state.tasks.filter((t) => t.agent === 'video');
+    if (mine.some((t) => t.pending && now >= t.pending.startAt)) return 'working';
+    if (mine.some((t) => t.pending)) return 'queued';
+    if (mine.some((t) => !t.versions.length || ['ready_for_review', 'needs_reapproval'].includes(jobStatus(getJob(t.jobId), now)))) return 'awaiting_review';
+    return 'idle';
+  }
   if (agentId === 'analyst') {
     if (analysing) return 'working';
     if (resultsToEnter().length) return 'queued';
@@ -973,7 +1001,7 @@ export async function runReview(jobId) {
   reviewing.add(jobId);
   notify();
   try {
-    const ids = gv.content.mode === 'photo' ? [gv.content.photoId, gv.content.logoId].filter(Boolean) : [];
+    const ids = gv.content.mode === 'photo' ? [gv.content.photoId, gv.content.logoId].filter(Boolean) : gv.content.mode === 'video' ? [gv.content.videoId, gv.content.clipId].filter(Boolean) : [];
     const present = new Set(await assetsPresent(ids));
     await new Promise((r) => setTimeout(r, 700)); // a beat so the Reviewer is visibly at work
     const profile = currentProfile();
@@ -1207,4 +1235,50 @@ export function analyse(ms = 800) {
   analysing = true;
   notify();
   setTimeout(() => { analysing = false; notify(); }, ms);
+}
+
+/* ---------- Cue, the Video Creator ---------- */
+const rendering = new Map(); // taskId -> progress 0..1 (renders run in this browser)
+export const renderProgress = (taskId) => rendering.get(taskId);
+export function setRendering(taskId, progress) {
+  if (progress == null) rendering.delete(taskId); else rendering.set(taskId, progress);
+  notify();
+}
+export const videoTasks = () => state.tasks.filter((t) => t.type === 'video').sort((a, b) => b.createdAt - a.createdAt);
+
+/** Save the editable script and storyboard (no new version: a version is a rendered video). */
+export function saveVideoDraft(taskId, draft) {
+  const task = getTask(taskId);
+  if (!task) return Promise.resolve({ ok: false, error: 'Video task not found.' });
+  return commit(task.jobId, () => {
+    const t = getTask(taskId);
+    const { savedAt, ...prev } = t.draft || {};
+    const { savedAt: _ignored, ...next } = draft;
+    void savedAt; void _ignored;
+    if (JSON.stringify(prev) === JSON.stringify(next)) return false;
+    t.draft = { ...clone(next), savedAt: Date.now() };
+    return true;
+  }, { action: 'save-draft' });
+}
+
+/** A finished render becomes the next video version; earlier versions are kept. */
+export async function addVideoVersion(taskId, { videoId, mime, ext, label, durationMs, width, height, size, storyboard, note }, baseVersions) {
+  const task = getTask(taskId);
+  if (!task) return { ok: false, error: 'Video task not found.' };
+  let version;
+  const res = await commit(task.jobId, () => {
+    const t = getTask(taskId);
+    if (baseVersions != null && t.versions.length !== baseVersions) return false;
+    const n = t.versions.length + 1;
+    version = {
+      n, by: 'You with Cue', simulated: false, source: 'render', createdAt: Date.now(), profileVersion: profileRef(), feedback: note || null,
+      content: { mode: 'video', videoId, mime, ext, formatLabel: label, durationMs, width, height, size, clipId: t.clip?.id || null, sampleFootage: !!t.clip?.sample, logoId: state.brand?.logoId || null, logoName: state.brand?.logoName || null, storyboard: clone(storyboard) },
+      notes: [n === 1 ? `Rendered from the storyboard (${storyboard.scenes.length} scenes).` : `v${n}: ${note || 'Re-rendered from the edited storyboard.'}`],
+    };
+    t.versions.push(version);
+    log(t.jobId, 'video', `Video v${n} rendered: ${label}, ${(durationMs / 1000).toFixed(1)} s.${n > 1 ? ' The pair needs fresh approval.' : ''}`);
+    return true;
+  }, { action: 'save-video' });
+  if (res.ok && res.noop) return { ok: false, error: 'The video changed since you started this render. Reload the latest version, then render again.' };
+  return res.ok ? { ok: true, result: version } : res;
 }

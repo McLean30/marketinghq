@@ -1,6 +1,6 @@
 {
   "name": "nexai-marketing-hq",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "description": "Nexai Digital's private internal AI marketing dashboard (milestone 7: business profile and Brand & Quality Reviewer).",
   "scripts": {
@@ -21,7 +21,8 @@
     "test:smoke-selftest": "node tests/vercel-smoke-selftest.mjs",
     "test:vercel-build": "node tests/vercel-build-check.mjs",
     "test:m8": "node tests/publishing-m8.mjs",
-    "test:m9": "node tests/analyst-m9.mjs"
+    "test:m9": "node tests/analyst-m9.mjs",
+    "test:m10": "node tests/video-m10.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0"

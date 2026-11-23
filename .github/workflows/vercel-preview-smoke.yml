@@ -27,6 +27,9 @@ on:
       branch:
         description: Branch the commit was deployed from (used for the branch URL when no VERCEL_TOKEN is set)
         required: false
+      preview_url:
+        description: The deployment's own unique URL, if discovery is blocked (accepted only if it reports this exact commit at /api/version)
+        required: false
 
 permissions:
   contents: read
@@ -54,6 +57,7 @@ jobs:
         env:
           INPUT_SHA: ${{ inputs.sha || github.sha }}
           BRANCH: ${{ inputs.branch || github.ref_name }}
+          GIVEN_URL: ${{ inputs.preview_url }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         with:
@@ -64,9 +68,15 @@ jobs:
             if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error('Give a commit SHA.');
             sha = (await github.rest.repos.getCommit({ owner, repo, ref: sha })).data.sha;
             let state = 'missing', url = '', depId = '', env = '', source = '', note = '', verify = false;
+            const given = (process.env.GIVEN_URL || '').trim().replace(/\/+$/, '');
+            if (given) {
+              // A URL you passed in: used only once the deployment itself reports this exact commit.
+              if (!/^https:\/\/[a-z0-9.-]+\.vercel\.app$/i.test(given)) throw new Error('preview_url must be a https://….vercel.app deployment URL.');
+              url = given; state = 'success'; source = 'URL passed to the run, checked against /api/version'; env = 'preview'; verify = true;
+            }
             // Vercel reports each commit's deployment either as a GitHub Deployment or as a "Vercel" commit status.
             const deadline = Date.now() + 20 * 60 * 1000;
-            while (true) {
+            while (!given) {
               const deps = (await github.rest.repos.listDeployments({ owner, repo, sha, per_page: 30 })).data
                 .filter((d) => /preview|production/i.test(d.environment)).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
               if (deps.length) {
@@ -141,6 +151,7 @@ jobs:
           if git cat-file -e "${SHA}:public/js/review.js" 2>/dev/null; then echo "reviewer=1" >> "$GITHUB_OUTPUT"; else echo "reviewer=0" >> "$GITHUB_OUTPUT"; fi
           if git cat-file -e "${SHA}:public/js/publishing.js" 2>/dev/null; then echo "publishing=1" >> "$GITHUB_OUTPUT"; else echo "publishing=0" >> "$GITHUB_OUTPUT"; fi
           if git cat-file -e "${SHA}:public/js/analytics.js" 2>/dev/null; then echo "analyst=1" >> "$GITHUB_OUTPUT"; else echo "analyst=0" >> "$GITHUB_OUTPUT"; fi
+          if git cat-file -e "${SHA}:public/js/video.js" 2>/dev/null; then echo "video=1" >> "$GITHUB_OUTPUT"; else echo "video=0" >> "$GITHUB_OUTPUT"; fi
 
       - uses: actions/setup-node@v4
         if: steps.dep.outputs.state == 'success'
@@ -161,6 +172,8 @@ jobs:
           EXPECT_REVIEWER: ${{ steps.expect.outputs.reviewer }}
           EXPECT_PUBLISHING: ${{ steps.expect.outputs.publishing }}
           EXPECT_ANALYST: ${{ steps.expect.outputs.analyst }}
+          EXPECT_VIDEO: ${{ steps.expect.outputs.video }}
+          REQUIRE_SHA_MATCH: ${{ inputs.preview_url && '1' || '0' }}
           EXPECT_SHA: ${{ steps.dep.outputs.sha }}
           SMOKE_RESULT: smoke-result.json
           SMOKE_SHOTS: smoke-shots

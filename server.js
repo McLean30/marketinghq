@@ -26,6 +26,8 @@ const TYPES = {
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
   '.json': 'application/json',
+  '.webm': 'video/webm',
+  '.mp4': 'video/mp4',
 };
 const SECURITY_HEADERS = { 'X-Robots-Tag': 'noindex, nofollow', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' };
 
@@ -172,7 +174,7 @@ async function handleApi(req, res, urlPath) {
   }
   m = /^\/api\/assets\/([a-z0-9_]+)$/.exec(urlPath);
   if (m && method === 'POST') {
-    const buf = await readBody(req, wsStore.MAX_ASSET + 1024);
+    const buf = await readBody(req, (/^(clip|video)_/.test(m[1]) ? wsStore.MAX_VIDEO : wsStore.MAX_ASSET) + 1024);
     let name = '';
     try { name = decodeURIComponent(req.headers['x-asset-name'] || ''); } catch { /* keep empty */ }
     const out = wsStore.saveAsset(m[1], { kind: req.headers['x-asset-kind'], name, type: (req.headers['content-type'] || '').split(';')[0] }, buf);
@@ -181,7 +183,19 @@ async function handleApi(req, res, urlPath) {
   if (m && method === 'GET') {
     const a = wsStore.readAsset(m[1]);
     if (!a) return sendJson(res, 404, { error: 'Image not found.' });
-    res.writeHead(200, { 'Content-Type': a.meta.type, 'Content-Length': a.meta.size, 'Cache-Control': 'private, no-store', ...SECURITY_HEADERS });
+    // Byte ranges let phones (Safari in particular) stream and seek videos.
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (range && (range[1] || range[2])) {
+      const size = a.meta.size;
+      let start = range[1] ? Number(range[1]) : size - Number(range[2]);
+      let end = range[1] && range[2] ? Number(range[2]) : size - 1;
+      start = Math.max(0, start); end = Math.min(size - 1, end);
+      if (start > end) { res.writeHead(416, { 'Content-Range': `bytes */${size}`, ...SECURITY_HEADERS }); res.end(); return undefined; }
+      res.writeHead(206, { 'Content-Type': a.meta.type, 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, no-store', ...SECURITY_HEADERS });
+      a.stream({ start, end }).pipe(res);
+      return undefined;
+    }
+    res.writeHead(200, { 'Content-Type': a.meta.type, 'Content-Length': a.meta.size, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, no-store', ...SECURITY_HEADERS });
     a.stream().pipe(res);
     return undefined;
   }

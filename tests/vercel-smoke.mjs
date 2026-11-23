@@ -7,6 +7,8 @@
 //   EXPECT_REVIEWER=0                skip the Brand & Quality Reviewer and Business profile (only for pre-Milestone 7 commits)
 //   EXPECT_PUBLISHING=1              also open a post and check the demo publishing controls (Milestone 8+)
 //   EXPECT_ANALYST=1                 also require the Marketing Analyst card and workspace (Milestone 9+)
+//   EXPECT_VIDEO=1                   also require the Video Creator and render a video from the labelled sample (Milestone 10+)
+//   REQUIRE_SHA_MATCH=1              block unless the deployment itself reports EXPECT_SHA (a URL you passed in)
 //   EXPECT_SHA=<commit>              refuse a deployment that reports a different commit (/api/version)
 //   SMOKE_RESULT=path.json           where to write { status: pass|fail|blocked, summary, steps }
 //   SMOKE_SHOTS=dir                  where to save screenshots
@@ -26,6 +28,8 @@ const BYPASS = (process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '').trim();
 const EXPECT_REVIEWER = process.env.EXPECT_REVIEWER !== '0';
 const EXPECT_PUBLISHING = process.env.EXPECT_PUBLISHING === '1';
 const EXPECT_ANALYST = process.env.EXPECT_ANALYST === '1';
+const EXPECT_VIDEO = process.env.EXPECT_VIDEO === '1';
+const REQUIRE_SHA_MATCH = process.env.REQUIRE_SHA_MATCH === '1';
 const EXPECT_SHA = (process.env.EXPECT_SHA || '').trim();
 const RESULT = process.env.SMOKE_RESULT || '';
 const SHOTS = process.env.SMOKE_SHOTS || '';
@@ -89,7 +93,7 @@ try {
   await page.waitForTimeout(800);
   if (pageErrors.length) throw new Failed(`Uncaught error while starting: ${pageErrors[0]}`);
   const title = await page.title();
-  const need = ['manager', 'copywriter', 'designer', ...(EXPECT_REVIEWER ? ['reviewer'] : []), ...(EXPECT_ANALYST ? ['analyst'] : [])];
+  const need = ['manager', 'copywriter', 'designer', ...(EXPECT_REVIEWER ? ['reviewer'] : []), ...(EXPECT_ANALYST ? ['analyst'] : []), ...(EXPECT_VIDEO ? ['video'] : [])];
   const missing = [];
   for (const id of need) if (!(await page.locator(`.agent-card.char-${id}`).count())) missing.push(id);
   if (missing.length) throw new Failed(`HQ is missing agent card(s): ${missing.join(', ')}.`);
@@ -118,6 +122,7 @@ try {
     let served = null;
     try { served = JSON.parse(v.body).commit; } catch { /* older build without /api/version */ }
     if (served && served !== EXPECT_SHA) throw new Failed(`This deployment runs commit ${served.slice(0, 7)}, not ${EXPECT_SHA.slice(0, 7)}: it is an older or different deployment.`);
+    if (!served && REQUIRE_SHA_MATCH) throw new Blocked('This deployment doesn’t report which commit it runs, so it can’t be proved to be the commit under test.');
     step(true, served ? `Deployment reports commit ${served.slice(0, 7)} (the commit under test)` : 'Deployment doesn’t report its commit (VERCEL_GIT_COMMIT_SHA not exposed); the workflow matched it to the commit');
   }
   const api = await get('api/__smoke-unknown-route');
@@ -177,16 +182,54 @@ try {
     await page.keyboard.press('Escape');
   }
 
+  if (EXPECT_VIDEO) {
+    // The Video Creator: workspace, then a real render in this browser from the labelled sample recording.
+    await page.goto(new URL('#/', page.url()).toString());
+    await page.waitForSelector('.agent-card.char-video');
+    await openAgent('.agent-card.char-video', null, 'Video Creator');
+    await page.goto(new URL('#/', page.url()).toString());
+    await page.waitForSelector('#brief-form');
+    await page.selectOption('#format', 'video');
+    await page.click('[data-testid="use-sample-clip"]');
+    try { await page.waitForSelector('[data-testid="clip-ok"]', { timeout: 15000 }); } catch { throw new Failed(`The sample recording couldn’t be loaded as a clip${await page.locator('[data-testid="clip-error"]').count() ? `: ${await page.locator('[data-testid="clip-error"]').innerText()}` : ''}.`); }
+    await page.fill('#brief', 'Smoke test: 20-second LinkedIn walkthrough of an engineer recording a receipt.');
+    await page.selectOption('#platform', 'LinkedIn');
+    await page.click('#brief-form button[type=submit]');
+    const vid = await page.waitForFunction(() => JSON.parse(localStorage.getItem('nexai-hq:v1') || '{"jobs":[]}').jobs.find((j) => j.kind === 'video')?.id, null, { timeout: 15000 }).then((h) => h.jsonValue()).catch(() => null);
+    if (!vid) throw new Failed('A video job couldn’t be created.');
+    await page.goto(new URL(`#/job/${vid}/video`, page.url()).toString());
+    try { await page.waitForSelector('[data-testid="scene"]', { timeout: 30000 }); } catch { throw new Failed('The script and storyboard never appeared.'); }
+    const fmt = await page.locator('[data-testid="export-format"]').innerText();
+    if (/Not available/.test(fmt)) {
+      step(true, 'Video Creator opened with a storyboard; this browser can’t export video, so no render was attempted');
+    } else {
+      await page.click('[data-testid="render-video"]');
+      try { await page.waitForSelector('[data-testid="render-result"], [data-testid="render-error"]', { timeout: 90000 }); } catch { throw new Failed('The video render didn’t finish within 90 seconds.'); }
+      if (await page.locator('[data-testid="render-error"]').count()) throw new Failed(`Rendering failed on the preview: ${await page.locator('[data-testid="render-error"]').innerText()}`);
+      const meta = await page.locator('[data-testid="render-result"] [data-testid="video-meta"]').innerText();
+      const played = await page.locator('[data-testid="render-result"] video').evaluate((v) => new Promise((res) => {
+        const go = () => { v.muted = true; v.play().then(() => setTimeout(() => res({ t: v.currentTime, d: v.duration, err: v.error?.code || null }), 700)).catch((e) => res({ err: e.message })); };
+        if (v.readyState >= 1) go(); else v.onloadedmetadata = go;
+        setTimeout(() => res({ timeout: true, t: v.currentTime }), 8000);
+      }));
+      const name = await page.locator('[data-testid="render-result"] [data-testid="download-video"]').getAttribute('download');
+      if (!(played.t > 0.2) || !(played.d > 14)) throw new Failed(`The rendered video didn’t play on the preview (${JSON.stringify(played)}).`);
+      step(true, `Video Creator rendered and played a video on the preview: ${meta}; download as ${name}`);
+      if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'video.png'), fullPage: true });
+    }
+  }
+
   if (EXPECT_PUBLISHING) {
     // 4. Open a post and check the demo publishing controls render (no confirmation is given).
     const q = await page.evaluate(async () => (await fetch('api/quill/status').then((r) => r.json()).catch(() => ({}))));
     if (q.provider && q.provider !== 'demo') throw new Blocked('Quill is configured for live AI on this deployment, so the smoke test can’t create a post without a paid request.');
     await page.goto(new URL('#/', page.url()).toString());
     await page.waitForSelector('#brief-form');
+    if (await page.locator('#format').count()) await page.selectOption('#format', 'image');
     await page.fill('#brief', 'Smoke test: LinkedIn post for UK commercial maintenance directors about job sheets.');
     await page.selectOption('#platform', 'LinkedIn');
     await page.click('#brief-form button[type=submit]');
-    const jobId = await page.waitForFunction(() => JSON.parse(localStorage.getItem('nexai-hq:v1') || '{"jobs":[]}').jobs[0]?.id, null, { timeout: 15000 }).then((h) => h.jsonValue()).catch(() => null);
+    const jobId = await page.waitForFunction(() => JSON.parse(localStorage.getItem('nexai-hq:v1') || '{"jobs":[]}').jobs.find((j) => j.kind !== 'video' && /^Smoke test: LinkedIn post/.test(j.brief))?.id, null, { timeout: 15000 }).then((h) => h.jsonValue()).catch(() => null);
     if (!jobId) throw new Failed('A new post couldn’t be created in demo mode.');
     await page.goto(new URL(`#/job/${jobId}`, page.url()).toString());
     try { await page.waitForSelector('[data-approve]:not([disabled])', { timeout: 30000 }); } catch { throw new Failed('The post’s caption and graphic never became ready for review.'); }
@@ -219,7 +262,7 @@ try {
   if (paid.length) throw new Failed(`The app tried to call a paid AI endpoint during the smoke test (${paid[0]}).`);
   step(true, 'No uncaught errors, no 5xx responses, no paid AI calls');
   await browser.close();
-  finish('pass', `HQ rendered and ${EXPECT_REVIEWER ? 'Vektor, the Brand & Quality Reviewer and Business profile' : 'Vektor’s workspace'} opened on the preview${EXPECT_PUBLISHING ? '; a post’s demo publishing controls rendered' : ''}${EXPECT_ANALYST ? '; the Marketing Analyst workspace opened' : ''}.`);
+  finish('pass', `HQ rendered and ${EXPECT_REVIEWER ? 'Vektor, the Brand & Quality Reviewer and Business profile' : 'Vektor’s workspace'} opened on the preview${EXPECT_PUBLISHING ? '; a post’s demo publishing controls rendered' : ''}${EXPECT_ANALYST ? '; the Marketing Analyst workspace opened' : ''}${EXPECT_VIDEO ? '; the Video Creator opened and exported a video where supported' : ''}.`);
 } catch (e) {
   if (SHOTS && page) await page.screenshot({ path: path.join(SHOTS, 'failure.png') }).catch(() => {});
   await browser.close();

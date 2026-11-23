@@ -8,9 +8,12 @@ const { APP_DIR, paths, writeAtomic, readJson } = require('./storage');
 const file = () => path.join(paths().DATA_DIR, 'workspace.json');
 const MAX_BUNDLE = 1.5 * 1024 * 1024;
 const ID = /^[a-z]+_[a-z0-9]{4,40}$/;
-const ASSET_ID = /^(photo|logo)_[a-z0-9]{4,40}$/;
-const ASSET_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png' };
+const ASSET_ID = /^(photo|logo|clip|video)_[a-z0-9]{4,40}$/;
+const ASSET_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov' };
+const KIND_TYPES = { photo: ['image/jpeg', 'image/png'], logo: ['image/jpeg', 'image/png'], clip: ['video/mp4', 'video/webm', 'video/quicktime'], video: ['video/mp4', 'video/webm'] };
 const MAX_ASSET = 15 * 1024 * 1024;
+const MAX_VIDEO = 100 * 1024 * 1024;
+const maxFor = (kind) => (kind === 'clip' || kind === 'video' ? MAX_VIDEO : MAX_ASSET);
 
 /* ---------- Business profile: every save is a new, identified version ---------- */
 const crypto = require('crypto');
@@ -62,14 +65,14 @@ function validateBundle(id, b) {
   const a = b.job.approval;
   if (a) {
     const copy = b.tasks.find((t) => t.type === 'copy');
-    const graphic = b.tasks.find((t) => t.type === 'graphic');
+    const graphic = b.tasks.find((t) => t.type === 'graphic' || t.type === 'video');
     if (!(a.copyVersion >= 1 && a.copyVersion <= copy.versions.length && a.graphicVersion >= 1 && a.graphicVersion <= graphic.versions.length)) bad('approval refers to a version that does not exist');
   }
   const pubs = b.job.publications;
   if (pubs !== undefined) {
     if (!Array.isArray(pubs) || pubs.length > 200) bad('publications');
     const copy = b.tasks.find((t) => t.type === 'copy');
-    const graphic = b.tasks.find((t) => t.type === 'graphic');
+    const graphic = b.tasks.find((t) => t.type === 'graphic' || t.type === 'video');
     pubs.forEach((p, i) => {
       if (!p || p.n !== i + 1 || !/^pub_[a-z0-9_]{4,60}$/.test(p.id) || !PUB_STATUS.includes(p.status) || !Array.isArray(p.events)) bad('publication record');
       if (!(p.copyVersion >= 1 && p.copyVersion <= copy.versions.length && p.graphicVersion >= 1 && p.graphicVersion <= graphic.versions.length)) bad('publication refers to a version that does not exist');
@@ -227,8 +230,8 @@ const metaPath = (id) => path.join(paths().ASSET_DIR, `${id}.json`);
 
 function saveAsset(id, { kind, name, type }, buf) {
   if (!ASSET_ID.test(id) || !id.startsWith(`${kind}_`)) throw new WsError(400, 'Invalid image id.');
-  if (!ASSET_TYPES[type]) throw new WsError(415, 'Only JPG and PNG images can be stored.');
-  if (!buf.length || buf.length > MAX_ASSET) throw new WsError(413, 'Image is empty or over 15 MB.');
+  if (!ASSET_TYPES[type] || !KIND_TYPES[kind]?.includes(type)) throw new WsError(415, kind === 'clip' || kind === 'video' ? 'Only MP4, MOV and WebM video can be stored.' : 'Only JPG and PNG images can be stored.');
+  if (!buf.length || buf.length > maxFor(kind)) throw new WsError(413, kind === 'clip' || kind === 'video' ? 'Video is empty or over 100 MB.' : 'Image is empty or over 15 MB.');
   const existing = readJson(metaPath(id), null);
   if (existing) {
     if (existing.size !== buf.length) throw new WsError(409, 'A different image already uses this id.');
@@ -248,9 +251,9 @@ function readAsset(id) {
   if (!ASSET_ID.test(id)) return null;
   const meta = readJson(metaPath(id), null);
   if (!meta) return null;
-  return { meta, stream: () => fs.createReadStream(assetPath(id)) };
+  return { meta, stream: (opts) => fs.createReadStream(assetPath(id), opts) };
 }
 
 const hasAsset = (id) => ASSET_ID.test(id) && fs.existsSync(metaPath(id));
 
-module.exports = { snapshot, getJob, putJob, putPlan, putProfile, putBrand, importBundles, saveAsset, readAsset, hasAsset, WsError, MAX_ASSET };
+module.exports = { snapshot, getJob, putJob, putPlan, putProfile, putBrand, importBundles, saveAsset, readAsset, hasAsset, WsError, MAX_ASSET, MAX_VIDEO };

@@ -7,11 +7,12 @@ import * as PF from './profile.js';
 import * as AG from './agents.js';
 import * as PB from './publishing.js';
 import * as AN from './analytics.js';
+import * as V from './video.js';
 
 const $main = document.getElementById('main');
 const $sheet = document.getElementById('sheet-root');
 const $toast = document.getElementById('toast');
-const ui = { revision: {}, editing: {}, calMonth: null, calPlatform: 'All', lightbox: null, viewVersion: {}, pub: {}, results: {}, an: { platform: 'All', from: '', to: '', posts: 'all', window: AN.DEFAULT_WINDOW, week: null, picked: false }, weekPrefill: '' };
+const ui = { revision: {}, editing: {}, calMonth: null, calPlatform: 'All', lightbox: null, viewVersion: {}, pub: {}, results: {}, vstudio: null, briefFormat: 'image', briefClip: null, an: { platform: 'All', from: '', to: '', posts: 'all', window: AN.DEFAULT_WINDOW, week: null, picked: false }, weekPrefill: '' };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmtDate = (iso, opts = { weekday: 'short', day: 'numeric', month: 'short' }) =>
@@ -41,6 +42,7 @@ const photoTag = `<span class="demo-tag photo" title="Built by you in Prism from
 
 /** Markup for any graphic version: inline SVG for simulated, a rendered PNG for Photo layout. */
 function graphicMarkup(task, v, { title } = {}) {
+  if (v.content.mode === 'video') return videoPlayer(v.content.videoId, { label: title || `Video v${v.n}`, key: `${task.id}:${v.n}` });
   if (v.content.mode !== 'photo') return renderGraphic(v.content, title ? { title } : undefined);
   const r = P.renderedVersion(`${task.id}:${v.n}`, v.content, () => render());
   if (!r) return `<span class="photo-pending" role="img" aria-label="Rendering graphic v${v.n}">Rendering…</span>`;
@@ -70,12 +72,43 @@ function quillModeNote() {
   return '<p class="quill-mode" data-testid="quill-mode">Quill is in demo mode: captions come from local templates. Add ANTHROPIC_API_KEY to the server to switch on live AI.</p>';
 }
 
+/* ---------- Videos (rendered versions and source clips) ---------- */
+// The shared workspace streams them from the server (with byte ranges, so phones can seek); this browser's demo
+// mode reads them from IndexedDB into object URLs.
+const videoUrls = new Map(); // asset id -> url | Promise
+function videoUrl(id) {
+  if (!id) return null;
+  if (P.assetBackend() === 'server') return `api/assets/${id}`;
+  const u = videoUrls.get(id);
+  if (typeof u === 'string') return u;
+  if (!u) {
+    videoUrls.set(id, P.getAsset(id).then((rec) => {
+      if (rec?.blob) { const url = URL.createObjectURL(rec.blob); videoUrls.set(id, url); } else videoUrls.set(id, 'missing');
+      render();
+    }).catch(() => { videoUrls.set(id, 'missing'); render(); }));
+  }
+  return null;
+}
+function videoPlayer(id, { label = 'Video', key = id, cls = '' } = {}) {
+  const url = videoUrl(id);
+  if (url === 'missing') return `<span class="photo-pending error" role="img" aria-label="${esc(label)} is missing">This video isn’t stored in this browser.</span>`;
+  if (!url) return `<span class="photo-pending" role="img" aria-label="Loading ${esc(label)}">Loading video…</span>`;
+  return `<video class="video-out ${cls}" controls playsinline preload="metadata" src="${esc(url)}" data-keep="v-${esc(key)}" data-video-id="${esc(id)}" aria-label="${esc(label)}"></video>`;
+}
+const fmtBytes = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const sampleFootageTag = '<span class="demo-tag sample-tag" data-testid="sample-footage-tag" title="An illustrative mock-up, not the real JobTrack Pro">Sample footage, not real product</span>';
+function downloadName(job, v) {
+  const slug = (job.title || job.brief).toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/-+$/, '');
+  return `nexai-${slug}-video-v${v.n}.${v.content.ext}`;
+}
+
 /* ---------- Routing ---------- */
 function route() {
   const h = location.hash.replace(/^#/, '') || '/';
   const [, a, b] = h.split('/');
   const parts = h.split('/');
   if (a === 'job' && b && parts[3] === 'studio') return { view: 'studio', id: b, base: `#/job/${b}` };
+  if (a === 'job' && b && parts[3] === 'video') return { view: 'vstudio', id: b, base: `#/job/${b}` };
   if (a === 'job' && b) return { view: 'job', id: b, agent: parts[3] === 'agent' ? parts[4] : null, base: `#/job/${b}` };
   if (a === 'calendar') return { view: 'calendar' };
   if (a === 'workspace') return { view: 'workspace' };
@@ -99,12 +132,13 @@ function character(agentId, { size = 'card' } = {}) {
   const a = S.AGENTS[agentId];
   const st = S.agentState(agentId);
   const label = agentId === 'reviewer' ? ({ working: 'Reviewing', queued: 'Reviews waiting', awaiting_review: 'Findings to act on' }[st] || STATE_TEXT[st])
-    : agentId === 'analyst' ? ({ working: 'Analysing', queued: 'Results to enter', awaiting_review: 'Test suggestion ready' }[st] || STATE_TEXT[st]) : STATE_TEXT[st];
+    : agentId === 'analyst' ? ({ working: 'Analysing', queued: 'Results to enter', awaiting_review: 'Test suggestion ready' }[st] || STATE_TEXT[st])
+    : agentId === 'video' ? ({ working: S.videoTasks().some((t) => S.renderProgress(t.id) != null) ? 'Rendering' : 'Drafting storyboard', queued: 'Clip received', awaiting_review: 'Ready for you' }[st] || STATE_TEXT[st]) : STATE_TEXT[st];
   const meta = `<span class="char-meta"><span class="char-name">${a.name}</span><span class="char-role">${a.role}</span>
     <span class="state-badge state-${st}"><span class="dot" aria-hidden="true"></span>${label}</span></span>`;
   if (size === 'xs') return `<span class="char char-${agentId} size-xs" data-state="${st}">${AG.thumb(agentId)}<span class="xs-dot" aria-hidden="true"></span></span>`;
   if (size === 'hero') return `<div class="char char-${agentId} size-hero" data-state="${st}" role="img" aria-label="${esc(AG.altText(agentId))}. Status: ${label}">${AG.art(agentId, { windowed: true, eager: true })}${meta}</div>`;
-  return `<a class="char char-${agentId} size-card agent-card" data-agent="${agentId}" data-state="${st}" href="${agentHref(agentId)}" aria-label="${a.name}, ${a.role}. Status: ${label}. Open workspace">${agentId === 'reviewer' || agentId === 'analyst' ? `<span class="art-portrait">${AG.art(agentId, { eager: true, card: true })}</span><span class="art-banner">${AG.art(agentId, { banner: true })}</span>` : AG.art(agentId, { eager: true, card: true })}${meta}${CHEVRON}</a>`;
+  return `<a class="char char-${agentId} size-card agent-card" data-agent="${agentId}" data-state="${st}" href="${agentHref(agentId)}" aria-label="${a.name}, ${a.role}. Status: ${label}. Open workspace">${agentId === 'reviewer' || agentId === 'analyst' || agentId === 'video' ? `<span class="art-portrait">${AG.art(agentId, { eager: true, card: true })}</span><span class="art-banner">${AG.art(agentId, { banner: true })}</span>` : AG.art(agentId, { eager: true, card: true })}${meta}${CHEVRON}</a>`;
 }
 
 function managerLine() {
@@ -124,6 +158,7 @@ function renderHQ() {
     ${character('designer')}
     ${character('reviewer')}
     ${character('analyst')}
+    ${character('video')}
   <div class="hq-actions">
     <button type="button" class="action-btn" data-focus-brief><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M7 3h7l5 5v13H7z M14 3v5h5 M10 12h6 M10 15.5h6 M10 19h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg><span>New brief</span></button>
     <a class="action-btn" href="#/week/new" data-testid="plan-week-link"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 9.5h17 M8 3v4 M16 3v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.5 13h1.5 M11.25 13h1.5 M15 13h1.5 M7.5 16.5h1.5 M11.25 16.5h1.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Plan a content week</span></a>
@@ -143,11 +178,22 @@ function renderHQ() {
         <label for="brief">What do you need?</label>
         <textarea id="brief" name="brief" rows="5" required placeholder="e.g. Create Friday’s LinkedIn post for UK commercial maintenance directors about…"></textarea>
         <div class="row-2">
+          <div><label for="format">Format</label>
+            <select id="format" name="format" data-brief-format><option value="image" ${ui.briefFormat === 'image' ? 'selected' : ''}>Post with a graphic</option><option value="video" ${ui.briefFormat === 'video' ? 'selected' : ''}>Video post (15–30 s)</option></select></div>
           <div><label for="platform">Platform</label>
             <select id="platform" name="platform">${S.PLATFORMS.map((p) => `<option>${p}</option>`).join('')}</select></div>
           <div><label for="targetDate">Target date</label>
             <input id="targetDate" name="targetDate" type="date" required value="${nextFriday()}"></div>
         </div>
+        ${ui.briefFormat === 'video' ? `<div class="clip-pick" data-testid="clip-pick">
+          <label for="brief-clip">Screen recording or video clip</label>
+          <input id="brief-clip" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" data-brief-clip>
+          <p class="mini">MP4, MOV or WebM, up to 100 MB. Cue cuts it into a 15–30 second post; nothing is uploaded anywhere else.</p>
+          <button type="button" class="btn btn-ghost" data-use-sample-clip data-testid="use-sample-clip">No footage yet? Use the labelled sample recording</button>
+          ${ui.briefClip?.error ? `<p class="form-error" role="alert" data-testid="clip-error">${esc(ui.briefClip.error)}</p>` : ''}
+          ${ui.briefClip?.meta ? `<p class="clip-ok" data-testid="clip-ok">✓ ${esc(ui.briefClip.meta.name)} · ${ui.briefClip.meta.duration} s · ${ui.briefClip.meta.w} × ${ui.briefClip.meta.h}${ui.briefClip.sample ? ` ${sampleFootageTag}` : ''}</p>` : ''}
+          ${ui.briefClip?.sample ? '<p class="mini sample-warn">The sample is an illustrative mock-up with a red banner on every frame. It isn’t the real JobTrack Pro and must not be presented as evidence of how the product works.</p>' : ''}
+        </div>` : ''}
         <p class="form-error" id="brief-error" role="alert" hidden></p>
         <button class="btn btn-primary" type="submit">Send brief to Vektor</button>
         ${quillModeNote()}
@@ -197,6 +243,8 @@ function renderAgentSheet(agentId) {
       ${history.length ? `<ol class="activity">${history.map(({ j, r }) => `<li><span class="mini">${fmtTime(r.at)} · review #${r.n} · caption v${r.copyVersion} · graphic v${r.graphicVersion} · profile ${esc(r.profileVersion)}</span><a href="#/job/${j.id}">${esc(jobTitle(j))}</a> ${r.findings.filter((f) => f.status === 'fail').length} problem(s), ${r.findings.filter((f) => f.status === 'owner').length} for owner review</li>`).join('')}</ol>` : '<p class="empty">No reviews yet.</p>'}`;
   } else if (agentId === 'analyst') {
     body = analystBody();
+  } else if (agentId === 'video') {
+    body = videoAgentBody();
   } else if (agentId === 'manager') {
     const log = S.getState().log.slice(0, 30);
     const jobs = S.getState().jobs.filter((j) => !j.sample);
@@ -266,6 +314,17 @@ function outputBlock(task, v, { compact = false } = {}) {
       ${sourceTag(v)}
       <div class="caption-text" data-testid="caption-text">${highlightCaption(task, v)}</div></div>`;
   }
+  if (v.content.mode === 'video') {
+    const job = S.getJob(task.jobId);
+    const c = v.content;
+    const url = videoUrl(c.videoId);
+    return `<div class="video-out-wrap" data-testid="video-output">
+      ${c.sampleFootage ? sampleFootageTag : ''}
+      ${graphicMarkup(task, v, { title: `Video v${v.n}` })}
+      <p class="mini" data-testid="video-meta">Video v${v.n} · ${esc(c.formatLabel)} · ${(c.durationMs / 1000).toFixed(1)} s · ${c.width} × ${c.height}${c.size ? ` · ${fmtBytes(c.size)}` : ''}</p>
+      ${url && url !== 'missing' ? `<a class="btn" href="${esc(url)}" download="${esc(downloadName(job, v))}" data-testid="download-video">Download v${v.n} (.${esc(c.ext)})</a>` : ''}
+    </div>`;
+  }
   const isPhoto = v.content.mode === 'photo';
   return `<div class="graphic-out">
     ${isPhoto ? photoTag : demoTag}
@@ -278,16 +337,37 @@ function historyList(task, job) {
   return `<ol class="history" reversed>${[...task.versions].reverse().map((v) => `
     <li class="hist-item">
       <details data-key="h-${task.id}-${v.n}">
-        <summary><span class="hist-v">v${v.n}</span> <span class="mini">${esc(v.by)} · ${fmtTime(v.createdAt)}</span>${task.type === 'copy' ? ` <span class="src-mini">${esc(({ anthropic: 'AI', mock: 'Mock', human: 'You', demo: 'Demo' })[v.source || (v.simulated ? 'demo' : 'human')])}</span>` : ` <span class="src-mini">${v.content.mode === 'photo' ? 'Photo layout' : 'Simulated'}</span>`}
+        <summary><span class="hist-v">v${v.n}</span> <span class="mini">${esc(v.by)} · ${fmtTime(v.createdAt)}</span>${task.type === 'copy' ? ` <span class="src-mini">${esc(({ anthropic: 'AI', mock: 'Mock', human: 'You', demo: 'Demo' })[v.source || (v.simulated ? 'demo' : 'human')])}</span>` : ` <span class="src-mini">${v.content.mode === 'photo' ? 'Photo layout' : v.content.mode === 'video' ? esc(v.content.formatLabel) : 'Simulated'}</span>`}
           ${v.n === task.versions.length ? '<span class="tag">Current</span>' : ''}${v.n === approvedN ? '<span class="tag tag-ok">Approved</span>' : ''}</summary>
         ${v.feedback ? `<p class="feedback-quote">Your feedback: “${esc(v.feedback)}”</p>` : ''}
         ${v.notes?.length ? `<ul class="notes">${v.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
-        ${task.type === 'copy' ? `<div class="caption-text small">${esc(v.content.text)}</div>` : `<button class="graphic-btn small" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${graphicMarkup(task, v)}</button>`}
+        ${task.type === 'video' ? `<div class="video-hist" data-testid="video-history-item" data-version="${v.n}">${outputBlock(task, v)}<p class="mini">On-screen captions: ${v.content.storyboard.scenes.map((sc) => `“${esc(sc.caption)}”`).join(' · ')}</p></div>` : task.type === 'copy' ? `<div class="caption-text small">${esc(v.content.text)}</div>` : `<button class="graphic-btn small" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${graphicMarkup(task, v)}</button>`}
       </details>
     </li>`).join('')}</ol>`;
 }
 
+function videoPanel(job, task) {
+  const a = S.AGENTS.video;
+  const st = S.taskStatus(task);
+  const v = S.currentVersion(task);
+  const d = task.draft;
+  return `<section class="panel asset asset-video" aria-labelledby="h-${task.id}" data-testid="panel-video">
+    <header class="asset-head">
+      <a class="mini-char" href="${agentHref('video')}" aria-label="Open Cue's workspace">${character('video', { size: 'xs' })}</a>
+      <div><h2 id="h-${task.id}">Video${v ? ` <span class="ver">v${v.n}</span>` : ''}</h2>${pill(st)}</div>
+    </header>
+    ${task.clip ? `<p class="mini" data-testid="clip-info">Source clip: ${esc(task.clip.name)} · ${task.clip.duration} s · ${task.clip.w} × ${task.clip.h}${task.clip.sample ? ` ${sampleFootageTag}` : ''}</p>` : ''}
+    ${task.pending ? `<div class="working-note" role="status">${a.name} is drafting a template script and storyboard…</div>` : ''}
+    ${v ? outputBlock(task, v) : d ? `<div class="storyboard-sum" data-testid="storyboard-summary"><p><span class="demo-tag">${esc(d.label)}</span></p><ol>${d.scenes.map((sc) => `<li><strong>${esc(sc.title)}</strong> · ${sc.duration} s · “${esc(sc.caption)}”</li>`).join('')}</ol><p class="mini">Nothing is rendered yet. Open the editor to adjust it and render the video.</p></div>` : ''}
+    ${v?.notes?.length && v.n > 1 ? `<div class="change-note">${v.feedback ? `<p class="feedback-quote">Your note: “${esc(v.feedback)}”</p>` : ''}<p><strong>What changed:</strong> ${esc(v.notes.join(' '))}</p></div>` : ''}
+    ${d && !task.pending ? `<div class="asset-actions"><a class="btn btn-primary" href="#/job/${job.id}/video" data-testid="open-video-editor">${v ? 'Edit and render a new version' : 'Open video editor'}</a></div>
+      <p class="mini">The words shown in the video are edited here. The post caption (above) is separate.</p>` : ''}
+    ${task.versions.length ? `<details class="hist-wrap" data-key="hw-${task.id}" ${task.versions.length > 1 ? 'open' : ''}><summary>History (${task.versions.length} version${task.versions.length === 1 ? '' : 's'})</summary>${historyList(task, job)}</details>` : ''}
+  </section>`;
+}
+
 function assetPanel(job, task) {
+  if (task.type === 'video') return videoPanel(job, task);
   const a = S.AGENTS[task.agent];
   const st = S.taskStatus(task);
   const v = S.currentVersion(task);
@@ -339,10 +419,12 @@ function renderJob(id) {
   const st = S.jobStatus(job);
   const canApprove = st === 'ready_for_review' || st === 'needs_reapproval';
   const cv = copy.versions.length, gv = graphic.versions.length;
+  const vis = S.visualLabel(job).toLowerCase();
   let approveText;
-  if (st === 'approved') approveText = `Approved caption v${job.approval.copyVersion} with graphic v${job.approval.graphicVersion}. On your private calendar for ${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long' })}. Approval doesn’t publish or schedule anything.`;
-  else if (st === 'needs_reapproval') approveText = `Approved earlier as caption v${job.approval.copyVersion} + graphic v${job.approval.graphicVersion}. The pair has changed since, so it needs fresh approval.`;
-  else if (canApprove) approveText = `Approving caption v${cv} with graphic v${gv} puts this post on the private calendar. Nothing is published or scheduled: that’s a separate step.`;
+  if (st === 'needs_render') approveText = 'Approval opens once the video is rendered. Open the video editor to render version 1.';
+  else if (st === 'approved') approveText = `Approved caption v${job.approval.copyVersion} with ${vis} v${job.approval.graphicVersion}. On your private calendar for ${fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long' })}. Approval doesn’t publish or schedule anything.`;
+  else if (st === 'needs_reapproval') approveText = `Approved earlier as caption v${job.approval.copyVersion} + ${vis} v${job.approval.graphicVersion}. The pair has changed since, so it needs fresh approval.`;
+  else if (canApprove) approveText = `Approving caption v${cv} with ${vis} v${gv} puts this post on the private calendar. Nothing is published or scheduled: that’s a separate step.`;
   else approveText = 'Approval opens when both the caption and graphic are ready.';
   return `
   <nav class="crumbs"><a href="#/">← HQ</a>${job.sample ? ` · <a href="#/agent/analyst">Vantage’s analysis</a>` : ''}</nav>
@@ -398,8 +480,8 @@ function pubPreview(job, copyN, graphicN, account, { heading = 'What will be pub
       <span class="plat plat-${platSlug(job.platform)}">${esc(job.platform)}</span>
       <span class="demo-acct" data-testid="pub-account">${esc(PB.accountLabel(account))}</span></figcaption>
     <p class="pub-caption" data-testid="pub-caption">${esc(cv.content.text)}</p>
-    <div class="pub-graphic" data-testid="pub-graphic">${graphicMarkup(graphic, gv, { title: `Graphic v${gv.n}` })}</div>
-    <p class="pub-versions" data-testid="pub-versions">Caption v${copyN} · Graphic v${graphicN}${job.approval && job.approval.copyVersion === copyN && job.approval.graphicVersion === graphicN ? ` · approved ${esc(fmtTime(job.approval.at))}` : ''}</p>
+    <div class="pub-graphic" data-testid="pub-graphic">${graphicMarkup(graphic, gv, { title: `${S.visualLabel(graphic)} v${gv.n}` })}</div>
+    <p class="pub-versions" data-testid="pub-versions">Caption v${copyN} · ${S.visualLabel(graphic)} v${graphicN}${job.approval && job.approval.copyVersion === copyN && job.approval.graphicVersion === graphicN ? ` · approved ${esc(fmtTime(job.approval.at))}` : ''}</p>
   </figure>`;
 }
 
@@ -431,7 +513,7 @@ function confirmBox(job, u, account, versions) {
     <dl class="confirm-list">
       <div><dt>Action</dt><dd data-testid="confirm-action">${esc(what)}</dd></div>
       <div><dt>Destination</dt><dd data-testid="confirm-destination">${esc(job.platform)}: ${esc(PB.accountLabel(account))}</dd></div>
-      <div><dt>Content</dt><dd data-testid="confirm-versions">Caption v${versions.copy} and graphic v${versions.graphic}, exactly as shown${u.step === 'cancel-confirm' ? '' : '. Later edits won’t be picked up'}</dd></div>
+      <div><dt>Content</dt><dd data-testid="confirm-versions">Caption v${versions.copy} and ${S.visualLabel(job).toLowerCase()} v${versions.graphic}, exactly as shown${u.step === 'cancel-confirm' ? '' : '. Later edits won’t be picked up'}</dd></div>
     </dl>
     <p class="mini">${u.step === 'cancel-confirm' ? 'It won’t be published, now or at its time. The record stays in the history.' : `Simulated: nothing is sent to ${esc(job.platform)}. The demo publisher returns a receipt.`}</p>
     <div class="row-actions"><button class="btn ${u.step === 'cancel-confirm' ? 'btn-danger' : 'btn-primary'}" data-pub-confirm="${job.id}" data-testid="confirm-publish" ${u.busy ? 'disabled' : ''}>${esc(btn)}</button><button class="btn btn-ghost" type="button" data-pub-back="${job.id}">${u.step === 'cancel-confirm' ? 'Keep it' : 'Back'}</button></div>
@@ -461,7 +543,7 @@ function pubCard(job, p, u) {
   return `<div class="pub-card pub-${p.status}" data-testid="pub-card" data-status="${p.status}" data-pub="${p.id}">
     <p class="pub-card-head">${esc(PB.PUB_LABEL[p.status])} · #${p.n} · ${esc(p.platform)}</p>
     ${body}
-    <p class="mini" data-testid="pub-authorised">Authorised: caption v${p.copyVersion} and graphic v${p.graphicVersion} for ${esc(PB.accountLabel(p.account))}${p.action === 'schedule' ? ` at ${esc(when)}` : ''}.</p>
+    <p class="mini" data-testid="pub-authorised">Authorised: caption v${p.copyVersion} and ${PB.visualOf(p)} v${p.graphicVersion} for ${esc(PB.accountLabel(p.account))}${p.action === 'schedule' ? ` at ${esc(when)}` : ''}.</p>
     ${actions.length ? `<div class="row-actions">${actions.join('')}</div>` : ''}
     ${u.step === 'reschedule' ? timeForm(job, u) : ''}
     ${['reschedule-confirm', 'release-confirm', 'cancel-confirm'].includes(u.step) ? confirmBox(job, u, p.account, versions) : ''}
@@ -492,7 +574,7 @@ function publishPanel(job) {
     </div>`;
   }
   const history = pubs.length ? `<details class="pub-history" data-key="ph-${job.id}" data-testid="pub-history"><summary>Publication history (${pubs.length})</summary><ol>
-    ${pubs.map((p) => `<li data-testid="pub-history-item"><p><strong>#${p.n} ${esc(PB.PUB_LABEL[p.status])}</strong> · ${esc(PB.accountLabel(p.account))} · caption v${p.copyVersion} + graphic v${p.graphicVersion}${p.action === 'schedule' ? ` · for ${esc(PB.fmtLondon(p.scheduledFor))}` : ' · publish now'}${p.receipt ? ` · receipt <code>${esc(p.receipt.id)}</code>` : ''}</p>
+    ${pubs.map((p) => `<li data-testid="pub-history-item"><p><strong>#${p.n} ${esc(PB.PUB_LABEL[p.status])}</strong> · ${esc(PB.accountLabel(p.account))} · caption v${p.copyVersion} + ${PB.visualOf(p)} v${p.graphicVersion}${p.action === 'schedule' ? ` · for ${esc(PB.fmtLondon(p.scheduledFor))}` : ' · publish now'}${p.receipt ? ` · receipt <code>${esc(p.receipt.id)}</code>` : ''}</p>
       <ul>${p.events.map((ev) => `<li><time>${esc(PB.fmtLondon(ev.at, { short: true }))}</time> ${esc(ev.text)}</li>`).join('')}</ul></li>`).join('')}</ol></details>` : '';
   return `<section class="panel publish-panel" aria-labelledby="pub-h-${job.id}" data-testid="publish-panel">
     <h2 id="pub-h-${job.id}">Publishing <span class="demo-tag">Demo accounts only</span></h2>
@@ -502,6 +584,186 @@ function publishPanel(job) {
     ${schedulerNote()}
     ${history}
   </section>`;
+}
+
+/* ---------- Cue, the Video Creator ---------- */
+function videoAgentBody() {
+  const tasks = S.videoTasks();
+  const current = tasks.find((t) => S.renderProgress(t.id) != null || t.pending || !t.versions.length) || tasks[0];
+  const fmt = V.exportFormat();
+  if (!current) {
+    return `<p class="empty">No video jobs yet. On HQ, choose <strong>Video post</strong> in the brief, add a screen recording or clip, and Vektor hands it to me.</p>
+      <p class="mini">Export on this device: ${fmt ? esc(fmt.label) : 'not supported (this browser can’t record video)'}. Rendering happens in this browser; nothing is sent to a paid service.</p>`;
+  }
+  const job = S.getJob(current.jobId);
+  const prog = S.renderProgress(current.id);
+  const v = S.currentVersion(current);
+  return `
+    <h3>Assigned job</h3>
+    <div class="assign" data-testid="video-assigned">
+      <p class="assign-instr">${esc(current.instruction)}</p>
+      <p class="assign-meta">${pill(S.taskStatus(current))} <span class="plat plat-${platSlug(job.platform)}">${esc(job.platform)}</span> <span class="mini">Due ${fmtDate(job.targetDate)}</span></p>
+      ${current.clip ? `<p class="mini">Clip: ${esc(current.clip.name)} · ${current.clip.duration} s${current.clip.sample ? ` ${sampleFootageTag}` : ''}</p>` : ''}
+    </div>
+    <h3>Progress</h3>
+    ${prog != null ? `<p data-testid="video-agent-progress">Rendering: ${Math.round(prog * 100)}%</p><progress max="1" value="${prog}"></progress>`
+      : current.pending ? '<p>Drafting a template script and storyboard…</p>'
+      : !v ? '<p>Storyboard ready. Open the editor to adjust it and render version 1.</p>'
+      : `<p>Video v${v.n} rendered (${esc(v.content.formatLabel)}, ${(v.content.durationMs / 1000).toFixed(1)} s). ${S.STATUS_LABEL[S.jobStatus(job)] || ''}.</p>`}
+    <a class="btn btn-primary" href="#/job/${job.id}/video">Open video editor</a>
+    <a class="btn" href="#/job/${job.id}">Review the post</a>
+    <h3>Output ${v ? `<span class="mini">v${v.n} of ${current.versions.length}</span>` : ''}</h3>
+    ${v ? outputBlock(current, v) : '<p class="empty">Nothing rendered yet.</p>'}
+    <p class="mini">Export on this device: ${fmt ? esc(fmt.label) : 'not supported here'}. Renders run in this browser, in real time, while HQ stays on screen.</p>
+    <h3>History</h3>
+    ${tasks.length ? `<ul class="prev-work">${tasks.map((t) => { const j = S.getJob(t.jobId); return `<li><a href="#/job/${j.id}"><span><strong>${esc(jobTitle(j))}</strong><span class="mini">${esc(j.platform)} · ${t.versions.length} version${t.versions.length === 1 ? '' : 's'}${t.clip?.sample ? ' · sample footage' : ''}</span>${pill(S.taskStatus(t))}</span></a></li>`; }).join('')}</ul>` : ''}`;
+}
+
+function initVideoStudio(job) {
+  const task = S.jobTasks(job).graphic;
+  if (ui.vstudio?.taskId === task.id) return ui.vstudio;
+  ui.vstudio = { jobId: job.id, taskId: task.id, draft: JSON.parse(JSON.stringify(task.draft || V.templateStoryboard(job, task.clip))), scene: 0, error: '', progress: null, result: null, note: '' };
+  return ui.vstudio;
+}
+
+function renderVideoStudio(jobId) {
+  const job = S.getJob(jobId);
+  if (!job || job.kind !== 'video') return notFound();
+  const task = S.jobTasks(job).graphic;
+  if (task.pending || !task.draft) return `<nav class="crumbs"><a href="#/job/${job.id}">← Back to the post</a></nav><p class="working-note" role="status">Cue is still drafting the storyboard…</p>`;
+  const vs = initVideoStudio(job);
+  const sb = vs.draft;
+  const clip = task.clip;
+  const total = V.totalSeconds(sb);
+  const problems = V.storyboardProblems(sb, clip);
+  const fmt = V.exportFormat();
+  const next = task.versions.length + 1;
+  const rendering = vs.progress != null;
+  const brand = S.brand();
+  return `
+  <nav class="crumbs"><a href="#/job/${job.id}">← Back to the post</a></nav>
+  <header class="studio-head"><h1>Video editor</h1><p class="mini">${esc(jobTitle(job))} · ${esc(job.platform)} · <span class="demo-tag">${esc(sb.label)}</span></p></header>
+  ${clip?.sample ? '<p class="sample-banner" data-testid="sample-footage-banner"><strong>Sample footage.</strong> This clip is an illustrative mock-up made for trying the Video Creator. It isn’t the real JobTrack Pro, and a video made from it must not be presented as evidence of how the product works. Replace it with a real screen recording before publishing anywhere real.</p>' : ''}
+  <div class="vs-grid">
+    <section class="panel vs-source">
+      <h2>Source clip</h2>
+      ${clip ? `${videoPlayer(clip.id, { label: `Source clip ${clip.name}`, key: `clip-${clip.id}`, cls: 'vs-clip' })}<p class="mini">${esc(clip.name)} · ${clip.duration} s · ${clip.w} × ${clip.h}. Play or scrub to a moment, then use “Start here” on a scene.</p>` : '<p class="empty">No clip.</p>'}
+      <h3>Preview</h3>
+      <canvas id="vs-preview" class="vs-preview" width="${V.VW}" height="${V.VH}" data-keep="vs-preview-${task.id}" aria-label="Still preview of the selected scene"></canvas>
+      <p class="mini">Scene ${vs.scene + 1} at its first frame. The finished video plays each scene’s footage from its start for its length.</p>
+    </section>
+    <section class="panel vs-board" aria-labelledby="vs-sb-h">
+      <h2 id="vs-sb-h">Script and storyboard</h2>
+      <p class="vs-total ${problems.length ? 'bad' : ''}" data-testid="vs-total">Total: ${total} s <span class="mini">(15–30 s for a ${esc(job.platform)} post)</span></p>
+      <p class="mini">On-screen captions appear in the video. The post caption that goes with it is written separately by Quill on the post page.</p>
+      <ol class="vs-scenes">
+        ${sb.scenes.map((sc, i) => `<li class="vs-scene${vs.scene === i ? ' sel' : ''}" data-testid="scene">
+          <div class="vs-scene-head"><strong>${i + 1}. ${esc(sc.title)}</strong>
+            <span class="row-actions"><button type="button" class="btn btn-ghost small" data-vs-select="${i}">Preview</button>
+            <button type="button" class="icon-btn small" data-vs-move="${i}|-1" aria-label="Move scene ${i + 1} up" ${i === 0 ? 'disabled' : ''}>↑</button>
+            <button type="button" class="icon-btn small" data-vs-move="${i}|1" aria-label="Move scene ${i + 1} down" ${i === sb.scenes.length - 1 ? 'disabled' : ''}>↓</button>
+            <button type="button" class="icon-btn small" data-vs-remove="${i}" aria-label="Remove scene ${i + 1}" ${sb.scenes.length === 1 ? 'disabled' : ''}>✕</button></span></div>
+          <label for="vs-cap-${i}">On-screen caption</label>
+          <textarea id="vs-cap-${i}" rows="2" maxlength="120" data-vs-field="caption" data-i="${i}">${esc(sc.caption)}</textarea>
+          <label for="vs-scr-${i}">Script / direction</label>
+          <textarea id="vs-scr-${i}" rows="2" data-vs-field="script" data-i="${i}">${esc(sc.script)}</textarea>
+          <div class="vs-nums">
+            <label>Length (s)<input id="vs-dur-${i}" type="number" min="1" max="15" step="0.5" inputmode="decimal" value="${sc.duration}" data-vs-field="duration" data-i="${i}"></label>
+            <label>Footage from (s)<input id="vs-from-${i}" type="number" min="0" max="${clip?.duration || 0}" step="0.1" inputmode="decimal" value="${sc.from}" data-vs-field="from" data-i="${i}" ${sc.footage ? '' : 'disabled'}></label>
+            <button type="button" class="btn btn-ghost small" data-vs-from-now="${i}" ${sc.footage ? '' : 'disabled'}>Start here</button>
+            <label class="vs-check"><input type="checkbox" data-vs-field="footage" data-i="${i}" ${sc.footage ? 'checked' : ''}> Show footage</label>
+          </div>
+          ${sc.footage ? `<p class="mini">Uses ${sc.from}–${Math.min(clip?.duration || 0, Math.round((sc.from + sc.duration) * 10) / 10)} s of the clip${sc.from + sc.duration > (clip?.duration || 0) ? ' (the clip ends early; its last frame holds)' : ''}.</p>` : '<p class="mini">No footage: a branded card with the caption.</p>'}
+        </li>`).join('')}
+      </ol>
+      <button type="button" class="btn" data-vs-add>Add scene</button>
+      <label for="vs-logo">Logo position</label>
+      <select id="vs-logo" data-vs-logo data-nokeep>${['top-right', 'top-left', 'bottom-right', 'bottom-left', 'none'].map((p) => `<option value="${p}" ${sb.logo.pos === p ? 'selected' : ''}>${p === 'none' ? 'No logo' : p.replace('-', ' ')}</option>`).join('')}</select>
+      <p class="mini">${brand.logoId ? `Using your logo: ${esc(brand.logoName)}.` : 'No official logo set yet, so a placeholder NEXAI mark is used. Set the logo in Prism’s Photo layout.'}</p>
+      ${problems.length ? `<ul class="vs-problems" role="alert" data-testid="vs-problems">${problems.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      <div class="vs-export" data-testid="vs-export">
+        <p><strong>Export format on this device:</strong> <span data-testid="export-format">${fmt ? esc(fmt.label) : 'Not available'}</span>${fmt && fmt.ext === 'webm' ? '. This browser can’t record MP4, so the file is WebM. Most players and LinkedIn accept it; convert it to MP4 if one doesn’t.' : ''}${!fmt ? '. This browser can’t record video. Your draft is saved; open HQ in Chrome, Edge or Safari to render.' : ''}</p>
+        ${task.versions.length ? `<label for="vs-note">What changed in v${next} (optional)</label><input id="vs-note" type="text" maxlength="200" placeholder="e.g. Shorter closing caption">` : ''}
+        <p class="mini">Rendering runs in real time (about ${Math.round(total)} s). Keep HQ on screen until it finishes.</p>
+        <div class="row-actions">
+          <button class="btn btn-primary" data-vs-render data-testid="render-video" ${problems.length || !fmt || rendering ? 'disabled' : ''}>${rendering ? 'Rendering…' : `Render video v${next}`}</button>
+          <button class="btn" data-vs-save ${rendering ? 'disabled' : ''}>Save draft</button>
+        </div>
+        <div class="vs-progress" ${rendering ? '' : 'hidden'} data-testid="render-progress"><progress id="vs-prog" max="1" value="${vs.progress || 0}"></progress> <span id="vs-prog-t">${Math.round((vs.progress || 0) * 100)}%</span></div>
+        ${vs.error ? `<p class="form-error" role="alert" data-testid="render-error">${esc(vs.error)}</p>` : ''}
+        <p class="mini" data-testid="draft-saved">${task.draft?.savedAt ? `Draft saved ${esc(fmtTime(task.draft.savedAt))}.` : ''}</p>
+      </div>
+      ${vs.result ? `<div class="vs-result" data-testid="render-result"><h3>Video v${vs.result.n} is ready</h3>${outputBlock(task, vs.result)}<a class="btn btn-primary" href="#/job/${job.id}">Review and approve</a></div>` : ''}
+    </section>
+  </div>`;
+}
+
+let previewToken = 0;
+async function drawVideoPreview() {
+  const vs = ui.vstudio;
+  const canvas = document.getElementById('vs-preview');
+  if (!vs || !canvas) return;
+  const task = S.getTask(vs.taskId);
+  const token = ++previewToken;
+  const sc = vs.draft.scenes[vs.scene] || vs.draft.scenes[0];
+  const clipRec = task.clip ? await P.getAsset(task.clip.id).catch(() => null) : null;
+  const brand = S.brand();
+  const bitmap = brand.logoId ? await P.loadBitmap(brand.logoId) : null;
+  if (token !== previewToken) return;
+  const off = document.createElement('canvas');
+  await V.previewScene(off, { clipBlob: clipRec?.blob, scene: sc, sb: vs.draft, logo: bitmap ? { bitmap } : null }).catch(() => {});
+  if (token !== previewToken) return;
+  canvas.getContext('2d').drawImage(off, 0, 0);
+}
+
+let draftTimer = null;
+function saveDraftSoon() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => { const vs = ui.vstudio; if (vs) S.saveVideoDraft(vs.taskId, vs.draft).then(() => render()); }, 400);
+}
+
+async function renderVideoNow() {
+  const vs = ui.vstudio;
+  if (!vs || vs.progress != null) return;
+  const task = S.getTask(vs.taskId);
+  const base = task.versions.length;
+  vs.error = '';
+  vs.result = null;
+  vs.note = document.getElementById('vs-note')?.value.trim() || '';
+  const saved = await S.saveVideoDraft(task.id, vs.draft); // the editable draft is safe before anything else happens
+  if (!saved.ok) { vs.error = saved.error || 'The draft couldn’t be saved, so nothing was rendered.'; render(); return; }
+  const clipRec = await P.getAsset(task.clip?.id).catch(() => null);
+  if (!clipRec?.blob) { vs.error = 'The source clip isn’t available on this device, so it can’t be rendered here. Your draft is saved.'; render(); return; }
+  const brand = S.brand();
+  const bitmap = brand.logoId ? await P.loadBitmap(brand.logoId) : null;
+  vs.progress = 0;
+  S.setRendering(task.id, 0);
+  render();
+  const started = performance.now();
+  try {
+    const r = await V.renderVideo({
+      sb: vs.draft, clipBlob: clipRec.blob, logo: bitmap ? { bitmap } : null,
+      onProgress: (p) => {
+        vs.progress = p;
+        S.setRendering(task.id, p);
+        const bar = document.getElementById('vs-prog'); if (bar) bar.value = p;
+        const t = document.getElementById('vs-prog-t'); if (t) t.textContent = `${Math.round(p * 100)}% · ${Math.round((performance.now() - started) / 1000)} s`;
+      },
+    });
+    const id = V.newVideoId();
+    await P.putAsset({ id, kind: 'video', name: `video-v${base + 1}.${r.ext}`, blob: r.blob, createdAt: Date.now() });
+    if (P.assetBackend() !== 'server') videoUrls.set(id, URL.createObjectURL(r.blob));
+    const res = await S.addVideoVersion(task.id, { videoId: id, mime: r.mime, ext: r.ext, label: r.label, durationMs: r.durationMs, width: r.width, height: r.height, size: r.blob.size, storyboard: vs.draft, note: vs.note }, base);
+    if (!res.ok) vs.error = `${res.error || 'The new version wasn’t saved.'} Your draft is saved.`;
+    else { vs.result = res.result; toast(`Video v${res.result.n} rendered (${r.label}).`); }
+  } catch (e) {
+    vs.error = e.message || 'Rendering failed. Your draft is saved.';
+  } finally {
+    vs.progress = null;
+    S.setRendering(task.id, null);
+    render();
+    document.querySelector('[data-testid="render-result"], [data-testid="render-error"]')?.scrollIntoView({ block: 'center' });
+  }
 }
 
 /* ---------- Results and the Marketing Analyst ---------- */
@@ -527,7 +789,7 @@ function resultsPanel(job) {
       <div class="rs-thumb">${gv ? graphicMarkup(graphic, gv, { title: `Graphic v${gv.n}` }) : ''}</div>
       <div>
         <p><span class="plat plat-${platSlug(job.platform)}">${esc(job.platform)}</span> <strong data-testid="rs-published">Published (demo) ${esc(PB.fmtLondon(pub.publishedAt || pub.scheduledFor))}</strong></p>
-        <p class="mini" data-testid="rs-versions">Results belong to caption v${pub.copyVersion} and graphic v${pub.graphicVersion}, the version that was published${job.sample ? ' (sample)' : ''}.</p>
+        <p class="mini" data-testid="rs-versions">Results belong to caption v${pub.copyVersion} and ${PB.visualOf(pub)} v${pub.graphicVersion}, the version that was published${job.sample ? ' (sample)' : ''}.</p>
         <details class="rs-caption" data-key="rsc-${job.id}"><summary>Published caption</summary><p class="pub-caption">${esc(cv?.content.text || '')}</p></details>
       </div>
     </div>
@@ -663,7 +925,7 @@ function renderCalendar() {
   <div class="agenda">
     ${agendaDays.length ? agendaDays.map((iso) => `<section class="agenda-day"><h3>${fmtDate(iso, { weekday: 'long', day: 'numeric', month: 'long' })}</h3>
       ${byDay[iso].map((j) => {
-        const gt = S.getTask(j.taskIds.graphic);
+        const gt = S.jobTasks(j).graphic;
         const gp = PB.currentPub(j);
         const g = gt.versions[((gp && gp.status !== 'replaced' ? gp.graphicVersion : j.approval?.graphicVersion) || gt.versions.length) - 1];
         return `<div class="agenda-item">${g ? `<span class="thumb">${graphicMarkup(gt, g)}</span>` : ''}${entry(j)}</div>`;
@@ -1174,7 +1436,7 @@ function reviewPanel(job) {
       <div><h2 id="rv-h">Brand &amp; quality review</h2><span class="pill rv-${stLabel}" data-testid="review-state">${stText}</span></div>
     </header>
     ${ready ? `<div class="row-actions"><button class="btn btn-primary" data-run-review="${job.id}" ${busy ? 'disabled' : ''}>${busy ? 'Reviewing…' : rs.review ? 'Run review again' : 'Run review'}</button>
-      <span class="mini">Checks caption v${copy.versions.length} with graphic v${graphic.versions.length} against business profile ${esc(S.currentProfile()?.id || '')}. You keep final approval.</span></div>` : '<p class="mini">The review opens when the caption and graphic are both ready.</p>'}
+      <span class="mini">Checks caption v${copy.versions.length} with ${S.visualLabel(graphic).toLowerCase()} v${graphic.versions.length} against business profile ${esc(S.currentProfile()?.id || '')}. You keep final approval.</span></div>` : '<p class="mini">The review opens when the caption and graphic are both ready.</p>'}
     ${rs.review ? renderReview(job, rs.review, rs) : ''}
     ${older.length ? `<details class="hist-wrap" data-key="rvh-${job.id}"><summary>Earlier reviews (${older.length})</summary>${older.map((r) => renderReview(job, r, { fresh: false, reasons: ['superseded by a later review'], historic: true })).join('')}</details>` : ''}
   </section>`;
@@ -1186,7 +1448,7 @@ function renderReview(job, r, rs) {
     return items.length ? `<h3 class="rv-group">${heading} (${items.length})</h3>${items.map((f) => renderFinding(job, r, f, rs.fresh)).join('')}` : '';
   };
   return `<div class="review-result${rs.fresh ? '' : ' outdated'}" data-testid="review-${r.n}">
-    <p class="review-meta" data-testid="review-meta">Review #${r.n} · <strong>caption v${r.copyVersion}</strong> · <strong>graphic v${r.graphicVersion}</strong> · <strong>profile ${esc(r.profileVersion)}</strong> · offers checked for ${esc(PF.fmt(r.checkDate))}${S.ws.testDate && r.today === S.ws.testDate ? ' (test date in use)' : ''} · ${fmtTime(r.at)}</p>
+    <p class="review-meta" data-testid="review-meta">Review #${r.n} · <strong>caption v${r.copyVersion}</strong> · <strong>${S.visualLabel(job).toLowerCase()} v${r.graphicVersion}</strong> · <strong>profile ${esc(r.profileVersion)}</strong> · offers checked for ${esc(PF.fmt(r.checkDate))}${S.ws.testDate && r.today === S.ws.testDate ? ' (test date in use)' : ''} · ${fmtTime(r.at)}</p>
     ${!rs.fresh && !rs.historic ? `<p class="outdated-note" data-testid="review-outdated"><strong>Outdated:</strong> the ${esc(rs.reasons.join(' and the '))} since this review. Its findings are kept for the record. Run the review again.</p>` : ''}
     ${group('fail', 'Problems found')}
     ${group('owner', 'Needs owner review')}
@@ -1203,7 +1465,8 @@ function renderFinding(job, r, f, fresh) {
     <h4>${esc(f.title)}</h4>
     ${f.quote ? `<blockquote class="finding-quote">${esc(f.quote)}</blockquote>` : ''}
     <dl><dt>Where</dt><dd>${esc(f.where)}</dd><dt>Why it matters</dt><dd>${esc(f.why)}</dd><dt>Who can fix it</dt><dd>${FIXER[f.fixer]}</dd></dl>
-    ${reviewedGraphic ? `<button class="graphic-btn small" data-lightbox="${S.jobTasks(job).graphic.id}:${reviewedGraphic.n}" aria-label="Inspect graphic v${reviewedGraphic.n} full screen">${graphicMarkup(S.jobTasks(job).graphic, reviewedGraphic)}</button>` : ''}
+    ${reviewedGraphic?.content.mode === 'video' ? `<div class="reviewed-video">${graphicMarkup(S.jobTasks(job).graphic, reviewedGraphic, { title: `Video v${reviewedGraphic.n}` })}</div>` : ''}
+    ${reviewedGraphic && reviewedGraphic.content.mode !== 'video' ? `<button class="graphic-btn small" data-lightbox="${S.jobTasks(job).graphic.id}:${reviewedGraphic.n}" aria-label="Inspect graphic v${reviewedGraphic.n} full screen">${graphicMarkup(S.jobTasks(job).graphic, reviewedGraphic)}</button>` : ''}
     ${route ? `<div class="row-actions">${f.fixer === 'copywriter' ? `<button class="btn" data-route-finding="${job.id}|${r.n}|${f.id}">Send to Quill</button>` : `<a class="btn" href="#/job/${job.id}/studio">Open Photo layout</a><button class="btn btn-ghost" data-route-finding="${job.id}|${r.n}|${f.id}">Send to Prism</button>`}</div>` : ''}
   </article>`;
 }
@@ -1452,11 +1715,15 @@ function render() {
 
   document.querySelectorAll('[data-nav]').forEach((a) => a.toggleAttribute('aria-current', a.dataset.nav === (r.view === 'calendar' ? 'calendar' : r.view === 'hq' ? 'hq' : '')));
   $main.dataset.view = r.view;
-  S.setFocusJob(r.view === 'job' || r.view === 'studio' ? r.id : null);
+  S.setFocusJob(r.view === 'job' || r.view === 'studio' || r.view === 'vstudio' ? r.id : null);
   const pill = document.getElementById('ws-pill');
   if (pill) { pill.textContent = wsPillText(); pill.dataset.mode = S.ws.mode; pill.dataset.status = S.ws.status; }
   if (!S.ws.ready) { $main.innerHTML = '<p class="empty">Loading your workspace…</p>'; return; }
-  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'calendar' ? renderCalendar() : r.view === 'workspace' ? renderWorkspace() : r.view === 'week' ? renderWeek(r.id) : r.view === 'profile' ? renderProfile() : renderHQ();
+  // Keep playing videos and drawn canvases across re-renders (same element moves into the new markup).
+  // The same video can appear more than once (output, history, publishing preview), so keys include the occurrence.
+  const keepKeys = (els) => { const seen = {}; return els.map((el) => { const k = el.dataset.keep; seen[k] = (seen[k] || 0) + 1; return [`${k}#${seen[k]}`, el]; }); };
+  const kept = new Map(keepKeys([...document.querySelectorAll('[data-keep]')]));
+  $main.innerHTML = r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'vstudio' ? renderVideoStudio(r.id) : r.view === 'calendar' ? renderCalendar() : r.view === 'workspace' ? renderWorkspace() : r.view === 'week' ? renderWeek(r.id) : r.view === 'profile' ? renderProfile() : renderHQ();
   $sheet.innerHTML = (r.agent ? renderAgentSheet(r.agent) : '') + (ui.lightbox ? renderLightbox() : '');
   document.body.classList.toggle('no-scroll', !!(r.agent || ui.lightbox));
 
@@ -1470,7 +1737,9 @@ function render() {
   if (sb && sheetScroll) sb.scrollTop = sheetScroll;
   lastSig = signature();
   if (ui.vtAgent) document.querySelector('.sheet .agent-art')?.style.setProperty('view-transition-name', 'agent-art');
+  keepKeys([...document.querySelectorAll('[data-keep]')]).forEach(([key, el]) => { const old = kept.get(key); if (old && old !== el && old.tagName === el.tagName && (old.tagName !== 'VIDEO' || old.getAttribute('src') === el.getAttribute('src'))) el.replaceWith(old); });
   if (r.view === 'studio') hydrateStudio();
+  if (r.view === 'vstudio' && !kept.has(`vs-preview-${ui.vstudio?.taskId}#1`)) drawVideoPreview();
 }
 
 setInterval(() => {
@@ -1482,6 +1751,13 @@ setInterval(() => {
     const slot = document.getElementById('sync-slot');
     const html = syncNotice(r.id, { studio: true });
     if (slot && slot.dataset.html !== html) { slot.innerHTML = html; slot.dataset.html = html; }
+    return;
+  }
+  if (r.view === 'vstudio') {
+    // The video editor re-renders only when the task itself changes (draft ready, new version), not while you type.
+    const t = S.getJob(r.id) && S.jobTasks(S.getJob(r.id)).graphic;
+    const sig = t ? `${!!t.pending}|${!!t.draft}|${t.versions.length}|${S.ws.status}` : '';
+    if (sig !== ui.vsSig) { ui.vsSig = sig; render(); }
     return;
   }
   if (signature() !== lastSig) render();
@@ -1628,7 +1904,15 @@ document.addEventListener('submit', (e) => {
     // The page scrolls to show Vektor after sending; ignore the second half of a double tap so it can't open whatever moved under the finger.
     document.body.classList.add('tap-guard');
     setTimeout(() => document.body.classList.remove('tap-guard'), 600);
-    S.createJob({ brief, platform: f.platform.value, targetDate: f.targetDate.value }).then((res) => {
+    const isVideo = f.format?.value === 'video';
+    if (isVideo && !ui.briefClip?.meta) { submitLock = false; err.textContent = 'Choose a screen recording or clip for the video (or use the labelled sample).'; err.hidden = false; return; }
+    const clipReady = isVideo ? (async () => {
+      const id = V.newClipId();
+      await P.putAsset({ id, kind: 'clip', name: ui.briefClip.meta.name, blob: ui.briefClip.file, createdAt: Date.now() });
+      return { id, name: ui.briefClip.meta.name, duration: ui.briefClip.meta.duration, w: ui.briefClip.meta.w, h: ui.briefClip.meta.h, type: ui.briefClip.meta.type, size: ui.briefClip.meta.size, sample: !!ui.briefClip.sample };
+    })() : Promise.resolve(null);
+    clipReady.then((clip) => S.createJob({ brief, platform: f.platform.value, targetDate: f.targetDate.value, kind: isVideo ? 'video' : undefined, clip })).catch((e2) => ({ ok: false, error: `The clip wasn’t saved: ${e2.message}` })).then((res) => {
+      if (res.ok && isVideo) ui.briefClip = null;
       if (!res.ok) { err.textContent = res.error || 'The job wasn’t saved. Try again.'; err.hidden = false; render(); return; }
       const ta = document.getElementById('brief');
       if (ta) ta.value = '';
@@ -1810,6 +2094,7 @@ document.addEventListener('click', (e) => {
     const job = S.getJob(jobId);
     const f = (job.reviews || [])[Number(rn) - 1]?.findings.find((x) => x.id === fid);
     if (!f) return;
+    if (f.fixer === 'video') { location.hash = `#/job/${jobId}/video`; return; }
     const task = S.jobTasks(job)[f.fixer === 'copywriter' ? 'copy' : 'graphic'];
     ui.revision[task.id] = true;
     ui.editing[task.id] = false;
@@ -1910,6 +2195,80 @@ document.addEventListener('change', (e) => {
   if (u) { u.pick = Number(el.value); u.error = ''; render(); }
 });
 
+/* Video post: format choice, clip and the labelled sample on the brief form */
+document.addEventListener('change', async (e) => {
+  const el = e.target;
+  if (el.matches?.('[data-brief-format]')) { ui.briefFormat = el.value; render(); return; }
+  if (el.matches?.('[data-brief-clip]')) {
+    const file = el.files?.[0];
+    ui.briefClip = null;
+    render();
+    if (!file) return;
+    try { ui.briefClip = { file, meta: await V.readClip(file), sample: await V.isSampleRecording(file) }; } catch (err) { ui.briefClip = { error: err.message }; }
+    render();
+  }
+});
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest?.('[data-use-sample-clip]');
+  if (!t) return;
+  t.disabled = true;
+  try {
+    const mp4 = document.createElement('video').canPlayType('video/mp4; codecs="avc1.42E01E"');
+    const ext = mp4 ? 'mp4' : 'webm';
+    const r = await fetch(`samples/sample-receipt-recording.${ext}`);
+    if (!r.ok) throw new Error(`the sample recording couldn’t be loaded (${r.status})`);
+    const file = new File([await r.blob()], `SAMPLE-receipt-recording-not-real-JobTrack-Pro.${ext}`, { type: `video/${ext}` });
+    ui.briefClip = { file, meta: await V.readClip(file), sample: true };
+  } catch (err) { ui.briefClip = { error: `Sample: ${err.message}` }; }
+  render();
+});
+
+/* Video editor */
+const vsScene = (el) => ui.vstudio?.draft.scenes[Number(el.dataset.i)];
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (!el.dataset?.vsField || !ui.vstudio || el.type === 'checkbox') return;
+  const sc = vsScene(el);
+  if (!sc) return;
+  const k = el.dataset.vsField;
+  sc[k] = k === 'duration' || k === 'from' ? (el.value === '' ? 0 : Math.round(Number(el.value) * 10) / 10) : el.value;
+  const tot = document.querySelector('[data-testid="vs-total"]');
+  if (tot) tot.firstChild.textContent = `Total: ${V.totalSeconds(ui.vstudio.draft)} s `;
+  saveDraftSoon();
+});
+document.addEventListener('change', (e) => {
+  const el = e.target;
+  if (!ui.vstudio) return;
+  if (el.dataset?.vsField) {
+    const sc = vsScene(el);
+    if (sc && el.type === 'checkbox') sc.footage = el.checked;
+    saveDraftSoon();
+    render();
+    if (['from', 'footage', 'caption'].includes(el.dataset.vsField)) { ui.vstudio.scene = Number(el.dataset.i); drawVideoPreview(); }
+    return;
+  }
+  if (el.matches('[data-vs-logo]')) { ui.vstudio.draft.logo.pos = el.value; saveDraftSoon(); render(); drawVideoPreview(); }
+});
+document.addEventListener('click', (e) => {
+  const t = e.target.closest?.('button');
+  const vs = ui.vstudio;
+  if (!t || !vs || route().view !== 'vstudio') return;
+  const scenes = vs.draft.scenes;
+  const after = () => { saveDraftSoon(); render(); drawVideoPreview(); };
+  if (t.dataset.vsSelect != null) { vs.scene = Number(t.dataset.vsSelect); render(); drawVideoPreview(); return; }
+  if (t.dataset.vsMove) { const [i, d] = t.dataset.vsMove.split('|').map(Number); const j = i + d; [scenes[i], scenes[j]] = [scenes[j], scenes[i]]; vs.scene = j; after(); return; }
+  if (t.dataset.vsRemove != null) { scenes.splice(Number(t.dataset.vsRemove), 1); vs.scene = 0; after(); return; }
+  if (t.matches('[data-vs-add]')) { scenes.push({ id: `sc${Date.now().toString(36)}`, title: 'New scene', duration: 3, footage: true, from: 0, caption: '', script: '' }); vs.scene = scenes.length - 1; after(); return; }
+  if (t.dataset.vsFromNow != null) {
+    const v = document.querySelector('.vs-clip');
+    const sc = scenes[Number(t.dataset.vsFromNow)];
+    if (v && sc) { sc.from = Math.round(v.currentTime * 10) / 10; vs.scene = Number(t.dataset.vsFromNow); after(); }
+    return;
+  }
+  if (t.matches('[data-vs-save]')) { clearTimeout(draftTimer); S.saveVideoDraft(vs.taskId, vs.draft).then((res) => { toast(res.ok ? 'Draft saved.' : res.error || 'Not saved.'); render(); }); return; }
+  if (t.matches('[data-vs-render]')) { renderVideoNow(); }
+});
+
 // Opening a workspace from an HQ card: the same artwork carries across (View Transitions where supported).
 document.addEventListener('click', (e) => {
   const card = e.target.closest?.('a.agent-card');
@@ -1944,6 +2303,12 @@ window.addEventListener('beforeunload', (e) => {
 window.addEventListener('hashchange', (e) => {
   if (restoringHash) { restoringHash = false; return; }
   const r = route();
+  if (ui.vstudio?.progress != null && r.view !== 'vstudio') {
+    restoringHash = true;
+    location.hash = new URL(e.oldURL).hash;
+    toast('A video is rendering. Stay on this screen until it finishes.');
+    return;
+  }
   if (r.view !== 'studio' && ui.studio?.dirty) {
     if (!window.confirm('You have unsaved changes in Photo layout. Leave and discard them?')) {
       restoringHash = true;
@@ -1953,6 +2318,7 @@ window.addEventListener('hashchange', (e) => {
   }
   ui.lightbox = null;
   if (r.view !== 'studio') ui.studio = null; // unsaved studio drafts are discarded on leaving
+  if (r.view !== 'vstudio') { ui.vstudio = null; ui.vsSig = null; } // the video draft is saved as you edit
   if (r.view === 'job' && !S.getJob(r.id) && S.ws.mode === 'local' && S.ws.authConfigured) ui.afterSignIn = location.hash;
   if (r.view === 'calendar') ui.calMonth = null;
   render();

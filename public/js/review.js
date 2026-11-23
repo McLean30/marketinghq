@@ -74,6 +74,9 @@ export function runChecks({ job, copyVersion, graphicVersion, profile, brand, da
   checks.push({ id: 'spelling', label: 'British English spelling', kind: 'rule', result: us.length ? 'fail' : 'pass', detail: `Checked ${US_UK.length} common US spellings` });
   for (const [u, k] of us) add({ check: 'spelling', status: 'fail', title: `US spelling “${u.trim()}”`, quote: lines.find((l) => new RegExp(`\\b${u.trim()}`, 'i').test(l)) || '', where: `Caption v${cv}, paragraph ${para(lines, lines.findIndex((l) => new RegExp(`\\b${u.trim()}`, 'i').test(l)))}`, why: `Nexai writes in ${data.brand?.language || 'British English'}.`, fixer: 'copywriter', fix: `Change “${u.trim()}” to “${k.trim()}”.` });
 
+  // Video posts: logo, files and sample footage are checked on the rendered video version.
+  if (graphicVersion?.content?.mode === 'video') return videoChecks({ caption, lines, cv, gv, data, brand, present, profile, checks, findings, add, graphicVersion });
+
   // 4. Logo metadata and 5. supplied assets.
   const photo = graphicVersion?.content?.mode === 'photo';
   const logoProblems = [];
@@ -110,6 +113,42 @@ export function runChecks({ job, copyVersion, graphicVersion, profile, brand, da
   checks.push({ id: 'visual', label: 'Image shows a realistic UK commercial maintenance setting', kind: 'human', result: 'human', detail: 'Needs your eyes: the app can’t judge what a photo shows' });
   add({ check: 'visual', status: 'human', title: 'Check the image yourself', where: `Graphic v${gv}`, why: `Brand rule (${profile.id}): ${(data.brand?.imagery || 'realistic commercial maintenance imagery').replace(/\.\s*$/, '')}.`, fixer: 'owner', fix: 'Look at the graphic below. If the setting isn’t right, ask Prism for a new photo layout.' });
 
+  return { checks, findings };
+}
+
+function claimsAndVisual({ lines, cv, gv, data, profile, checks, add, visualWord }) {
+  const claimLines = [];
+  lines.forEach((l, i) => {
+    for (const [re, kind] of CLAIM_PATTERNS) if (re.test(l) && !/^#/.test(l.trim())) { claimLines.push({ line: i + 1, text: l, kind }); break; }
+  });
+  for (const p of data.proof || []) {
+    if (p.claims?.trim()) continue;
+    const i = lines.findIndex((l) => norm(l).includes(norm(p.name)));
+    if (i >= 0 && !claimLines.some((c) => c.line === i + 1)) claimLines.push({ line: i + 1, text: lines[i], kind: `${p.name}, which has no approved claims yet` });
+  }
+  checks.push({ id: 'claims', label: 'Claims are backed by the profile', kind: 'owner', result: claimLines.length ? 'owner' : 'pass', detail: claimLines.length ? `${claimLines.length} line${claimLines.length === 1 ? '' : 's'} need your review` : 'No figures, guarantees or product claims found' });
+  for (const c of claimLines) add({ check: 'claims', status: 'owner', title: 'Needs owner review', quote: c.text, where: `Caption v${cv}, paragraph ${para(lines, c.line - 1)}`, why: `This line contains ${c.kind}. The business profile (${profile.id}) has no approved claim that backs it.`, fixer: 'owner', fix: 'Confirm it’s accurate and add it to the profile’s approved claims, or ask Quill to remove it.' });
+  checks.push({ id: 'visual', label: `${visualWord} shows a realistic UK commercial maintenance setting`, kind: 'human', result: 'human', detail: 'Needs your eyes: the app can’t judge what footage shows' });
+  add({ check: 'visual', status: 'human', title: visualWord === 'Video' ? 'Watch the whole video yourself' : 'Check the image yourself', where: `${visualWord} v${gv}`, why: `Brand rule (${profile.id}): ${(data.brand?.imagery || 'realistic commercial maintenance imagery').replace(/\.\s*$/, '')}.`, fixer: 'owner', fix: visualWord === 'Video' ? 'Play the video below from start to finish. Check the screen action is clear and every on-screen caption is readable.' : 'Look at the graphic below.' });
+}
+
+function videoChecks({ lines, cv, gv, data, brand, present, profile, checks, findings, add, graphicVersion }) {
+  const c = graphicVersion.content;
+  const pos = c.storyboard?.logo?.pos || 'none';
+  const logoProblems = [];
+  if (pos === 'none') logoProblems.push({ title: `Video v${gv} has no logo`, why: 'Brand rules require the official Nexai logo on every post.' });
+  else if (!brand?.logoId) logoProblems.push({ title: `Video v${gv} uses the placeholder Nexai mark`, why: 'No official logo file has been set yet (set it in Prism’s Photo layout), so the video shows a placeholder mark.' });
+  else if (c.logoId !== brand.logoId) logoProblems.push({ title: `Video v${gv} uses an older logo file (${c.logoName || 'unknown'})`, why: `The workspace logo is now ${brand.logoName}.` });
+  checks.push({ id: 'logo', label: 'Official logo on the video', kind: 'rule', result: logoProblems.length ? 'fail' : 'pass', detail: `Logo position: ${pos}` });
+  for (const p of logoProblems) add({ check: 'logo', status: 'fail', title: p.title, where: `Video v${gv}`, why: p.why, fixer: 'video', fix: 'Set the official logo, then open the video editor, choose a logo position and render again.' });
+  const missing = [];
+  if (!present.has(c.videoId)) missing.push({ title: `The video file for v${gv} is missing from storage`, why: 'It can’t be played, downloaded or published.' });
+  if (c.clipId && !present.has(c.clipId)) missing.push({ title: 'The source clip is missing from storage', why: 'Without it the video can’t be edited and rendered again.' });
+  checks.push({ id: 'assets', label: 'Video and source clip files exist', kind: 'rule', result: missing.length ? 'fail' : 'pass', detail: 'Checked the rendered video and its source clip' });
+  for (const m of missing) add({ check: 'assets', status: 'fail', title: m.title, where: `Video v${gv}`, why: m.why, fixer: 'video', fix: 'Upload the clip again and render a new version.' });
+  checks.push({ id: 'footage', label: 'Footage is real, not the sample recording', kind: 'rule', result: c.sampleFootage ? 'fail' : 'pass', detail: c.sampleFootage ? 'Built from the labelled sample recording' : 'Built from a clip you supplied' });
+  if (c.sampleFootage) add({ check: 'footage', status: 'fail', title: 'Uses the sample recording, not real product footage', where: `Video v${gv}`, why: 'The sample is an illustrative mock-up, not JobTrack Pro. It must never be presented as evidence of how the real product works.', fixer: 'video', fix: 'Replace it with a real screen recording before publishing anywhere real.' });
+  claimsAndVisual({ lines, cv, gv, data, profile, checks, add, visualWord: 'Video' });
   return { checks, findings };
 }
 
