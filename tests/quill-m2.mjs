@@ -18,7 +18,7 @@ const words = (t) => t.trim().split(/\s+/).filter(Boolean).length;
 
 const server = spawn(process.execPath, ['server.js'], {
   cwd: fileURLToPath(new URL('..', import.meta.url)),
-  env: { ...process.env, PORT: String(PORT), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '1200', ANTHROPIC_API_KEY: '' },
+  env: { ...process.env, PORT: String(PORT), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '1200', OPENAI_API_KEY: '' },
   stdio: ['ignore', 'pipe', 'inherit'],
 });
 await new Promise((res) => server.stdout.on('data', (d) => /running at/.test(d) && res()));

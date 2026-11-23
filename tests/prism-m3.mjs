@@ -19,7 +19,7 @@ const BRIEF = 'Create a LinkedIn post for UK building services directors about r
 fs.mkdirSync(OUT, { recursive: true });
 const assert = (c, m) => { if (!c) throw new Error(`FAIL: ${m}`); console.log(`  ok  ${m}`); };
 
-const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '500', ANTHROPIC_API_KEY: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
+const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '500', OPENAI_API_KEY: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise((res) => server.stdout.on('data', (d) => /running at/.test(d) && res()));
 
 const graphicVersions = (page) => page.locator('[data-testid="panel-graphic"] .hist-item').count();

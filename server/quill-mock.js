@@ -142,4 +142,31 @@ async function planWeek(req) {
   });
 }
 
-module.exports = { generate, calls, planWeek, planCalls };
+/* Cue / Calibre / Vantage mocks (deterministic, not AI) */
+async function videoScript(req) {
+  calls.push({ kind: 'script', brief: req.brief, tone: req.tone?.mode || null });
+  await sleep(DELAY_MS);
+  const promo = req.tone?.mode === 'promo';
+  return {
+    scenes: [
+      { title: 'Opening', duration: 4, from: 0, caption: 'Mock: receipts go missing between site and office.', script: 'Mock direction: open on the job screen.' },
+      { title: 'On screen', duration: 8, from: 2.5, caption: 'Mock: the engineer adds the receipt on site.', script: 'Mock direction: show the tap and the photo.' },
+      { title: 'Why it helps', duration: 5, from: 9, caption: 'Mock: the office sees it straight away.', script: 'Mock direction: office view.' },
+      { title: promo ? 'Call to action' : 'Takeaway', duration: 3, from: 16, caption: promo ? 'Mock: Request a Free Workflow Review.' : 'Mock takeaway: log receipts before you leave site.', script: 'Mock direction: close.' },
+    ],
+    notes: 'Mock storyboard from the brief (test mode, not AI).',
+  };
+}
+function wordingReview(caption, tone) {
+  calls.push({ kind: 'wording', tone: tone?.mode || null });
+  const first = caption.split('\n').find((l) => l.trim()) || caption;
+  return { summary: 'Mock wording review (test mode, not AI): reads clearly overall.', suggestions: [{ quote: first.slice(0, 40), issue: 'Mock: the opening could be more specific.', suggestion: 'Mock: name the moment on site.' }] };
+}
+function interpret(rows, invent) {
+  calls.push({ kind: 'interpret', rows: rows.length });
+  const withCtr = rows.filter((r) => r.ctrPct != null).sort((a, b) => b.ctrPct - a.ctrPct);
+  if (invent) return 'Mock: this post converted 37% better.';
+  return `Mock interpretation (test mode, not AI): ${withCtr.length ? `“${withCtr[0].title}” had the higher click-through at ${withCtr[0].ctrPct.toFixed(1)}%. ` : ''}Enquiries not entered are unknown, not zero. With ${rows.length} posts there’s too little evidence for a conclusion.`;
+}
+
+module.exports = { generate, calls, planWeek, planCalls, videoScript, wordingReview, interpret };

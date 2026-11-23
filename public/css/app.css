@@ -838,3 +838,15 @@ html[data-motion="off"] .handoff path.pulse { stroke-dasharray: none; stroke-wid
 .tone-chip summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; gap: 8px; font-weight: 600; flex-wrap: wrap; }
 .tone-k { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .voice-text { margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--cyan); color: var(--text); font-size: .95rem; }
+
+/* M11A: live AI tools */
+.ai-image { margin-top: .75rem; display: grid; gap: .5rem; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: .85rem; margin: .5rem 0; }
+.usage-table th, .usage-table td { text-align: left; padding: .3rem .4rem; border-bottom: 1px solid rgba(255, 255, 255, .12); vertical-align: top; }
+.usage-table td:nth-child(3), .usage-table td:nth-child(4) { white-space: nowrap; }
+.usage { margin-top: 1rem; }
+.wording, .interpret { margin-top: 1rem; display: grid; gap: .5rem; }
+.wording ul { margin: 0; padding-left: 1.1rem; display: grid; gap: .4rem; }
+.wording li .mini, .interpret .mini { display: block; }
+.interpret-out, .wording-out { border-left: 3px solid var(--cyan); padding-left: .75rem; }
+@media (max-width: 480px) { .usage-table { font-size: .78rem; } .usage-table td:nth-child(2), .usage-table th:nth-child(2) { display: none; } }

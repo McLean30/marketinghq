@@ -1,8 +1,8 @@
-# Nexai AI Marketing HQ (milestone 10 + team update)
+# Nexai AI Marketing HQ (milestone 11A: live OpenAI content creation)
 
-Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer). Review both together, request revisions with feedback, approve the pair, and see it on the private content calendar.
+Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer), or a video to Cue. Review everything together, request revisions with feedback, approve the pair, and see it on the private content calendar.
 
-Milestone 2 gives Quill real AI caption drafting and revision through the Anthropic API. By default that's Claude Sonnet 5.5 (`claude-sonnet-5-5`) at `medium` effort, and you can change both on the server. Milestone 3 adds Prism's **Photo layout**: build a branded 1080 × 1350 social graphic from your own photo, the Nexai logo and a headline, then download it as a PNG. Prism's simulated graphics are still available.
+Milestone 11A connects the six agents to OpenAI for content creation. Text uses `gpt-6-luna`; images use `gpt-image-2.6-flare`. Both are configurable on the server. Publishing is still simulated (Milestone 11B), and no social account is connected.
 
 ## Run it
 
@@ -11,32 +11,52 @@ npm install
 npm start
 ```
 
-Open http://127.0.0.1:4173. Needs Node 20.6+.
+Open http://127.0.0.1:4173. Needs Node 20.6+. There are no runtime dependencies.
 
-Without credentials, the app runs exactly as in Milestone 1: Quill uses local demo templates and every caption is labelled "Simulated demo output". The brief panel says which mode Quill is in.
+Without settings, HQ runs in demo mode. Outputs come from local templates, are labelled "Simulated demo output" and cost nothing. The brief panel says which mode HQ is in. The hosted Vercel preview always runs in demo mode: it has no owner sign-in, so it can never spend.
 
-### Switch on live AI captions
+### Switch on live AI (your own HQ server)
 
-Quill calls the Anthropic API **from the server only**. The key never reaches the browser, is never logged, and lives in a gitignored `.env` file.
+HQ calls OpenAI **from the server only**. The key never reaches the browser, logs, commits or the usage records. It lives in a gitignored `.env` file (or the server's environment).
 
-1. Create an API key in the Anthropic Console (platform.claude.com), in a workspace you're happy to bill.
-2. Copy `.env.example` to `.env` and put the key after `ANTHROPIC_API_KEY=` in your own editor. Don't paste it into chat, commits or issue trackers.
-3. Run `npm run start:env` (same as `node --env-file=.env server.js`).
-4. The start-up log should say `Quill caption provider: Anthropic API (claude-sonnet-5-5, effort medium)`. New captions are labelled "AI-generated · Claude Sonnet 5.5".
+1. Create an API key in the OpenAI dashboard (platform.openai.com → API keys), in a project you're happy to bill. A project spend limit is a good idea.
+2. Set the owner password: `npm run set-password`. This writes only a hash to `.env`. **Live AI needs owner sign-in.** With a key but no owner sign-in, HQ stays in demo mode, so nobody can spend.
+3. Copy `.env.example` to `.env` (if you haven't) and put the key after `OPENAI_API_KEY=` in your own editor. Don't paste it into chat, commits or issue trackers.
+4. Run `npm run start:env` (same as `node --env-file=.env server.js`). The start-up log should say `Quill caption provider: OpenAI (gpt-6-luna, images gpt-image-2.6-flare)`.
+5. Open HQ, sign in on **Shared workspace**, and the brief panel says "Live AI is on". Signed-out visitors keep seeing demo mode, and the paid endpoints refuse them (401).
+
+### What runs live, and what it costs
+
+Every paid request needs an explicit action by the signed-in owner: submitting a brief, sending a revision, or tapping a generate or review button. Nothing runs in the background.
+
+| Agent | Live action | Model |
+|---|---|---|
+| Vektor | **Draft with AI**: an editable weekly plan from your brief and business profile. Nothing is delegated until you confirm it. | text |
+| Quill | First caption per post, and each revision, in the saved editorial voice (conversational British English, practical detail, soft CTA where appropriate). An explicit hard-sell brief overrides the tone for that job only. | text |
+| Prism | **Generate image** for the selected scene; **Edit image** of the current picture; **Upload photo** opens Photo layout. The official logo, headline and crop are added locally in Photo layout, so changing them costs nothing. | image |
+| Cue | Script and storyboard. Editing and rendering your footage stay in the local video editor. If the request fails, you can retry or use the labelled template storyboard. | text |
+| Calibre | Rule checks as before, plus an optional **AI wording review** (advisory). | text |
+| Vantage | Calculations as before, plus an optional **written interpretation** of the actual figures. Unknown metrics are sent as "not entered", never zero, and a reply quoting a figure that isn't in your data is rejected. | text |
+
+Each output says what it is: "Live AI · gpt-6-luna", "Live AI image · gpt-image-2.6-flare" (with "layout owner-edited" once you've changed the layout), "Owner-edited", or "Simulated". Version history, feedback, approvals and scheduling holds work as before.
+
+**One charge per action.** Each action carries a request key saved with the job. A double tap, a second open device, a refresh or a retry after a lost reply gets the first result back instead of a second charge. A failed request isn't cached. Your brief, feedback and earlier versions are kept, the error says what went wrong (bad key, no credit, spend limit, rate limit, OpenAI down, timeout), and Retry makes one new request.
+
+**Usage and cost.** Each job's **AI usage** panel lists every paid request: captions, revisions, images and image edits. It shows the model, the tokens OpenAI reported, and an estimated cost from OpenAI's Standard list prices (checked 23 Nov 2026; see `docs/openai-api-notes.md`). The server also keeps a numbers-only ledger in the data folder (`ai-usage.json`; owner-only at `/api/ai/usage`). Your OpenAI invoice is the final figure.
 
 ### Model settings (server-side, in `.env`)
 
 | Setting | Default | Notes |
 |---|---|---|
-| `QUILL_MODEL` | `claude-sonnet-5-5` | Any Claude model ID. `claude-opus-5-5` for harder briefs (twice the price); `claude-haiku-5-5` for lowest cost (test quality first). |
-| `QUILL_EFFORT` | `medium` | `low`, `medium`, `high`, `xhigh` or `max`. Higher means more thinking, latency and cost. |
-| `QUILL_PROVIDER` | automatic | `demo` forces local templates even with a key; `mock` is for tests only. |
+| `OPENAI_TEXT_MODEL` | `gpt-6-luna` | Vektor, Quill, Cue, Calibre and Vantage. Responses API with structured output. |
+| `OPENAI_IMAGE_MODEL` | `gpt-image-2.6-flare` | Prism's generate and edit (Images API). |
+| `OPENAI_REASONING_EFFORT` | `low` | `none`, `low`, `medium`, `high`, `xhigh` or `max`. Higher means slower and dearer. |
+| `OPENAI_IMAGE_QUALITY` | `medium` | `low`, `medium`, `high` or `auto`. |
+| `OPENAI_IMAGE_SIZE` | `1024x1536` | Portrait; Photo layout crops it to 1080 × 1350. |
+| `OPENAI_PRICES` | built in | JSON override for the cost estimates if list prices change. |
+| `AI_PROVIDER` | automatic | `demo` forces local templates even with a key; `mock` is for tests only. |
 
-An invalid model ID format or effort value stops the server at start-up with a clear message. An unknown but well-formed model ID is reported by the API on the first request.
-
-Each draft or revision is a single API request using structured output, plus the SDK's automatic retries on transient errors. **There is no automatic model fallback.** Only the configured model handles a brief. If it declines a request, the caption panel says so and nothing is rerouted.
-
-Settings were checked against the Anthropic docs (models overview, pricing, effort, thinking, structured outputs) in November 2026. Per million tokens: Sonnet 5.5 is $2 input / $10 output; Opus 5.5 is $4 / $20; Haiku 5.5 is $0.10 / $0.50 for prompts up to 100K tokens.
+An invalid model ID format or effort value stops the server at start-up with a clear message. **There is no automatic model fallback**: only the configured models are used.
 
 ### Phone
 
@@ -52,7 +72,7 @@ From a job, open **Photo layout** from the Graphic panel, or from Prism's worksp
 - **Download**: open a Photo layout version full screen and choose **Download PNG (1080 × 1350)**. The preview and the export come from the same canvas renderer, so they match pixel for pixel.
 - **Storage limits**: if the browser's image or job storage is full, the save is refused with an explanation, nothing is half-saved, and the existing job and versions stay intact.
 
-Limits: images live only in this browser, so they don't sync between devices, and clearing site data removes them. The headline font (Chakra Petch) loads from Google Fonts; offline, both preview and export fall back to the same system font. Only local rendering is used: no image-generation API and no publishing.
+Limits: images live only in this browser, so they don't sync between devices, and clearing site data removes them. The headline font (Chakra Petch) loads from Google Fonts; offline, both preview and export fall back to the same system font. Photo layout itself is local rendering only. From Milestone 11A, Prism can also generate or edit the picture with OpenAI (see above); the logo, headline and crop are still added here, at no extra charge. No publishing.
 
 ## Deploying a preview (for example Vercel)
 
@@ -102,7 +122,7 @@ Previews: `design/previews/m10u-hq-ambient-and-handoff.mp4` (18 s: idle, a real 
 
 The sixth agent: a gunmetal robot with a cinema camera rig over its shoulder (`public/assets/agents/cue.webp`). Its tally light comes on only while a video is actually rendering. Its workspace shows the assigned job, progress, the latest output and the history.
 
-- **Brief → video:** on HQ choose **Video post (15–30 s)**, pick the platform and add a screen recording or clip (MP4, MOV or WebM, up to 100 MB). Vektor gives the post caption to Quill and the video to Cue. Cue drafts an editable **script and storyboard** from a labelled template (*demo mode, not AI*): scenes with an on-screen caption, script notes, length and the part of the clip to use. In the **video editor** you can trim (“Start here” takes the clip's current time), change scene timing, reorder, add or remove scenes, edit the on-screen captions and set the logo position. The post caption stays separate: it's Quill's, on the post page.
+- **Brief → video:** on HQ choose **Video post (15–30 s)**, pick the platform and add a screen recording or clip (MP4, MOV or WebM, up to 100 MB). Vektor gives the post caption to Quill and the video to Cue. Cue drafts an editable **script and storyboard** (with live AI from Milestone 11A, otherwise from a labelled template, *demo mode, not AI*): scenes with an on-screen caption, script notes, length and the part of the clip to use. In the **video editor** you can trim (“Start here” takes the clip's current time), change scene timing, reorder, add or remove scenes, edit the on-screen captions and set the logo position. The post caption stays separate: it's Quill's, on the post page.
 - **A real video file, made in your browser:** frames are drawn on a 1080 × 1350 canvas and recorded with the browser's MediaRecorder, in real time (a 20 s video takes about 20 s; keep HQ on screen). Captions sit in their own band, so they never cover the screen action. **MP4 (H.264)** is used where the browser can record it, otherwise **WebM**, and the label and file extension say which. WebM files get their duration written in, so other players show the right length. The draft is saved before each render. If rendering fails, or the device can't export (no MediaRecorder), nothing is lost and the editor says so. Nothing is sent to a paid or remote service.
 - **Review and publishing:** the review screen plays the whole video, phone included; the shared workspace streams it with byte ranges, which iPhone Safari needs. Each render is a new **video version**, and earlier versions stay playable and downloadable in the history. Approval, publication records and demo receipts name the exact **caption and video versions** (`visual: "video"`, `videoVersion`). A new video version after approval needs fresh approval, and puts any scheduled demo publication on hold. The calendar, job history and Reviewer all work for video posts. The Reviewer checks the logo, the stored files and whether the footage is the sample recording.
 - **Sample footage:** no real JobTrack Pro footage has been supplied. `public/samples/sample-receipt-recording.{mp4,webm}` is an **illustrative mock-up** with a red “SAMPLE RECORDING · not the real JobTrack Pro” banner on every frame. You can add it with *Use the labelled sample recording*. A matching upload is recognised by its fingerprint (`public/samples/manifest.json`) and labelled **Sample footage, not real product** wherever it's used. The Reviewer flags any video made from it. Never present it as evidence of how the real product works. Regenerate it with `node tools/make-sample-recording.mjs`.
@@ -110,7 +130,7 @@ The sixth agent: a gunmetal robot with a cinema camera rig over its shoulder (`p
 
 ## Vantage, the Marketing Analyst (milestone 9)
 
-The fifth agent: a gunmetal robot studying a chart projected from its wrist (`public/assets/agents/vantage.webp`). Click its HQ card to open its workspace, which works on a phone. Everything is **rules-based arithmetic on figures you enter**: no AI, no live connections. Platform and Metricool connections come in Milestone 11.
+The fifth agent: a gunmetal robot studying a chart projected from its wrist (`public/assets/agents/vantage.webp`). Click its HQ card to open its workspace, which works on a phone. The comparisons are **rules-based arithmetic on figures you enter**, with no live connections. From Milestone 11A an optional written AI interpretation describes the actual figures; it never invents results. Platform and Metricool connections come in Milestone 11B.
 
 - **Results belong to the exact published version.** On any published demo post, the **Results** panel shows the platform, publication date, published caption and graphic, and the version numbers. Enter running totals for **impressions**, **link clicks** and **owner-attributed enquiries**, with the date you measured them. Leave a box empty when you don't have the figure: it shows as *Not entered* (unknown), never as 0. Enter 0 only when you checked and it was zero. Each entry is a new measurement of the same post: enter 12 clicks today and 18 tomorrow, and the latest total is 18, with both kept in the history. A total lower than an earlier measurement is refused, because running totals can't go down. Recorded measurements can't be edited or removed.
 - **Comparing posts** (Analyst workspace → Compare): filter by platform, publication date and *your posts* / *sample posts*. Posts are compared only on the same platform and over the same window: the measurement taken *N* days after publishing, 7 by default. *Latest figures* is available but labelled *not comparable*. Click-through = link clicks ÷ impressions, worked out only when both are known and impressions are above zero; the formula is shown beside each figure. Every observation lists the figures behind it, and each result links to its original post.
@@ -145,7 +165,7 @@ The demo publisher's records live in `data/demo-publisher.json` in the shared wo
 **Business profile** (HQ → *Business profile*, on desktop and phone): services with descriptions, audience, proof (product names only until you add approved claims or links), the website CTA and organic-post guidance, brand rules (British English, LinkedIn hashtag rule, imagery, and the official logo, which Prism's Photo layout sets), offers (wording, start, end, active; empty at first), and fields for Nexai's **Winner's Writing Process** and **self-review checklist**, which are marked *Missing* until you paste the original wording.
 
 - Every save is a new version with an identifier (for example `pv3-9f2c1a`), a timestamp and the device. Earlier versions are kept, and the history shows what changed. In the shared workspace only the signed-in owner can edit; signed out, it's read-only.
-- Vektor's plans (template and AI), Quill's drafts and revisions (local templates, mock and the configured Anthropic provider) and Prism's visual briefs use the relevant fields. Every new caption, graphic, plan, job and review records the profile version it used. Posts from before the profile open unchanged and say so.
+- Vektor's plans (template and AI), Quill's drafts and revisions (local templates, mock and the configured OpenAI provider) and Prism's visual briefs use the relevant fields. Every new caption, graphic, plan, job and review records the profile version it used. Posts from before the profile open unchanged and say so.
 - Offers are quoted exactly, and only when the brief asks for an offer that's live on the post date.
 - **Profile changes are targeted.** After a save, the screen lists only the posts the change actually touches (for example, a post quoting an offer whose end date changed) and says which field changed and how. An unrelated edit doesn't send other posts back to review or remove approvals.
 
@@ -179,7 +199,7 @@ HQ follows the approved mockup (`design/approved-hq-mockup.png`). Vektor is the 
 | Tuesday, Thursday | Facebook |
 | Wednesday | Google Business Profile |
 
-- **Two planning methods, both labelled on the plan.** *Create template plan*: instant and free, built from your brief with Nexai's standard week structure, no AI. *Draft with AI (1 request)*: one explicit request to the server's configured provider (`QUILL_MODEL`, default Claude Sonnet 5.5). It's only offered when AI is set up and you're signed in.
+- **Two planning methods, both labelled on the plan.** *Create template plan*: instant and free, built from your brief with Nexai's standard week structure, no AI. *Draft with AI (1 request)*: one explicit request to the server's configured text model (`OPENAI_TEXT_MODEL`, default gpt-6-luna). It's only offered when live AI is set up and you're signed in as owner.
 - **Editable before anything is written.** Each day shows the platform, audience, angle, practical takeaway and visual brief. Edit any of them, or untick a day to leave it out.
 - **Confirming** creates one linked job per included day. Quill writes the caption using that day's angle, audience and takeaway; Prism starts the graphic, with the visual brief shown in the Graphic panel and the Photo layout studio. Each post keeps its own feedback, versions and approval. Approved posts appear on the calendar once, through the existing approval flow. Nothing is published.
 - **The week view** lists what needs your attention, with links straight to each post: failed captions, posts ready to review, revised captions, posts that still need a photo, and a missing official logo.
@@ -220,7 +240,8 @@ npm run test:m9      # Milestone 9: Marketing Analyst, results entry, sample dec
 npm run test:m8      # Milestone 8: demo publishing and scheduling with a test clock (servers on :4182 shared, :4183 demo mode)
 npm run test:preview # Preview/serverless boot: no settings, read-only filesystem, source entry + esbuild bundle
 npm run test:vercel-build # Vercel CLI build (node preset) from tracked files: function includes public/, boots, serves / and /index.html
-npm run test:api     # Anthropic SDK path against a local stub API with a dummy key (no network, no cost)
+npm run test:api     # OpenAI request formats, owner gate, one charge per key, usage and errors against a local stub (dummy key, no network, no cost)
+npm run test:m11a    # Milestone 11A in the browser against the OpenAI stub: labels, Prism generate/layout/edit, revisions, failures, usage
 npm start   # then, in a second terminal:
 npm run test:e2e   # Milestone 1 desktop + phone suite, demo mode on :4173
 ```
@@ -247,7 +268,7 @@ The mock provider (`QUILL_PROVIDER=mock`, `server/quill-mock.js`) returns canned
 - `server.js`: static files, Quill API, sign-in, workspace and image APIs (mutating requests same-origin only).
 - `server/auth.js` (owner password, sessions), `server/workspace.js` (job revisions, append-only checks, import, images), `server/storage.js` (atomic file writes).
 - `scripts/set-owner-password.cjs`: hidden password prompt; writes only the hash to `.env`.
-- `server/quill.js`: provider selection, prompt, Anthropic SDK call, error mapping. `server/quill-mock.js`: test fixture.
+- `server/openai.js`: OpenAI requests (Responses and Images APIs via fetch), error mapping, one-charge-per-key, usage and cost. `server/quill.js`: provider selection and the agents' prompts and schemas. `server/quill-mock.js`, `server/mock-image.js`: test fixtures.
 - `public/js/store.js`: jobs, linked tasks, versions, feedback, approvals, persistence, caption request dispatch and retry.
 - `public/js/app.js`: views (HQ stage, agent workspace, review, Photo layout studio, calendar, full-screen graphic viewer).
 - `public/js/profile.js` (profile helpers, offer dates, targeted change impact) and `public/js/review.js` (Calibre's rules).

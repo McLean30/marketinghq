@@ -3,11 +3,14 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const quill = require('./server/quill');
 const auth = require('./server/auth');
 const wsStore = require('./server/workspace');
 const storage = require('./server/storage');
 const scheduler = require('./server/scheduler');
+const ai = require('./server/openai');
+const { mockPng } = require('./server/mock-image');
 
 const ROOT = path.join(storage.APP_DIR, 'public');
 const PORT = Number(process.env.PORT) || 4173;
@@ -57,6 +60,67 @@ async function readJsonBody(req) {
 const sameOrigin = (req) => !req.headers.origin || req.headers.origin === `http://${req.headers.host}`;
 const deviceOf = (req) => (/^(phone|computer)$/.test(req.headers['x-hq-device'] || '') ? req.headers['x-hq-device'] : 'device');
 
+/* ---------- Paid AI: who may spend, once per explicit action, and what it cost ---------- */
+/** null if this request may run the configured AI provider; otherwise why not. */
+function paidGate(signedIn) {
+  const p = quill.providerInfo().provider;
+  if (p === 'demo') return { status: 503, code: 'not_configured', error: 'Live AI isn’t set up on this server (no OPENAI_API_KEY). HQ uses its local demo templates.' };
+  if (p === 'openai' && !auth.configured()) return { status: 403, code: 'owner_signin_required', error: 'Live AI is switched off here: this server has no owner sign-in, so paid generation couldn’t be protected. Run HQ with HQ_OWNER_PASSWORD_HASH set and sign in, or use demo mode.' };
+  if (auth.configured() && !signedIn) return { status: 401, code: 'signed_out', error: 'Sign in to the shared workspace to use live AI.' };
+  return null;
+}
+/**
+ * Run one paid operation: owner gate, one call per requestKey (double taps, refreshes and retries get the first
+ * result), usage recorded per job. Live calls need a requestKey; the mock accepts calls without one (older tests).
+ */
+async function paid(req, res, signedIn, kind, fn, describe) {
+  const gate = paidGate(signedIn);
+  if (gate) return sendJson(res, gate.status, { error: gate.error, code: gate.code, retryable: false });
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+  const live = quill.providerInfo().provider === 'openai';
+  const started = Date.now();
+  try {
+    const run = async () => {
+      const out = await fn(body);
+      if (out.usage) ai.record({ jobId: typeof body.jobId === 'string' ? body.jobId.slice(0, 60) : null, requestKey: body.requestKey || null, kind: kind === 'caption' ? (body.kind === 'revision' ? 'caption-revision' : 'caption') : kind === 'image' ? `image-${body.op}` : kind, ...out.usage });
+      return out;
+    };
+    const out = live || body.requestKey ? await ai.once(body.requestKey, run) : await run();
+    console.log(`[ai] ${describe(body)} via ${out.provider || 'mock'} (${out.model || '-'}) in ${Date.now() - started}ms${out.duplicate ? ' (repeat of an earlier request: no new charge)' : ''}`);
+    return sendJson(res, 200, out);
+  } catch (e) {
+    const status = e.status || 500;
+    if (e.usage) ai.record({ jobId: typeof body.jobId === 'string' ? body.jobId.slice(0, 60) : null, requestKey: typeof body.requestKey === 'string' ? body.requestKey.slice(0, 160) : null, kind: `${kind}-failed`, ...e.usage });
+    console.warn(`[ai] ${kind} failed: ${e.code || 'error'} (${status})`);
+    return sendJson(res, status, { error: e.message || 'Generation failed.', code: e.code || 'error', retryable: e.retryable !== false, usage: e.usage || null });
+  }
+}
+/** Prism: generate a new image or edit the current one, stored as a photo asset for the local Photo layout. */
+async function prismImage(body) {
+  if (!['generate', 'edit'].includes(body.op)) throw Object.assign(new Error('Unknown image operation.'), { status: 400, retryable: false });
+  if (typeof body.prompt !== 'string' || body.prompt.trim().length < 5 || body.prompt.length > 4000) throw Object.assign(new Error('Describe the image (at least a few words).'), { status: 400, retryable: false });
+  if (!auth.configured()) throw Object.assign(new Error('Image generation needs the shared workspace (owner sign-in) to store the image.'), { status: 503, retryable: false });
+  let base = null;
+  if (body.op === 'edit') {
+    const a = wsStore.readAssetBuffer(String(body.baseAssetId || ''));
+    if (!a) throw Object.assign(new Error('The image to edit isn’t in the shared workspace.'), { status: 404, retryable: false });
+    base = { mime: a.meta.type, buffer: a.buffer };
+  }
+  const prompt = `${body.prompt.trim()}\n\nA realistic photograph for a UK commercial maintenance and building services company's ${body.platform || 'social'} post. Natural light, believable UK setting and PPE. No text, captions, logos or watermarks in the image: the headline and the official logo are added afterwards.`;
+  let out;
+  if (quill.providerInfo().provider === 'mock') {
+    await new Promise((r) => setTimeout(r, Number(process.env.QUILL_MOCK_DELAY_MS || 300)));
+    out = { buffer: mockPng(`${body.op}:${body.prompt}:${body.baseAssetId || ''}`), mime: 'image/png', usage: null, model: 'mock-image', size: '512x768' };
+  } else {
+    try { out = await ai.image({ prompt, base }); } catch (e) { throw e instanceof ai.AiError ? Object.assign(e, { status: e.status }) : e; }
+  }
+  const id = `photo_${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`;
+  const name = `${body.op === 'edit' ? 'edited' : 'generated'}-${id.slice(6)}.${out.mime === 'image/png' ? 'png' : 'jpg'}`;
+  wsStore.saveAsset(id, { kind: 'photo', name, type: out.mime }, out.buffer);
+  return { assetId: id, name, mime: out.mime, size: out.size, op: body.op, provider: quill.providerInfo().provider, model: out.model, usage: out.usage };
+}
+
 async function handleApi(req, res, urlPath) {
   const method = req.method;
   if (method !== 'GET' && !sameOrigin(req)) return sendJson(res, 403, { error: 'Cross-origin requests are not allowed.' });
@@ -74,41 +138,26 @@ async function handleApi(req, res, urlPath) {
   }
   if (urlPath === '/api/auth/logout' && method === 'POST') return sendJson(res, 200, { signedIn: false }, { 'Set-Cookie': auth.logout(req) });
 
-  /* --- Quill (paid AI requests need the owner signed in once sign-in is configured) --- */
+  /* --- Live AI (OpenAI). Spending needs a signed-in owner; a server key alone never opens it to visitors. --- */
   if (urlPath === '/api/quill/status' && method === 'GET') {
     const info = quill.providerInfo();
-    const locked = auth.configured() && !signedIn && info.provider !== 'demo';
-    return sendJson(res, 200, locked ? { provider: 'demo', model: null, label: 'Local demo templates (sign in for live AI)', signInRequired: true } : info);
+    const gate = paidGate(signedIn);
+    if (gate && info.provider !== 'demo') return sendJson(res, 200, { provider: 'demo', model: null, imageModel: null, label: gate.code === 'signed_out' ? 'Local demo templates (sign in for live AI)' : 'Local demo templates (live AI needs owner sign-in on this server)', signInRequired: gate.code === 'signed_out', liveBlocked: gate.code });
+    return sendJson(res, 200, { ...info, prices: info.provider === 'openai' ? { source: ai.PRICE_SOURCE } : null });
   }
-  if (urlPath === '/api/quill/caption' && method === 'POST') {
-    if (auth.configured() && !signedIn) return sendJson(res, 401, { error: 'Sign in to the shared workspace to use AI captions.', retryable: false, code: 'signed_out' });
-    try {
-      const body = await readJsonBody(req);
-      const started = Date.now();
-      const out = await quill.generate(body);
-      console.log(`[quill] ${body.kind} for ${body.platform} via ${out.provider} (${out.model}) in ${Date.now() - started}ms`);
-      return sendJson(res, 200, out);
-    } catch (e) {
-      const status = e.status || 500;
-      console.warn(`[quill] request failed: ${e.code || 'error'} (${status})`);
-      return sendJson(res, status, { error: e.message || 'Caption generation failed.', code: e.code || 'error', retryable: e.retryable !== false });
-    }
+  if (urlPath === '/api/quill/caption' && method === 'POST') return paid(req, res, signedIn, 'caption', (b) => quill.generate(b), (b) => `${b.kind} for ${b.platform}`);
+  if (urlPath === '/api/video/script' && method === 'POST') return paid(req, res, signedIn, 'script', (b) => quill.videoScript(b), (b) => `script for ${b.platform}`);
+  if (urlPath === '/api/review/wording' && method === 'POST') return paid(req, res, signedIn, 'wording', (b) => quill.wordingReview(b), () => 'wording review');
+  if (urlPath === '/api/analyst/interpret' && method === 'POST') return paid(req, res, signedIn, 'interpret', (b) => quill.interpret(b), (b) => `interpretation of ${(b.rows || []).length} posts`);
+  if (urlPath === '/api/prism/image' && method === 'POST') return paid(req, res, signedIn, 'image', (b) => prismImage(b), (b) => `image ${b.op}`);
+  if (urlPath === '/api/ai/usage' && method === 'GET') {
+    if (!auth.configured() || !signedIn) return sendJson(res, 401, { error: 'Sign in to see AI usage.', code: 'signed_out' });
+    const jobId = new URL(req.url, 'http://x').searchParams.get('jobId');
+    return sendJson(res, 200, { entries: ai.ledger(jobId), priceSource: ai.PRICE_SOURCE });
   }
   if (urlPath === '/api/quill/mock-calls' && method === 'GET' && quill.providerInfo().provider === 'mock') return sendJson(res, 200, require('./server/quill-mock').calls);
   if (urlPath === '/api/vektor/mock-plan-calls' && method === 'GET' && quill.providerInfo().provider === 'mock') return sendJson(res, 200, require('./server/quill-mock').planCalls);
-  if (urlPath === '/api/vektor/plan' && method === 'POST') {
-    // One explicit, paid planning request. Same provider and sign-in rule as Quill captions.
-    if (auth.configured() && !signedIn) return sendJson(res, 401, { error: 'Sign in to the shared workspace to plan with AI.', retryable: false, code: 'signed_out' });
-    try {
-      const body = await readJsonBody(req);
-      const out = await quill.planWeek(body);
-      console.log(`[vektor] planned ${out.days.length} posts via ${out.provider} (${out.model})`);
-      return sendJson(res, 200, out);
-    } catch (e) {
-      console.warn(`[vektor] plan failed: ${e.code || 'error'} (${e.status || 500})`);
-      return sendJson(res, e.status || 500, { error: e.message || 'Planning failed.', retryable: e.retryable !== false });
-    }
-  }
+  if (urlPath === '/api/vektor/plan' && method === 'POST') return paid(req, res, signedIn, 'plan', (b) => quill.planWeek(b), (b) => `week plan from ${b.weekStart}`);
 
   // Which commit this deployment runs (Vercel sets VERCEL_GIT_COMMIT_SHA). Lets the smoke test refuse an older deployment.
   if (urlPath === '/api/version' && method === 'GET') return sendJson(res, 200, { commit: process.env.VERCEL_GIT_COMMIT_SHA || null, environment: process.env.VERCEL_ENV || null });

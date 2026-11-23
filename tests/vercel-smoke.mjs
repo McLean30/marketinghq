@@ -8,6 +8,8 @@
 //   EXPECT_PUBLISHING=1              also open a post and check the demo publishing controls (Milestone 8+)
 //   EXPECT_ANALYST=1                 also require the Marketing Analyst card and workspace (Milestone 9+)
 //   EXPECT_VIDEO=1                   also require the Video Creator and render a video from the labelled sample (Milestone 10+)
+//   EXPECT_OPENAI=1                  also check the preview stays in demo mode for AI: no live provider for anonymous
+//                                    visitors, the demo note and Prism's Upload photo, no paid button (Milestone 11A+)
 //   REQUIRE_SHA_MATCH=1              block unless the deployment itself reports EXPECT_SHA (a URL you passed in)
 //   EXPECT_SHA=<commit>              refuse a deployment that reports a different commit (/api/version)
 //   SMOKE_RESULT=path.json           where to write { status: pass|fail|blocked, summary, steps }
@@ -29,6 +31,7 @@ const EXPECT_REVIEWER = process.env.EXPECT_REVIEWER !== '0';
 const EXPECT_PUBLISHING = process.env.EXPECT_PUBLISHING === '1';
 const EXPECT_ANALYST = process.env.EXPECT_ANALYST === '1';
 const EXPECT_VIDEO = process.env.EXPECT_VIDEO === '1';
+const EXPECT_OPENAI = process.env.EXPECT_OPENAI === '1';
 const REQUIRE_SHA_MATCH = process.env.REQUIRE_SHA_MATCH === '1';
 const EXPECT_SHA = (process.env.EXPECT_SHA || '').trim();
 const RESULT = process.env.SMOKE_RESULT || '';
@@ -227,6 +230,18 @@ try {
     }
   }
 
+  if (EXPECT_OPENAI) {
+    // Milestone 11A: paid AI must never be open to an anonymous visitor. Reads status only; makes no AI request.
+    const q = await page.evaluate(async () => (await fetch('api/quill/status').then((r) => r.json()).catch(() => ({}))));
+    if (q.provider === 'openai') throw new Failed('This preview reports live OpenAI to an anonymous visitor. Paid generation must need owner sign-in.');
+    if (q.provider !== 'demo') throw new Failed(`AI status on the preview isn’t demo mode (got ${JSON.stringify(q.provider ?? null)}).`);
+    await page.goto(new URL('#/', page.url()).toString());
+    try { await page.waitForSelector('[data-testid="quill-mode"]', { timeout: 10000 }); } catch { throw new Failed('HQ’s AI mode note didn’t appear.'); }
+    const note = await page.textContent('[data-testid="quill-mode"]');
+    if (!/Demo mode|Sign in as the owner/.test(note) || /ANTHROPIC/.test(note)) throw new Failed(`HQ’s AI mode note is wrong for a demo preview: “${note.trim()}”`);
+    step(true, `AI is in demo mode for visitors (status ${q.provider}${q.liveBlocked ? `, live blocked: ${q.liveBlocked}` : ''}); the note says so`);
+  }
+
   if (EXPECT_PUBLISHING) {
     // 4. Open a post and check the demo publishing controls render (no confirmation is given).
     const q = await page.evaluate(async () => (await fetch('api/quill/status').then((r) => r.json()).catch(() => ({}))));
@@ -241,6 +256,13 @@ try {
     if (!jobId) throw new Failed('A new post couldn’t be created in demo mode.');
     await page.goto(new URL(`#/job/${jobId}`, page.url()).toString());
     try { await page.waitForSelector('[data-approve]:not([disabled])', { timeout: 30000 }); } catch { throw new Failed('The post’s caption and graphic never became ready for review.'); }
+    if (EXPECT_OPENAI) {
+      const tools = await page.locator('[data-testid="prism-image-tools"]').count();
+      const paidButtons = await page.locator('[data-testid="generate-image"], [data-testid="edit-image"]').count();
+      if (!tools || !(await page.locator('[data-testid="upload-photo"]').count())) throw new Failed('Prism’s image tools (Upload photo) are missing from the post.');
+      if (paidButtons) throw new Failed('Prism offers paid image generation on the demo preview.');
+      step(true, 'Prism offers Upload photo and no paid image button on the demo preview');
+    }
     await page.click('[data-approve]');
     try { await page.waitForSelector('[data-testid="publish-panel"] [data-testid="publish-now"]', { timeout: 10000 }); } catch { throw new Failed('After approval, the publishing controls didn’t appear.'); }
     const prev = await page.locator('[data-testid="pub-start"] [data-testid="pub-preview"]').innerText();

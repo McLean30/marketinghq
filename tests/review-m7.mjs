@@ -26,7 +26,7 @@ fs.mkdirSync(PREV, { recursive: true });
 const clean = (page, on) => page.evaluate((v) => { let st = document.getElementById('shot-style'); if (v && !st) { st = document.createElement('style'); st.id = 'shot-style'; st.textContent = '.topbar, .approve-bar, #toast { visibility: hidden !important; }'; document.head.append(st); } if (!v && st) st.remove(); }, on);
 const assert = (c, m) => { if (!c) throw new Error(`FAIL: ${m}`); console.log(`  ok  ${m}`); };
 
-const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_DATE: '2026-12-01', QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '400', ANTHROPIC_API_KEY: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
+const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_DATE: '2026-12-01', QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '400', OPENAI_API_KEY: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise((res) => { let o = ''; server.stdout.on('data', (d) => { o += d; if (/Shared workspace: on/.test(o)) res(); }); });
 
 const ws = (page) => page.evaluate(async () => (await fetch('api/workspace')).json());

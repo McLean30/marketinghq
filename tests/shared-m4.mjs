@@ -27,7 +27,7 @@ const assert = (c, m) => { if (!c) throw new Error(`FAIL: ${m}`); console.log(` 
 
 let server;
 async function startServer() {
-  server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: HASH, QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '500', ANTHROPIC_API_KEY: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
+  server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: HASH, QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '500', OPENAI_API_KEY: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
   let out = '';
   await new Promise((res) => server.stdout.on('data', (d) => { out += d; if (/Shared workspace: on/.test(out)) res(); }));
 }

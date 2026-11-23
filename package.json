@@ -1,14 +1,14 @@
 {
   "name": "nexai-marketing-hq",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "private": true,
-  "description": "Nexai Digital's private internal AI marketing dashboard (milestone 7: business profile and Brand & Quality Reviewer).",
+  "description": "Nexai Digital's private internal AI marketing dashboard (milestone 11A: live OpenAI content creation; publishing simulated).",
   "scripts": {
     "start": "node server.js",
     "start:env": "node --env-file=.env server.js",
     "test:e2e": "node tests/acceptance.mjs",
     "test:m2": "node tests/quill-m2.mjs",
-    "test:api": "node tests/anthropic-path.mjs",
+    "test:api": "node tests/openai-path.mjs",
     "test:m3": "node tests/prism-m3.mjs",
     "fixtures": "node tests/make-fixtures.cjs",
     "set-password": "node scripts/set-owner-password.cjs",
@@ -23,10 +23,8 @@
     "test:m8": "node tests/publishing-m8.mjs",
     "test:m9": "node tests/analyst-m9.mjs",
     "test:m10": "node tests/video-m10.mjs",
-    "test:team": "node tests/team-update.mjs"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^1.12.0"
+    "test:team": "node tests/team-update.mjs",
+    "test:m11a": "node tests/openai-m11a.mjs"
   },
   "engines": {
     "node": ">=20.6"

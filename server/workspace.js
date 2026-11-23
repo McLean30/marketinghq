@@ -267,6 +267,10 @@ function readAsset(id) {
   return { meta, stream: (opts) => fs.createReadStream(assetPath(id), opts) };
 }
 
+function readAssetBuffer(id) {
+  const meta = ASSET_ID.test(id) ? readJson(metaPath(id), null) : null;
+  return meta ? { meta, buffer: fs.readFileSync(assetPath(id)) } : null;
+}
 const hasAsset = (id) => ASSET_ID.test(id) && fs.existsSync(metaPath(id));
 
-module.exports = { snapshot, getJob, putJob, putPlan, putProfile, putBrand, importBundles, saveAsset, readAsset, hasAsset, WsError, MAX_ASSET, MAX_VIDEO };
+module.exports = { snapshot, getJob, putJob, putPlan, putProfile, putBrand, importBundles, saveAsset, readAsset, readAssetBuffer, hasAsset, WsError, MAX_ASSET, MAX_VIDEO };

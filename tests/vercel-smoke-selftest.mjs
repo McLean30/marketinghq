@@ -66,16 +66,23 @@ const stubs = [
       res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || '' }); res.end(body);
     });
   }),
+  // A build that reports live OpenAI to an anonymous visitor (paid generation exposed).
+  await stub(4209, (req, res) => {
+    if (req.url.startsWith('/api/quill/status')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"provider":"openai","model":"gpt-6-luna"}'); return; }
+    fetch(`http://127.0.0.1:4197${req.url}`).then(async (r) => { res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || '' }); res.end(Buffer.from(await r.arrayBuffer())); });
+  }),
   await stub(4202, (req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(indexHtml.replace('<script type="module" src="js/app.js"></script>', '<script>throw new Error("Startup exploded")</script>')); }), // startup error
 ];
 try {
   console.log('\n== Smoke test verdicts against local stand-ins ==');
-  let r = await run('http://127.0.0.1:4197/', { EXPECT_REVIEWER: '1', EXPECT_PUBLISHING: '1', EXPECT_ANALYST: '1', EXPECT_VIDEO: '1', EXPECT_SHA: 'a'.repeat(40) });
+  let r = await run('http://127.0.0.1:4197/', { EXPECT_REVIEWER: '1', EXPECT_PUBLISHING: '1', EXPECT_ANALYST: '1', EXPECT_VIDEO: '1', EXPECT_OPENAI: '1', EXPECT_SHA: 'a'.repeat(40) });
   assert(r.code === 0 && /RESULT: PASS/.test(r.out) && /Vektor's workspace opened/.test(r.out) && /Business profile opened/.test(r.out) && /publishing controls rendered/.test(r.out) && /Marketing Analyst workspace opened/.test(r.out) && /Video Creator rendered and played a video/.test(r.out), 'Working app (preview conditions), including publishing, the Analyst and a video render → pass');
   r = await run('http://127.0.0.1:4197/', { EXPECT_SHA: 'a'.repeat(40), REQUIRE_SHA_MATCH: '1' });
   assert(r.code === 2 && /doesn’t report which commit/.test(r.out), 'A URL passed in that can’t prove its commit → blocked, not pass');
   r = await run('http://127.0.0.1:4207/', { EXPECT_SHA: 'a'.repeat(40) });
   assert(r.code === 1 && /older or different deployment/.test(r.out), 'Deployment reporting a different commit → fail');
+  r = await run('http://127.0.0.1:4209/', { EXPECT_OPENAI: '1' });
+  assert(r.code === 1 && /live OpenAI to an anonymous visitor/.test(r.out), 'Live OpenAI reported to an anonymous visitor → fail');
   r = await run('http://127.0.0.1:4208/', { EXPECT_PUBLISHING: '1' });
   assert(r.code === 1 && /publishing controls didn’t appear/.test(r.out), 'Approved post with no publishing controls → fail');
   r = await run('http://127.0.0.1:4198/');

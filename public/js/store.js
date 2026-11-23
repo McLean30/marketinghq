@@ -78,7 +78,7 @@ export async function loadQuillProvider() {
     const r = await fetch('api/quill/status', { cache: 'no-store' });
     if (r.ok) {
       const info = await r.json();
-      quill = { provider: info.provider === 'live' ? 'anthropic' : info.provider, model: info.model, label: info.label, signInRequired: !!info.signInRequired, checked: true };
+      quill = { provider: info.provider, model: info.model, imageModel: info.imageModel || null, label: info.label, signInRequired: !!info.signInRequired, liveBlocked: info.liveBlocked || null, checked: true };
     }
   } catch {
     quill = { ...quill, checked: true };
@@ -440,7 +440,7 @@ export async function createJob({ id, brief, platform, targetDate, title, planId
         instruction: agentId === 'copywriter' ? `Write a ${platform} ${job.kind === 'video' ? 'post caption (the text that sits with the video, not the words shown in it)' : 'caption'} with relevant hashtags for: ${job.brief}` : agentId === 'video' ? `Script, storyboard and render a 15–30 second ${platform} video from the supplied clip for: ${job.brief}` : `Design a branded ${platform} graphic for: ${job.brief}`,
         createdAt: now,
         versions: [],
-        pending: { kind: 'initial', engine: agentId === 'copywriter' ? copyEngine() : 'demo', startAt: job.delegatedAt, readyAt: job.delegatedAt + (agentId === 'copywriter' ? COPY_MS : GRAPHIC_MS) },
+        pending: { kind: 'initial', engine: agentId === 'copywriter' || agentId === 'video' ? copyEngine() : 'demo', startAt: job.delegatedAt, readyAt: job.delegatedAt + (agentId === 'copywriter' ? COPY_MS : GRAPHIC_MS) },
       };
       if (agentId === 'video') { if (id) task.id = `task_${job.id.slice(4)}v`; task.clip = clip || null; task.draft = null; }
       job.taskIds[task.type] = task.id;
@@ -642,7 +642,7 @@ async function dispatchAi(taskId, now) {
       await commit(task.jobId, () => {
         const t = getTask(taskId);
         if (!t?.pending || t.pending.error || t.pending.requestedAt !== p.requestedAt) return false;
-        t.pending.error = { message: mineLost ? 'The page was refreshed before Quill replied. Your work is saved. Retry to send the request again.' : 'Quill’s reply never arrived. Your work is saved. Retry to send the request again.', retryable: true, at: Date.now() };
+        t.pending.error = { message: mineLost ? `The page was refreshed before ${AGENTS[t.agent]?.name || 'the agent'} replied. Your work is saved. Retry to fetch the reply (no second charge).` : `${AGENTS[t.agent]?.name || 'The agent'}’s reply never arrived. Your work is saved. Retry to fetch it (no second charge).`, retryable: true, at: Date.now() };
         return true;
       }, { background: true });
       inFlight.delete(taskId);
@@ -655,14 +655,20 @@ async function dispatchAi(taskId, now) {
     const t = getTask(taskId);
     if (!t?.pending || t.pending.error || t.pending.requestedAt || t.pending.engine !== 'ai') return false;
     t.pending.requestedAt = claimedAt;
+    // One request key per action, kept across retries: if a reply was lost, the server returns the first result
+    // instead of charging again.
+    t.pending.requestKey = t.pending.requestKey || `${taskId}:${claimedAt}`;
     t.pending.requestedBy = DEVICE;
     return true;
   }, { background: true });
   const live = getTask(taskId);
   if (!claim.ok || claim.noop || live?.pending?.requestedAt !== claimedAt) { inFlight.delete(taskId); return; }
   const job = getJob(live.jobId);
+  if (live.type === 'video') return dispatchScript(taskId, live, job, claimedAt);
   const prev = currentVersion(live);
   const body = {
+    requestKey: live.pending.requestKey,
+    jobId: job.id,
     kind: live.pending.kind === 'revision' ? 'revision' : 'draft',
     brief: job.brief,
     platform: job.platform,
@@ -691,9 +697,10 @@ async function dispatchAi(taskId, now) {
     if (outcome.data) {
       const d = outcome.data;
       const n = t.versions.length + 1;
-      t.versions.push({ n, content: { text: d.caption, opts: null }, notes: d.notes ? [`v${n}: ${d.notes}`] : [], feedback: t.pending.feedback || null, by: AGENTS.copywriter.name, simulated: d.provider !== 'anthropic', source: d.provider, model: d.model, createdAt: Date.now(), profileVersion: usedProfile });
+      t.versions.push({ n, content: { text: d.caption, opts: null }, notes: d.notes ? [`v${n}: ${d.notes}`] : [], feedback: t.pending.feedback || null, by: AGENTS.copywriter.name, simulated: d.provider !== 'openai', source: d.provider, model: d.model, usage: d.usage || null, createdAt: Date.now(), profileVersion: usedProfile });
+      noteUsage(getJob(t.jobId), t.pending.requestKey, t.pending.kind === 'revision' ? 'Caption revision' : 'Caption', d);
       t.pending = null;
-      log(t.jobId, 'copywriter', `Caption v${n} delivered for review (${d.provider === 'anthropic' ? 'AI-generated' : 'mock'}).`);
+      log(t.jobId, 'copywriter', `Caption v${n} delivered for review (${d.provider === 'openai' ? `live AI, ${d.model}` : 'mock'}).`);
     } else {
       t.pending.error = { ...outcome.error, at: Date.now() };
       log(t.jobId, 'copywriter', `Caption request failed: ${outcome.error.message}`);
@@ -710,7 +717,8 @@ export async function retryTask(taskId) {
   const res = await commit(task.jobId, () => {
     const t = getTask(taskId);
     if (!t?.pending?.error) return false;
-    Object.assign(t.pending, { error: null, requestedAt: null, requestedBy: null, engine: t.type === 'copy' ? copyEngine() : 'demo', startAt: Date.now(), readyAt: Date.now() + REVISION_MS });
+    // The request key is kept, so a retry after a lost reply can't be charged twice (see dispatchAi).
+    Object.assign(t.pending, { error: null, requestedAt: null, requestedBy: null, engine: t.type === 'copy' || t.type === 'video' ? copyEngine() : 'demo', startAt: Date.now(), readyAt: Date.now() + REVISION_MS });
     return true;
   }, { action: 'retry' });
   if (res.ok) tick();
@@ -737,6 +745,9 @@ export function cancelFailedRevision(taskId) {
  */
 export async function saveGraphicVersion(taskId, content, notes, baseVersions) {
   const task = getTask(taskId);
+  // Re-laying out an AI image keeps its origin (the layout is yours; the picture is still the model's).
+  const ai = task && [...task.versions].reverse().find((v) => v.content.photoId === content.photoId && v.content.photoOrigin);
+  if (ai) content = { ...content, photoOrigin: ai.content.photoOrigin, generated: ai.content.generated };
   if (!task || task.type !== 'graphic') return { ok: false, error: 'Graphic task not found.' };
   if (task.pending) return { ok: false, error: 'Prism is still working on this graphic. Wait for it to finish, then save.' };
   if (ws.mode === 'shared' && ws.updates[task.jobId]) {
@@ -850,19 +861,19 @@ function restorePlan(planId, plan) {
   notify();
 }
 
-export async function createPlan({ weekStart, brief, method, days, model }) {
-  const plan = { id: uid('plan'), weekStart, brief: brief.trim(), method, model: model || null, status: 'draft', createdAt: Date.now(), days, profileVersion: profileRef(), tone: toneFor(brief) };
+export async function createPlan({ weekStart, brief, method, days, model, usage }) {
+  const plan = { id: uid('plan'), weekStart, brief: brief.trim(), method, model: model || null, usage: usage || null, status: 'draft', createdAt: Date.now(), days, profileVersion: profileRef(), tone: toneFor(brief) };
   const res = await commitPlan(plan.id, () => { if (getPlan(plan.id)) return false; state.plans.unshift(plan); return true; });
   return res.ok ? { ok: true, plan: getPlan(plan.id) } : res;
 }
 
 /** One explicit, paid request: Vektor drafts the week with the server's configured AI provider. */
-export async function requestAiPlan(brief, weekStart, days) {
+export async function requestAiPlan(brief, weekStart, days, requestKey) {
   let r;
   try {
-    r = await fetch('api/vektor/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify({ brief, weekStart, days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName })), profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null, tone: toneFor(brief), voice: voiceOf(currentProfile()?.data) }) });
+    r = await fetch('api/vektor/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify({ requestKey, brief, weekStart, days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName })), profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null, tone: toneFor(brief), voice: voiceOf(currentProfile()?.data) }) });
   } catch {
-    return { ok: false, error: 'Can’t reach the HQ server. Nothing was charged; try again when connected.' };
+    return { ok: false, error: 'Can’t reach the HQ server. Your brief is kept here; try again when connected (a retry won’t be charged twice).' };
   }
   let data = {};
   try { data = await r.json(); } catch { /* ignore */ }
@@ -1307,3 +1318,158 @@ function seedVoice() {
   saveLocal(false);
 }
 export const activeVoice = () => voiceOf(currentProfile()?.data);
+
+
+/* ---------- Live AI (OpenAI): usage per job, Cue's script, Prism's images, Calibre and Vantage extras ---------- */
+export const liveAi = () => quill.provider === 'openai' || quill.provider === 'mock';
+export const newRequestKey = (prefix) => `${prefix}:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+/** Record a paid call's usage on the job (once per request key, so a repeated reply isn't counted twice). */
+function noteUsage(job, requestKey, what, d) {
+  if (!job || !d) return;
+  job.aiUsage = job.aiUsage || [];
+  if (requestKey && job.aiUsage.some((u) => u.requestKey === requestKey)) return;
+  job.aiUsage.push({ at: Date.now(), requestKey: requestKey || null, what, provider: d.provider || 'mock', model: d.model || null, ...(d.usage || {}) });
+}
+export function jobUsage(job) {
+  const rows = job.aiUsage || [];
+  const known = rows.filter((r) => typeof r.estCostUsd === 'number');
+  return { rows, totalUsd: known.reduce((a, r) => a + r.estCostUsd, 0), tokens: rows.reduce((a, r) => a + (r.totalTokens || 0), 0), unpriced: rows.length - known.length };
+}
+
+async function postJson(path, body) {
+  let r;
+  try { r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify(body) }); } catch { return { ok: false, error: 'Can’t reach the HQ server. Your work is saved; try again when you’re connected.', retryable: true, lost: true }; }
+  let data = {};
+  try { data = await r.json(); } catch { /* ignore */ }
+  if (r.status === 401) { ws.signedIn = false; ws.status = 'signed_out'; notify(); }
+  return r.ok ? { ok: true, data } : { ok: false, error: data.error || `Request failed (${r.status}).`, retryable: data.retryable !== false, code: data.code, usage: data.usage || null };
+}
+
+/** Cue: script and storyboard from the text model (claimed like a caption, so it runs once). */
+async function dispatchScript(taskId, task, job, claimedAt) {
+  const res = await postJson('api/video/script', {
+    requestKey: task.pending.requestKey, jobId: job.id, brief: job.brief, platform: job.platform, clipDuration: task.clip?.duration || 20,
+    profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null, tone: job.tone || toneFor(job.brief), voice: voiceOf(currentProfile()?.data),
+  });
+  if (unloading) { inFlight.delete(taskId); return; }
+  await commit(job.id, () => {
+    const t = getTask(taskId);
+    if (!t?.pending || t.pending.requestedAt !== claimedAt) return false;
+    if (res.ok) {
+      const d = res.data;
+      const base = templateStoryboard(getJob(t.jobId), t.clip);
+      t.draft = { ...base, scenes: d.scenes.map((sc, i) => ({ id: `sc${Date.now().toString(36)}${i}`, ...sc })), label: d.provider === 'openai' ? `AI script and storyboard (live, ${d.model})` : 'Mock script and storyboard (test mode, not AI)', source: d.provider, model: d.model, usage: d.usage || null, savedAt: Date.now() };
+      noteUsage(getJob(t.jobId), t.pending.requestKey, 'Video script and storyboard', d);
+      t.pending = null;
+      log(t.jobId, 'video', `Script and storyboard ready (${d.provider === 'openai' ? `live AI, ${d.model}` : 'mock'}). Edit it, then render.`);
+    } else {
+      t.pending.error = { message: res.error, retryable: res.retryable, at: Date.now() };
+      log(t.jobId, 'video', `Script request failed: ${res.error}`);
+    }
+    return true;
+  }, { background: true });
+  inFlight.delete(taskId);
+}
+/** After a failed script request: use the labelled template storyboard instead (no charge). */
+export function useTemplateStoryboard(taskId) {
+  const task = getTask(taskId);
+  if (!task || task.type !== 'video' || !task.pending?.error) return Promise.resolve({ ok: false, noop: true });
+  return commit(task.jobId, () => {
+    const t = getTask(taskId);
+    if (!t?.pending?.error) return false;
+    t.draft = { ...templateStoryboard(getJob(t.jobId), t.clip), savedAt: Date.now() };
+    t.pending = null;
+    log(t.jobId, 'video', 'Used the template storyboard instead (demo mode, not AI).');
+    return true;
+  }, { action: 'template' });
+}
+
+/**
+ * Prism: generate a new image or edit the current one (one paid request per tap), then save it as a Photo layout
+ * version with the workspace logo and the current headline. Layout changes afterwards are local and free.
+ */
+const imaging = new Set();
+export const isImaging = (taskId) => imaging.has(taskId) || !!getTask(taskId)?.imageRequest?.inFlight;
+export async function prismImage(taskId, { op, prompt, scene }) {
+  const task = getTask(taskId);
+  if (!task || task.type !== 'graphic') return { ok: false, error: 'Graphic task not found.' };
+  if (task.pending) return { ok: false, error: 'Prism is still working on this graphic. Wait for it to finish.' };
+  if (imaging.has(taskId)) return { ok: false, busy: true }; // a double tap is one request
+  const cur = currentVersion(task);
+  const baseAssetId = op === 'edit' ? cur?.content?.photoId : null;
+  if (op === 'edit' && !baseAssetId) return { ok: false, error: 'There’s no photo to edit yet. Generate or upload one first.' };
+  imaging.add(taskId);
+  notify();
+  try {
+    // Reuse the key of an unfinished request for the same action (a refresh or retry), else make a new one.
+    const prior = task.imageRequest && !task.imageRequest.doneAt && task.imageRequest.op === op && task.imageRequest.prompt === prompt.trim() ? task.imageRequest : null;
+    const requestKey = prior?.requestKey || newRequestKey(`${taskId}:img`);
+    const claimed = await commit(task.jobId, () => { const t = getTask(taskId); t.imageRequest = { requestKey, op, prompt: prompt.trim(), scene: scene || null, at: Date.now(), by: DEVICE, inFlight: true }; return true; }, { action: 'image' });
+    if (!claimed.ok) return claimed;
+    const job = getJob(task.jobId);
+    const res = await postJson('api/prism/image', { requestKey, jobId: job.id, op, prompt: prompt.trim(), platform: job.platform, baseAssetId });
+    let version;
+    const saved = await commit(task.jobId, () => {
+      const t = getTask(taskId);
+      if (!res.ok) { t.imageRequest = { ...t.imageRequest, inFlight: false, error: res.error }; noteUsage(getJob(t.jobId), `${requestKey}:failed`, `Image ${op} (failed)`, res.usage ? { provider: quill.provider, model: res.usage.model, usage: res.usage } : null); return true; }
+      const d = res.data;
+      const last = [...t.versions].reverse().find((v) => v.content.mode === 'photo');
+      const lastSim = [...t.versions].reverse().find((v) => v.content.mode !== 'photo');
+      const n = t.versions.length + 1;
+      version = {
+        n, by: 'Prism with live AI', simulated: d.provider !== 'openai', source: d.provider, model: d.model, usage: d.usage || null, createdAt: Date.now(), profileVersion: profileRef(), feedback: op === 'edit' ? prompt.trim() : null,
+        content: {
+          mode: 'photo', photoId: d.assetId, photoName: d.name, photoOrigin: d.provider === 'openai' ? 'ai' : 'mock', generated: { op, prompt: prompt.trim(), scene: scene || null, model: d.model, provider: d.provider, requestKey },
+          logoId: state.brand?.logoId || last?.content.logoId || null, logoName: state.brand?.logoName || last?.content.logoName || null,
+          headline: last?.content.headline || (lastSim?.content.headline || []).join(' ') || '', headlinePos: last?.content.headlinePos || 'bottom', crop: { zoom: 1, fx: 0.5, fy: 0.5 }, logoScale: last?.content.logoScale || 1,
+        },
+        notes: [op === 'edit' ? `v${n}: Image edited with ${d.model}: “${prompt.trim()}”. Logo, headline and crop are added locally.` : `v${n}: Image generated with ${d.model}${scene ? ` for “${scene}”` : ''}. Logo, headline and crop are added locally.`],
+      };
+      t.versions.push(version);
+      t.imageRequest = { ...t.imageRequest, inFlight: false, doneAt: Date.now(), version: n };
+      noteUsage(getJob(t.jobId), requestKey, op === 'edit' ? 'Image edit' : 'Image', d);
+      log(t.jobId, 'designer', `Graphic v${n}: ${op === 'edit' ? 'edited' : 'generated'} image (${d.provider === 'openai' ? `live AI, ${d.model}` : 'mock'}).`);
+      return true;
+    }, { action: 'image', background: true });
+    if (!res.ok) return { ok: false, error: res.error };
+    return saved.ok ? { ok: true, version } : saved;
+  } finally {
+    imaging.delete(taskId);
+    notify();
+  }
+}
+
+/** Calibre: an optional AI wording review of the current caption (advisory; the rule checks still decide). */
+const wording = new Set();
+export const isWordingReviewing = (jobId) => wording.has(jobId);
+export async function aiWordingReview(jobId) {
+  const job = getJob(jobId);
+  if (!job || wording.has(jobId)) return { ok: false, busy: true };
+  const { copy } = jobTasks(job);
+  const cv = currentVersion(copy);
+  if (!cv) return { ok: false, error: 'There’s no caption to review yet.' };
+  wording.add(jobId);
+  notify();
+  try {
+    const requestKey = `${jobId}:wr:${cv.n}:${(job.wordingReviews || []).length + 1}`;
+    const res = await postJson('api/review/wording', { requestKey, jobId, caption: cv.content.text, platform: job.platform, brief: job.brief, tone: job.tone || toneFor(job.brief), voice: voiceOf(currentProfile()?.data), profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null });
+    if (!res.ok) return res;
+    const d = res.data;
+    return await commit(jobId, () => {
+      const j = getJob(jobId);
+      j.wordingReviews = [...(j.wordingReviews || []), { n: (j.wordingReviews || []).length + 1, at: Date.now(), copyVersion: cv.n, provider: d.provider, model: d.model, summary: d.summary, suggestions: d.suggestions, usage: d.usage || null }];
+      noteUsage(j, requestKey, 'AI wording review', d);
+      log(jobId, 'reviewer', `AI wording review of caption v${cv.n}: ${d.suggestions.length} suggestion(s) (${d.provider === 'openai' ? d.model : 'mock'}).`);
+      return true;
+    }, { action: 'wording' });
+  } finally {
+    wording.delete(jobId);
+    notify();
+  }
+}
+
+/** Vantage: an optional written interpretation of the actual figures (numbers are checked server-side). */
+export async function aiInterpret(rows, window) {
+  return postJson('api/analyst/interpret', { requestKey: newRequestKey('interpret'), rows, window });
+}

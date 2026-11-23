@@ -18,7 +18,7 @@ fs.rmSync(VID, { recursive: true, force: true });
 const assert = (c, m) => { if (!c) throw new Error(`FAIL: ${m}`); console.log(`  ok  ${m}`); };
 const BRIEF = 'Create a LinkedIn post for UK commercial maintenance directors about finished jobs still waiting on engineer photos before they can be invoiced.';
 
-const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '2500', ANTHROPIC_API_KEY: '', HQ_OWNER_PASSWORD_HASH: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
+const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '2500', OPENAI_API_KEY: '', HQ_OWNER_PASSWORD_HASH: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise((res) => server.stdout.on('data', (d) => /running at/.test(d) && res()));
 
 const anim = (page, sel) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).animationName);

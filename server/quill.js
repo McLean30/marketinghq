@@ -1,47 +1,34 @@
-// Quill (Copywriter) caption generation. Runs server-side only: credentials never reach the browser.
+// HQ's content generation: Vektor's plans, Quill's captions, Cue's scripts, Calibre's optional wording review and
+// Vantage's optional interpretation. Runs server-side only: OPENAI_API_KEY never reaches the browser.
 //
 // Provider is chosen at start-up (see providerInfo()):
-//   live  - Anthropic API via the official SDK. Enabled when ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN /
-//           ANTHROPIC_PROFILE) is set in the server environment, or QUILL_PROVIDER=anthropic.
-//   mock  - deterministic canned responses for repeatable tests (QUILL_PROVIDER=mock). Never used by default.
-//   demo  - no provider: the browser falls back to the Milestone 1 local templates, labelled as simulated.
+//   openai - OpenAI (server/openai.js): text with OPENAI_TEXT_MODEL (default gpt-6-luna), images with
+//            OPENAI_IMAGE_MODEL (default gpt-image-2.6-flare). On when OPENAI_API_KEY is set (or AI_PROVIDER=openai).
+//            Spending also needs a signed-in owner: see paidGate() in server.js.
+//   mock   - deterministic canned responses for repeatable tests (AI_PROVIDER=mock). Never used by default.
+//   demo   - no provider: the browser uses the local templates, labelled as simulated.
 
-const Anthropic = require('@anthropic-ai/sdk').default;
 const mock = require('./quill-mock');
+const ai = require('./openai');
 const V = require('../public/js/voice.js'); // the same tone rules the browser uses
-
-// Model and effort are server-side settings. Default: Claude Sonnet 5.5 at medium effort, a cost-effective
-// choice for short social captions (verified against platform.claude.com docs, November 2026).
-// Examples: QUILL_MODEL=claude-opus-5-5 QUILL_EFFORT=high for harder briefs; QUILL_MODEL=claude-haiku-5-5 for lowest cost.
-const MODEL = (process.env.QUILL_MODEL || 'claude-sonnet-5-5').trim();
-const EFFORT = (process.env.QUILL_EFFORT || 'medium').trim().toLowerCase();
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-if (!/^claude-[a-z0-9-]+$/.test(MODEL)) throw new Error(`QUILL_MODEL "${MODEL}" is not a valid Claude model ID (e.g. claude-sonnet-5-5).`);
-if (!EFFORTS.includes(EFFORT)) throw new Error(`QUILL_EFFORT must be one of ${EFFORTS.join(', ')}.`);
 const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X', 'Google Business Profile'];
 
 function resolveProvider() {
-  const forced = (process.env.QUILL_PROVIDER || '').toLowerCase();
+  const forced = (process.env.AI_PROVIDER || process.env.QUILL_PROVIDER || '').toLowerCase();
   if (forced === 'mock') return 'mock';
   if (forced === 'demo' || forced === 'off') return 'demo';
-  if (forced === 'anthropic') return 'live';
-  const hasCreds = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_PROFILE'].some((k) => (process.env[k] || '').trim());
-  return hasCreds ? 'live' : 'demo';
+  if (forced === 'openai') return 'openai';
+  return ai.hasKey() ? 'openai' : 'demo';
 }
-
 const PROVIDER = resolveProvider();
-let client = null;
-if (PROVIDER === 'live') {
-  // Zero-arg constructor resolves credentials from the environment; we never read or log the key ourselves.
-  client = new Anthropic({ timeout: 120 * 1000, maxRetries: 2 });
-}
 
 function providerInfo() {
   return {
     provider: PROVIDER,
-    model: PROVIDER === 'live' ? MODEL : PROVIDER === 'mock' ? 'mock-quill' : null,
-    effort: PROVIDER === 'live' ? EFFORT : null,
-    label: PROVIDER === 'live' ? 'Anthropic API' : PROVIDER === 'mock' ? 'Mock provider (tests)' : 'Local demo templates',
+    model: PROVIDER === 'openai' ? ai.TEXT_MODEL : PROVIDER === 'mock' ? 'mock-quill' : null,
+    imageModel: PROVIDER === 'openai' ? ai.IMAGE_MODEL : PROVIDER === 'mock' ? 'mock-image' : null,
+    effort: PROVIDER === 'openai' ? ai.EFFORT : null,
+    label: PROVIDER === 'openai' ? `OpenAI (${ai.TEXT_MODEL}, images ${ai.IMAGE_MODEL})` : PROVIDER === 'mock' ? 'Mock provider (tests)' : 'Local demo templates',
   };
 }
 
@@ -176,47 +163,21 @@ class QuillError extends Error {
   }
 }
 
-async function callAnthropic(req) {
-  let response;
-  try {
-    // No `fallbacks`: only the configured model handles a brief. A refusal is reported back, not rerouted.
-    // `thinking` is omitted, so current models run adaptive thinking; effort is the cost/depth control.
-    response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 16000,
-      output_config: { effort: EFFORT, format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: buildUserMessage(req) }],
-    });
-  } catch (e) {
-    if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError)
-      throw new QuillError('The Anthropic API rejected the server credentials. Check ANTHROPIC_API_KEY on the server.', { status: 502, retryable: false, code: 'auth' });
-    if (e instanceof Anthropic.RateLimitError) throw new QuillError('The Anthropic API is rate limiting requests. Wait a moment, then retry.', { code: 'rate_limit' });
-    if (e instanceof Anthropic.BadRequestError) throw new QuillError('The caption request was rejected as invalid.', { status: 502, retryable: false, code: 'bad_request' });
-    if (e instanceof Anthropic.APIConnectionError) throw new QuillError('Could not reach the Anthropic API. Check the connection, then retry.', { code: 'connection' });
-    if (e instanceof Anthropic.APIError) throw new QuillError(`The Anthropic API returned an error (${e.status ?? 'unknown'}). Retry in a moment.`, { code: 'api_error' });
-    throw new QuillError('Caption generation failed unexpectedly. Retry in a moment.', { code: 'unknown' });
-  }
-  if (response.stop_reason === 'refusal') throw new QuillError(`${MODEL} declined this request. Reword the brief or feedback, or choose another model in QUILL_MODEL.`, { retryable: false, code: 'refusal' });
-  if (response.stop_reason === 'max_tokens') throw new QuillError('The caption was cut off before it finished. Retry.', { code: 'truncated' });
-  const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new QuillError('The model response could not be read. Retry.', { code: 'parse' });
-  }
-  if (!parsed.caption || typeof parsed.caption !== 'string') throw new QuillError('The model returned an empty caption. Retry.', { code: 'empty' });
-  return { caption: parsed.caption.trim(), notes: String(parsed.notes || '').trim(), model: response.model || MODEL };
+/** Map an OpenAI client error to Quill's error (keeps status, retryability and a useful message). */
+const asQuillError = (e) => (e instanceof ai.AiError ? Object.assign(new QuillError(e.message, { status: e.status, retryable: e.retryable, code: e.code }), { usage: e.usage }) : new QuillError('Generation failed unexpectedly. Your work is saved; try again.', { code: 'unknown' }));
+
+async function liveText(opts) {
+  try { return await ai.textJson(opts); } catch (e) { throw asQuillError(e); }
 }
 
 async function generate(body) {
   if (PROVIDER === 'demo') throw new QuillError('No AI provider is configured on the server.', { status: 503, retryable: false, code: 'not_configured' });
   const { value, error } = validate(body);
   if (error) throw new QuillError(error, { status: 400, retryable: false, code: 'invalid' });
-  if (PROVIDER === 'mock') return { ...(await mock.generate(value)), provider: 'mock', model: 'mock-quill' };
-  const out = await callAnthropic(value);
-  return { ...out, provider: 'anthropic' };
+  if (PROVIDER === 'mock') return { ...(await mock.generate(value)), provider: 'mock', model: 'mock-quill', usage: null };
+  const out = await liveText({ instructions: SYSTEM_PROMPT, input: buildUserMessage(value), schemaName: 'quill_caption', schema: OUTPUT_SCHEMA, maxOutputTokens: 6000 });
+  if (!out.data.caption || typeof out.data.caption !== 'string') throw new QuillError('The model returned an empty caption. Try again.', { code: 'empty' });
+  return { caption: out.data.caption.trim(), notes: String(out.data.notes || '').trim(), provider: 'openai', model: out.model, usage: out.usage };
 }
 
 module.exports = { generate, providerInfo, QuillError, buildUserMessage, profileBlock, SYSTEM_PROMPT, validate };
@@ -265,31 +226,125 @@ async function planWeek(body) {
   const { value, error } = validatePlanRequest(body);
   if (error) throw new QuillError(error, { status: 400, retryable: false, code: 'invalid' });
   const tv = toneAndVoice(body);
-  if (PROVIDER === 'mock') return { days: await mock.planWeek({ ...value, ...tv, profile: body.profile || null }), provider: 'mock', model: 'mock-vektor' };
+  if (PROVIDER === 'mock') return { days: await mock.planWeek({ ...value, ...tv, profile: body.profile || null }), provider: 'mock', model: 'mock-vektor', usage: null };
   const prof = body.profile && typeof body.profile === 'object' && JSON.stringify(body.profile).length < 80000 ? `\n\n${profileBlock(body.profile, value.weekStart)}` : '';
   const user = `Week beginning ${value.weekStart} (Europe/London).${prof}\n\n${V.promptBlock(tv.tone, tv.voice, body.profile?.data?.cta?.main)}\n\nBrief from the Nexai team:\n"""\n${value.brief}\n"""\n\nDays to plan, in order:\n${value.days.map((d, i) => `${i + 1}. ${d.dayName} ${d.date}: ${d.platform}`).join('\n')}`;
-  let response;
-  try {
-    response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 16000,
-      output_config: { effort: EFFORT, format: { type: 'json_schema', schema: PLAN_SCHEMA } },
-      system: PLAN_SYSTEM,
-      messages: [{ role: 'user', content: user }],
-    });
-  } catch (e) {
-    if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) throw new QuillError('The Anthropic API rejected the server credentials. Check ANTHROPIC_API_KEY on the server.', { retryable: false, code: 'auth' });
-    if (e instanceof Anthropic.RateLimitError) throw new QuillError('The Anthropic API is rate limiting requests. Wait a moment, then try again.', { code: 'rate_limit' });
-    if (e instanceof Anthropic.APIConnectionError) throw new QuillError('Could not reach the Anthropic API.', { code: 'connection' });
-    if (e instanceof Anthropic.APIError) throw new QuillError(`The Anthropic API returned an error (${e.status ?? 'unknown'}).`, { code: 'api_error' });
-    throw new QuillError('Planning failed unexpectedly.', { code: 'unknown' });
-  }
-  if (response.stop_reason === 'refusal') throw new QuillError(`${MODEL} declined this request. Reword the brief.`, { retryable: false, code: 'refusal' });
-  let parsed;
-  try { parsed = JSON.parse(response.content.filter((b) => b.type === 'text').map((b) => b.text).join('')); } catch { throw new QuillError('The plan could not be read. Try again.', { code: 'parse' }); }
+  const out = await liveText({ instructions: PLAN_SYSTEM, input: user, schemaName: 'vektor_week_plan', schema: PLAN_SCHEMA, maxOutputTokens: 8000 });
+  const parsed = out.data;
   if (!Array.isArray(parsed.days) || parsed.days.length !== value.days.length) throw new QuillError('The plan came back with the wrong number of days. Try again.', { code: 'shape' });
   const clip = (x) => String(x || '').trim().slice(0, 400);
-  return { days: parsed.days.map((d) => ({ audience: clip(d.audience), angle: clip(d.angle), takeaway: clip(d.takeaway), visual: clip(d.visual) })), provider: 'anthropic', model: response.model || MODEL };
+  return { days: parsed.days.map((d) => ({ audience: clip(d.audience), angle: clip(d.angle), takeaway: clip(d.takeaway), visual: clip(d.visual) })), provider: 'openai', model: out.model, usage: out.usage };
 }
 
 module.exports.planWeek = planWeek;
+
+/* ---------- Cue: script and storyboard (Luna) ---------- */
+const SCRIPT_SCHEMA = {
+  type: 'object',
+  properties: {
+    scenes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { title: { type: 'string' }, duration: { type: 'number' }, from: { type: 'number' }, caption: { type: 'string' }, script: { type: 'string' } },
+        required: ['title', 'duration', 'from', 'caption', 'script'],
+        additionalProperties: false,
+      },
+    },
+    notes: { type: 'string' },
+  },
+  required: ['scenes', 'notes'],
+  additionalProperties: false,
+};
+const SCRIPT_SYSTEM = `You are Cue, the Video Creator for Nexai Digital's internal marketing team. You plan short social videos (15 to 30 seconds) built from a screen recording or clip the owner supplied.
+Write 3 to 5 scenes. For each scene give: a short title; its length in seconds (1 to 15); "from", the second in the clip where its footage starts; an on-screen caption (at most 90 characters, plain British English, readable at a glance); and a one-line script/direction note for the editor.
+The total length must be between 15 and 30 seconds, close to any length the brief asks for. Every "from" must be inside the clip. The on-screen captions are not the social post caption; don't add hashtags. Never claim results, figures or product capabilities that aren't in the brief or the profile's approved claims. Follow the tone section.`;
+function validateScript(body) {
+  if (!body || typeof body.brief !== 'string' || body.brief.trim().length < 12 || body.brief.length > 4000) return { error: 'Brief is missing or too long.' };
+  if (!PLATFORMS.includes(body.platform)) return { error: 'Unknown platform.' };
+  const d = Number(body.clipDuration);
+  if (!(d > 0 && d < 3600)) return { error: 'Clip length is missing.' };
+  return { value: { brief: body.brief.trim(), platform: body.platform, clipDuration: d, profile: body.profile && typeof body.profile === 'object' ? body.profile : null, ...toneAndVoice(body) } };
+}
+/** Keep Cue's timings honest: inside the clip, 1–15 s per scene, 15–30 s in total. */
+function tidyScenes(scenes, clipDuration) {
+  const out = scenes.slice(0, 6).map((s) => ({
+    title: String(s.title || 'Scene').slice(0, 60), caption: String(s.caption || '').slice(0, 120), script: String(s.script || '').slice(0, 400),
+    duration: Math.min(15, Math.max(1, Math.round(Number(s.duration) * 2) / 2 || 3)), from: Math.min(Math.max(0, Math.round(Number(s.from) * 10) / 10 || 0), Math.max(0, clipDuration - 1)), footage: true,
+  }));
+  let total = out.reduce((a, s) => a + s.duration, 0);
+  while (total > 30) { const big = out.reduce((m, s) => (s.duration > m.duration ? s : m)); big.duration -= 0.5; total -= 0.5; }
+  while (total < 15) { out[out.length - 1].duration += 0.5; total += 0.5; }
+  return out;
+}
+async function videoScript(body) {
+  if (PROVIDER === 'demo') throw new QuillError('No AI provider is configured on the server.', { status: 503, retryable: false, code: 'not_configured' });
+  const { value, error } = validateScript(body);
+  if (error) throw new QuillError(error, { status: 400, retryable: false, code: 'invalid' });
+  const user = [`Platform: ${value.platform}`, `Clip length: ${value.clipDuration} seconds`, `Job brief:\n"""\n${value.brief}\n"""`, value.profile ? profileBlock(value.profile, '') : '', V.promptBlock(value.tone, value.voice, value.profile?.data?.cta?.main)].filter(Boolean).join('\n\n');
+  if (PROVIDER === 'mock') { const m = await mock.videoScript(value); return { scenes: tidyScenes(m.scenes, value.clipDuration), notes: m.notes, provider: 'mock', model: 'mock-cue', usage: null }; }
+  const out = await liveText({ instructions: SCRIPT_SYSTEM, input: user, schemaName: 'cue_storyboard', schema: SCRIPT_SCHEMA, maxOutputTokens: 4000 });
+  if (!Array.isArray(out.data.scenes) || !out.data.scenes.length) throw new QuillError('The storyboard came back empty. Try again.', { code: 'empty' });
+  return { scenes: tidyScenes(out.data.scenes, value.clipDuration), notes: String(out.data.notes || ''), provider: 'openai', model: out.model, usage: out.usage };
+}
+
+/* ---------- Calibre: optional AI wording review (advisory; the rule checks still decide) ---------- */
+const WORDING_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    suggestions: { type: 'array', items: { type: 'object', properties: { quote: { type: 'string' }, issue: { type: 'string' }, suggestion: { type: 'string' } }, required: ['quote', 'issue', 'suggestion'], additionalProperties: false } },
+  },
+  required: ['summary', 'suggestions'],
+  additionalProperties: false,
+};
+const WORDING_SYSTEM = `You are Calibre, the Brand & Quality Reviewer for Nexai Digital. Review the wording of one social caption against the tone section and the business profile. You are advisory: you never approve anything and you don't rewrite the whole post.
+Give at most 5 specific suggestions. Each quotes the exact words it's about (copied from the caption), says what the issue is (tone, clarity, British English, an unbacked claim, a pushy call to action in an editorial post) and gives a short suggested rewording. If the wording is fine, say so and return no suggestions. Don't invent facts or figures.`;
+async function wordingReview(body) {
+  if (PROVIDER === 'demo') throw new QuillError('No AI provider is configured on the server.', { status: 503, retryable: false, code: 'not_configured' });
+  if (!body || typeof body.caption !== 'string' || !body.caption.trim() || body.caption.length > 6000) throw new QuillError('Caption is missing.', { status: 400, retryable: false, code: 'invalid' });
+  if (!PLATFORMS.includes(body.platform)) throw new QuillError('Unknown platform.', { status: 400, retryable: false, code: 'invalid' });
+  const tv = toneAndVoice({ ...body, brief: body.brief || '' });
+  const prof = body.profile && typeof body.profile === 'object' ? body.profile : null;
+  const user = [`Platform: ${body.platform}`, prof ? profileBlock(prof, '') : '', V.promptBlock(tv.tone, tv.voice, prof?.data?.cta?.main), `Caption to review:\n"""\n${body.caption}\n"""`].filter(Boolean).join('\n\n');
+  let out;
+  if (PROVIDER === 'mock') out = { data: mock.wordingReview(body.caption, tv.tone), model: 'mock-calibre', usage: null };
+  else out = await liveText({ instructions: WORDING_SYSTEM, input: user, schemaName: 'calibre_wording', schema: WORDING_SCHEMA, maxOutputTokens: 3000 });
+  // Only keep suggestions that quote words actually in the caption.
+  const sugg = (out.data.suggestions || []).filter((x) => x.quote && body.caption.includes(x.quote)).slice(0, 5).map((x) => ({ quote: x.quote.slice(0, 300), issue: String(x.issue).slice(0, 300), suggestion: String(x.suggestion).slice(0, 400) }));
+  return { summary: String(out.data.summary || '').slice(0, 600), suggestions: sugg, provider: PROVIDER, model: out.model, usage: out.usage };
+}
+
+/* ---------- Vantage: optional written interpretation of the actual figures ---------- */
+const INTERPRET_SCHEMA = { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false };
+const INTERPRET_SYSTEM = `You are Vantage, the Marketing Analyst for Nexai Digital. Write a short interpretation (at most 120 words, British English) of the figures provided, for the owner.
+Rules: use only the numbers given. A metric marked "not entered" is unknown, never zero, so don't compare it. Don't calculate new percentages; the click-through rates are given. With fewer than three comparable posts, say there's too little evidence for a conclusion. Don't declare a winner. Don't invent results, causes or figures. Suggest what to look at next, without promising outcomes.`;
+/** Every number in the interpretation must come from the figures (or be the post count / window). */
+function numbersAllowed(text, rows, window) {
+  const allowed = new Set([String(rows.length), String(window), '0']);
+  const add = (n) => { if (n == null) return; const x = Number(n); allowed.add(String(x)); allowed.add(x.toLocaleString('en-GB')); allowed.add(x.toFixed(1)); };
+  for (const r of rows) { add(r.impressions); add(r.clicks); add(r.enquiries); if (r.ctrPct != null) { allowed.add(r.ctrPct.toFixed(1)); allowed.add(`${r.ctrPct.toFixed(1)}%`); } for (const d of [r.publishedOn, r.measuredOn]) if (d) d.split('-').forEach((p) => { allowed.add(p); allowed.add(String(Number(p))); }); }
+  const found = String(text).match(/\d[\d,]*(?:\.\d+)?/g) || [];
+  return found.filter((n) => !allowed.has(n) && !allowed.has(n.replace(/,/g, '')) && !allowed.has(String(Number(n.replace(/,/g, '')))));
+}
+async function interpret(body) {
+  if (PROVIDER === 'demo') throw new QuillError('No AI provider is configured on the server.', { status: 503, retryable: false, code: 'not_configured' });
+  const rows = Array.isArray(body?.rows) ? body.rows.slice(0, 40) : [];
+  if (!rows.length) throw new QuillError('There are no figures to interpret yet.', { status: 400, retryable: false, code: 'invalid' });
+  const num = (v) => (v === null || v === undefined ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+  const clean = rows.map((r) => ({ title: String(r.title || '').slice(0, 120), platform: String(r.platform || ''), publishedOn: /^\d{4}-\d{2}-\d{2}$/.test(r.publishedOn) ? r.publishedOn : null, measuredOn: /^\d{4}-\d{2}-\d{2}$/.test(r.measuredOn) ? r.measuredOn : null, sample: !!r.sample, impressions: num(r.impressions), clicks: num(r.clicks), enquiries: num(r.enquiries), ctrPct: num(r.ctrPct) }));
+  const window = Number(body.window) || 7;
+  const show = (v) => (v == null ? 'not entered' : String(v));
+  const user = `Posts measured ${window} days after publishing (same platform comparisons only):\n${clean.map((r) => `- "${r.title}"${r.sample ? ' (SAMPLE, made-up figures)' : ''}, ${r.platform}, published ${r.publishedOn}: impressions ${show(r.impressions)}, link clicks ${show(r.clicks)}, click-through ${r.ctrPct == null ? 'not available' : `${r.ctrPct.toFixed(1)}%`}, owner-attributed enquiries ${show(r.enquiries)}`).join('\n')}`;
+  let out;
+  if (PROVIDER === 'mock') out = { data: { text: mock.interpret(clean, body.mockInvent) }, model: 'mock-vantage', usage: null };
+  else out = await liveText({ instructions: INTERPRET_SYSTEM, input: user, schemaName: 'vantage_interpretation', schema: INTERPRET_SCHEMA, maxOutputTokens: 2000 });
+  const bad = numbersAllowed(out.data.text, clean, window);
+  if (bad.length) throw Object.assign(new QuillError(`The interpretation mentioned a figure that isn’t in your data (${bad.slice(0, 3).join(', ')}), so it wasn’t shown.`, { status: 422, retryable: true, code: 'invented_figure' }), { usage: out.usage, model: out.model });
+  return { text: String(out.data.text).slice(0, 1200), provider: PROVIDER, model: out.model, usage: out.usage };
+}
+
+module.exports.videoScript = videoScript;
+module.exports.wordingReview = wordingReview;
+module.exports.interpret = interpret;
+module.exports.numbersAllowed = numbersAllowed;
