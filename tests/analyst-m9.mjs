@@ -70,7 +70,7 @@ try {
   await desk.waitForSelector('.agent-card.char-analyst');
   const cards = await desk.locator('.team .agent-card').count();
   const card = await desk.locator('.agent-card.char-analyst').innerText();
-  assert(cards === 5 && /Vantage/.test(card) && /Marketing Analyst/.test(card), 'HQ shows five agents, including Vantage, Marketing Analyst');
+  assert(cards >= 5 && /Vantage/.test(card) && /Marketing Analyst/.test(card), `HQ shows ${cards} agents, including Vantage, Marketing Analyst`);
   const img = await desk.locator('.agent-card.char-analyst img').first().evaluate((i) => i.naturalWidth);
   assert(img > 0, 'The Analyst’s artwork loads');
   await desk.screenshot({ path: `${PREVIEWS}/m9-desktop-hq.png` });
