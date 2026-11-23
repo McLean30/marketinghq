@@ -206,8 +206,18 @@ jobs:
             const conclusion = { pass: 'success', fail: 'failure', blocked: 'action_required' }[result.status] || 'failure';
             const title = { pass: 'Passed', fail: 'Failed', blocked: 'Blocked: could not reach HQ' }[result.status] || 'Failed';
             const lines = (result.steps || []).map((s) => `- ${s.ok ? '✅' : '❌'} ${s.text}`).join('\n');
-            await github.rest.checks.update({
-              owner, repo, check_run_id: Number(e.CHECK_ID), status: 'completed', conclusion, details_url: e.RUN_URL,
+            // A check created moments ago can briefly 404 on update; retry, then fall back to a new completed check so a
+            // result is always recorded (never left "in progress").
+            const finishCheck = async (params) => {
+              for (let i = 0; i < 6; i++) {
+                try { return await github.rest.checks.update({ owner, repo, check_run_id: Number(e.CHECK_ID), ...params }); }
+                catch (err) { if (err.status !== 404) throw err; await new Promise((r) => setTimeout(r, 2000 * (i + 1))); }
+              }
+              core.warning('The check could not be updated; recording the result as a new completed check.');
+              return github.rest.checks.create({ owner, repo, head_sha: e.SHA, name: 'Vercel preview smoke test', ...params });
+            };
+            await finishCheck({
+              status: 'completed', conclusion, details_url: e.RUN_URL,
               output: {
                 title: `${title}: ${result.summary}`.slice(0, 250),
                 summary: `**${title}.** ${result.summary}\n\n- Commit: \`${e.SHA}\`\n- Preview URL: ${e.URL || 'none'}\n- Deployment: ${e.DEP_ID || 'none'} (${e.ENVIRONMENT || 'n/a'}), found via ${e.SOURCE || 'nothing'}\n- Run: ${e.RUN_URL}`,
