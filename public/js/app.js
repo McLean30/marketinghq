@@ -8,6 +8,7 @@ import * as AG from './agents.js';
 import * as PB from './publishing.js';
 import * as AN from './analytics.js';
 import * as V from './video.js';
+import * as VO from './voice.js';
 
 const $main = document.getElementById('main');
 const $sheet = document.getElementById('sheet-root');
@@ -137,8 +138,12 @@ function character(agentId, { size = 'card' } = {}) {
   const meta = `<span class="char-meta"><span class="char-name">${a.name}</span><span class="char-role">${a.role}</span>
     <span class="state-badge state-${st}"><span class="dot" aria-hidden="true"></span>${label}</span></span>`;
   if (size === 'xs') return `<span class="char char-${agentId} size-xs" data-state="${st}">${AG.thumb(agentId)}<span class="xs-dot" aria-hidden="true"></span></span>`;
-  if (size === 'hero') return `<div class="char char-${agentId} size-hero" data-state="${st}" role="img" aria-label="${esc(AG.altText(agentId))}. Status: ${label}">${AG.art(agentId, { windowed: true, eager: true })}${meta}</div>`;
-  return `<a class="char char-${agentId} size-card agent-card" data-agent="${agentId}" data-state="${st}" href="${agentHref(agentId)}" aria-label="${a.name}, ${a.role}. Status: ${label}. Open workspace">${agentId === 'reviewer' || agentId === 'analyst' || agentId === 'video' ? `<span class="art-portrait">${AG.art(agentId, { eager: true, card: true })}</span><span class="art-banner">${AG.art(agentId, { banner: true })}</span>` : AG.art(agentId, { eager: true, card: true })}${meta}${CHEVRON}</a>`;
+  // Cue's card carries the real render state: the tally light and the monitor's progress bar follow it.
+  const rp = agentId === 'video' ? S.videoTasks().map((t) => S.renderProgress(t.id)).find((p) => p != null) : null;
+  const live = rp != null ? ` data-rendering="1" style="--p:${rp.toFixed(3)}"` : '';
+  // Names, roles and status are real text (not part of an image), so they're read out and can be zoomed or translated.
+  if (size === 'hero') return `<div class="char char-${agentId} size-hero" data-state="${st}"${live}><span role="img" aria-label="${esc(AG.altText(agentId))}">${AG.art(agentId, { windowed: true, eager: true })}</span>${meta}</div>`;
+  return `<a class="char char-${agentId} size-card agent-card" data-agent="${agentId}" data-state="${st}"${live} href="${agentHref(agentId)}" aria-describedby="open-ws-hint">${agentId === 'reviewer' || agentId === 'analyst' || agentId === 'video' ? `<span class="art-portrait">${AG.art(agentId, { eager: true, card: true })}</span><span class="art-banner">${AG.art(agentId, { banner: true })}</span>` : AG.art(agentId, { eager: true, card: true })}${meta}<span class="visually-hidden">: open workspace</span>${CHEVRON}</a>`;
 }
 
 function managerLine() {
@@ -152,6 +157,7 @@ function managerLine() {
 function renderHQ() {
   const jobs = S.getState().jobs.filter((j) => !j.sample); // sample posts live with the Analyst only
   return `
+  <p id="open-ws-hint" class="visually-hidden">Opens the agent’s workspace</p>
   <section class="team stage" aria-label="Your AI marketing team">
     ${character('manager')}
     ${character('copywriter')}
@@ -159,6 +165,7 @@ function renderHQ() {
     ${character('reviewer')}
     ${character('analyst')}
     ${character('video')}
+    <svg class="handoff" aria-hidden="true" data-testid="handoff"></svg>
   <div class="hq-actions">
     <button type="button" class="action-btn" data-focus-brief><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M7 3h7l5 5v13H7z M14 3v5h5 M10 12h6 M10 15.5h6 M10 19h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg><span>New brief</span></button>
     <a class="action-btn" href="#/week/new" data-testid="plan-week-link"><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 9.5h17 M8 3v4 M16 3v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.5 13h1.5 M11.25 13h1.5 M15 13h1.5 M7.5 16.5h1.5 M11.25 16.5h1.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Plan a content week</span></a>
@@ -218,6 +225,81 @@ function jobRow(job) {
       <span class="mini">Graphic: ${esc(S.STATUS_LABEL[S.taskStatus(graphic)])}</span></span>
   </a></li>`;
 }
+
+/* ---------- Tone: what the team is working to ---------- */
+function toneChip(tone, key) {
+  const promo = tone.mode === 'promo';
+  return `<details class="tone-chip${promo ? ' promo' : ''}" data-key="${key}" data-testid="job-tone" data-mode="${tone.mode}">
+    <summary><span class="tone-k">Tone</span> ${esc(tone.label)}</summary>
+    <p>${esc(tone.reason)}</p>
+    ${promo ? '' : `<blockquote class="voice-text" data-testid="voice-text">${esc(S.activeVoice())}</blockquote><p class="mini">From the business profile (<a href="#/profile" data-profile-link>edit the editorial voice</a>).</p>`}
+    <p class="mini">${esc(VO.ALWAYS_APPLIES)}</p>
+  </details>`;
+}
+
+/* ---------- Motion: handoff beams, offscreen pausing, the motion switch ---------- */
+/** During a real delegation, draw Vektor's handoff to the agents receiving the job (caption + graphic or video). */
+function drawHandoff() {
+  const team = document.querySelector('.team');
+  const svgEl = team?.querySelector('.handoff');
+  document.querySelectorAll('.agent-card.receiving').forEach((c) => c.classList.remove('receiving'));
+  if (!svgEl) return;
+  const now = Date.now();
+  const job = S.getState().jobs.find((j) => now < j.delegatedAt && j.taskIds);
+  if (!job || S.agentState('manager') !== 'delegating') { svgEl.innerHTML = ''; svgEl.removeAttribute('data-to'); return; }
+  const { copy, graphic } = S.jobTasks(job);
+  const to = [copy?.agent, graphic?.agent].filter(Boolean);
+  const box = team.getBoundingClientRect();
+  const from = team.querySelector('.agent-card.char-manager')?.getBoundingClientRect();
+  if (!from) return;
+  // Leave from the stinger area (upper right of Vektor's card).
+  const fx = from.left - box.left + from.width * 0.6, fy = from.top - box.top + from.height * 0.22;
+  svgEl.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
+  svgEl.dataset.to = to.join(' ');
+  svgEl.innerHTML = to.map((id) => {
+    const card = team.querySelector(`.agent-card.char-${id}`);
+    if (!card) return '';
+    card.classList.add('receiving');
+    const r = card.getBoundingClientRect();
+    const tx = r.left - box.left + r.width / 2, ty = r.top - box.top + Math.min(r.height * 0.35, 120);
+    const mx = (fx + tx) / 2, my = Math.min(fy, ty) - 60;
+    const d = `M${fx.toFixed(1)} ${fy.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${tx.toFixed(1)} ${ty.toFixed(1)}`;
+    return `<path d="${d}"/><path class="pulse" d="${d}"/><circle cx="${tx.toFixed(1)}" cy="${ty.toFixed(1)}" r="5"/>`;
+  }).join('');
+}
+addEventListener('resize', () => drawHandoff());
+
+// Pause an agent's loops while it's off screen (and the room sweep when HQ is scrolled away).
+const offscreenObserver = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) e.target.classList.toggle('offscreen', !e.isIntersecting);
+}, { rootMargin: '40px' }) : null;
+function watchOffscreen() {
+  if (!offscreenObserver) return;
+  offscreenObserver.disconnect();
+  document.querySelectorAll('.char, .team').forEach((el) => offscreenObserver.observe(el));
+}
+
+// The motion switch: saved in this browser; until you choose, it follows the system's reduced-motion setting.
+function syncMotionButton() {
+  const b = document.getElementById('motion-toggle');
+  if (!b) return;
+  const on = document.documentElement.dataset.motion === 'on';
+  b.setAttribute('aria-pressed', String(on));
+  b.querySelector('.motion-label').textContent = on ? 'Motion on' : 'Motion off';
+  b.setAttribute('aria-label', on ? 'Agent animation is on. Turn it off' : 'Agent animation is off. Turn it on');
+}
+document.getElementById('motion-toggle')?.addEventListener('click', () => {
+  const next = document.documentElement.dataset.motion === 'on' ? 'off' : 'on';
+  document.documentElement.dataset.motion = next;
+  try { localStorage.setItem('nexai-hq:motion', next); } catch { /* the setting still applies to this visit */ }
+  syncMotionButton();
+  toast(next === 'on' ? 'Agent animation on.' : 'Agent animation off. States still show as text.');
+});
+matchMedia('(prefers-reduced-motion: reduce)').addEventListener?.('change', (e) => {
+  let saved = null;
+  try { saved = localStorage.getItem('nexai-hq:motion'); } catch { /* ignore */ }
+  if (saved !== 'on' && saved !== 'off') { document.documentElement.dataset.motion = e.matches ? 'off' : 'on'; syncMotionButton(); }
+});
 
 /* ---------- Agent workspace sheet ---------- */
 function renderAgentSheet(agentId) {
@@ -435,6 +517,7 @@ function renderJob(id) {
     <h1>${esc(jobTitle(job))}</h1>
     ${job.planId ? `<p class="plan-link" data-testid="plan-link">Part of <a href="#/week/${job.planId}">${esc(PL.fmtWeek(S.getPlan(job.planId)?.weekStart || job.targetDate))}</a> · ${esc(job.planDay.dayName)} · ${esc(job.platform)}. Audience: ${esc(job.planDay.audience)}.</p>` : ''}
     <details class="brief-detail" data-key="brief-${job.id}"><summary>Your brief</summary><p>${esc(job.brief)}</p></details>
+    ${toneChip(job.tone || VO.toneFor(job.brief), `tone-${job.id}`)}
     <p class="profile-chip" data-testid="job-profile">Business profile: ${S.jobProfileRef(job) ? `<a href="#/profile" data-profile-link>${esc(S.jobProfileRef(job).id)}</a>${S.jobProfileRef(job).id !== S.currentProfile()?.id ? ` (current: ${esc(S.currentProfile()?.id || '')})` : ' (current)'}` : 'none recorded: this post was created before the business profile'}</p>
   </header>
   ${profileImpactNotice(job)}
@@ -642,7 +725,7 @@ function renderVideoStudio(jobId) {
   const brand = S.brand();
   return `
   <nav class="crumbs"><a href="#/job/${job.id}">← Back to the post</a></nav>
-  <header class="studio-head"><h1>Video editor</h1><p class="mini">${esc(jobTitle(job))} · ${esc(job.platform)} · <span class="demo-tag">${esc(sb.label)}</span></p></header>
+  <header class="studio-head"><h1>Video editor</h1><p class="mini">${esc(jobTitle(job))} · ${esc(job.platform)} · <span class="demo-tag">${esc(sb.label)}</span></p>${toneChip(job.tone || VO.toneFor(job.brief), `tone-v-${job.id}`)}</header>
   ${clip?.sample ? '<p class="sample-banner" data-testid="sample-footage-banner"><strong>Sample footage.</strong> This clip is an illustrative mock-up made for trying the Video Creator. It isn’t the real JobTrack Pro, and a video made from it must not be presented as evidence of how the product works. Replace it with a real screen recording before publishing anywhere real.</p>' : ''}
   <div class="vs-grid">
     <section class="panel vs-source">
@@ -1329,7 +1412,8 @@ function renderPlanEditor(pl) {
   const included = pl.days.filter((d) => d.include).length;
   return `<nav class="crumbs"><a href="#/">← HQ</a></nav>
   <header class="cal-head"><h1>${esc(PL.fmtWeek(pl.weekStart))}</h1>${planMethodNote(pl)}
-    <details class="brief-detail"><summary>Brief for the week</summary><p>${esc(pl.brief)}</p></details></header>
+    <details class="brief-detail"><summary>Brief for the week</summary><p>${esc(pl.brief)}</p></details>
+    ${toneChip(pl.tone || VO.toneFor(pl.brief), `tone-${pl.id}`)}</header>
   <ol class="plan-days" data-testid="plan-editor">
   ${pl.days.map((d, i) => `<li class="plan-day${d.include ? '' : ' left-out'}" data-testid="plan-day-${d.dayName}">
     <div class="plan-day-head">
@@ -1537,6 +1621,8 @@ function renderProfile() {
       ${ro ? '' : '<button type="button" class="btn btn-small" data-pf-add="offers" data-testid="add-offer">Add an offer</button>'}
     </fieldset>
     <fieldset><legend>Writing guidance</legend>
+      ${field('writing.voice', 'Editorial voice <span class="mini">(the default tone for organic posts: Vektor’s plans, Quill’s captions, Prism’s headlines, Cue’s scripts and Calibre’s reviews)</span>', { area: true, rows: 6, placeholder: 'How Nexai sounds in organic posts.' })}
+      <p class="mini" data-testid="voice-note">A brief that explicitly asks for a hard sell, a direct-response advert or a promotional call to action uses a promotional tone for that job only. ${esc(VO.ALWAYS_APPLIES)}</p>
       ${field('writing.process', `Winner’s Writing Process${!d.writing.process?.trim() ? ' <span class="missing-tag">Missing: add Nexai’s original wording</span>' : ''}`, { area: true, rows: 5, placeholder: 'Paste Nexai’s original Winner’s Writing Process here.' })}
       ${field('writing.checklist', `Self-review checklist${!d.writing.checklist?.trim() ? ' <span class="missing-tag">Missing: add Nexai’s original wording</span>' : ''}`, { area: true, rows: 5, placeholder: 'Paste Nexai’s original self-review checklist here.' })}
     </fieldset>
@@ -1699,7 +1785,7 @@ let lastSig = '';
 function signature() {
   const s = S.getState();
   const w = S.ws;
-  return [s.jobs.map((j) => (j.measurements || []).length).join(), S.agentState('analyst'), s.jobs.map((j) => (j.publications || []).map((p) => `${p.status}${p.events.length}${p.scheduledFor}`).join(';')).join(), S.isPubBusy && s.jobs.some((j) => S.isPubBusy(j.id)), S.currentProfile()?.id, S.agentState('reviewer'), s.jobs.map((j) => `${(j.reviews || []).length}${S.isReviewing(j.id) ? 'r' : ''}`).join(), S.ws.testDate, (s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
+  return [S.videoTasks().map((t) => { const p = S.renderProgress(t.id); return p == null ? '' : Math.round(p * 50); }).join(), s.jobs.map((j) => (j.measurements || []).length).join(), S.agentState('analyst'), s.jobs.map((j) => (j.publications || []).map((p) => `${p.status}${p.events.length}${p.scheduledFor}`).join(';')).join(), S.isPubBusy && s.jobs.some((j) => S.isPubBusy(j.id)), S.currentProfile()?.id, S.agentState('reviewer'), s.jobs.map((j) => `${(j.reviews || []).length}${S.isReviewing(j.id) ? 'r' : ''}`).join(), S.ws.testDate, (s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
 }
 
 function render() {
@@ -1738,6 +1824,9 @@ function render() {
   lastSig = signature();
   if (ui.vtAgent) document.querySelector('.sheet .agent-art')?.style.setProperty('view-transition-name', 'agent-art');
   keepKeys([...document.querySelectorAll('[data-keep]')]).forEach(([key, el]) => { const old = kept.get(key); if (old && old !== el && old.tagName === el.tagName && (old.tagName !== 'VIDEO' || old.getAttribute('src') === el.getAttribute('src'))) el.replaceWith(old); });
+  drawHandoff();
+  watchOffscreen();
+  syncMotionButton();
   if (r.view === 'studio') hydrateStudio();
   if (r.view === 'vstudio' && !kept.has(`vs-preview-${ui.vstudio?.taskId}#1`)) drawVideoPreview();
 }
@@ -1965,7 +2054,7 @@ document.addEventListener('click', (e) => {
   if (t.dataset.toggleEdit) { const id = t.dataset.toggleEdit; ui.editing[id] = !ui.editing[id]; ui.revision[id] = false; render(); document.getElementById(`ed-${id}`)?.focus(); return; }
   if (t.matches('[data-focus-brief]')) {
     const panel = document.getElementById('brief-panel');
-    panel?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    panel?.scrollIntoView({ block: 'start', behavior: document.documentElement.dataset.motion !== 'on' ? 'auto' : 'smooth' });
     document.getElementById('brief')?.focus({ preventScroll: true });
     return;
   }
@@ -2273,7 +2362,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('click', (e) => {
   const card = e.target.closest?.('a.agent-card');
   if (!card || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (!document.startViewTransition || document.documentElement.dataset.motion !== 'on') return;
   e.preventDefault();
   const artEl = card.querySelector('.agent-art');
   const href = card.getAttribute('href');

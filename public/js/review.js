@@ -1,6 +1,7 @@
 // The Brand & Quality Reviewer's checks. Everything here is a local, deterministic rule; nothing is sent anywhere.
 // Each check is labelled: 'rule' (the app checked it), 'owner' (needs your review), 'human' (needs your eyes).
 import { norm, offerState, fmt } from './profile.js';
+import { toneFor, HARD_SELL } from './voice.js';
 
 const US_UK = [
   ['organize', 'organise'], ['organization', 'organisation'], ['optimize', 'optimise'], ['prioritize', 'prioritise'], ['realize', 'realise'],
@@ -73,6 +74,19 @@ export function runChecks({ job, copyVersion, graphicVersion, profile, brand, da
   const us = US_UK.filter(([u]) => new RegExp(`\\b${u.trim()}`, 'i').test(caption));
   checks.push({ id: 'spelling', label: 'British English spelling', kind: 'rule', result: us.length ? 'fail' : 'pass', detail: `Checked ${US_UK.length} common US spellings` });
   for (const [u, k] of us) add({ check: 'spelling', status: 'fail', title: `US spelling “${u.trim()}”`, quote: lines.find((l) => new RegExp(`\\b${u.trim()}`, 'i').test(l)) || '', where: `Caption v${cv}, paragraph ${para(lines, lines.findIndex((l) => new RegExp(`\\b${u.trim()}`, 'i').test(l)))}`, why: `Nexai writes in ${data.brand?.language || 'British English'}.`, fixer: 'copywriter', fix: `Change “${u.trim()}” to “${k.trim()}”.` });
+
+  // Tone: the editorial voice by default; a direct-response tone only when this job's brief asked for it.
+  const tone = job.tone || toneFor(job.brief);
+  if (tone.mode === 'promo') {
+    const ctaMain = data.cta?.main || '';
+    const hasCta = (ctaMain && norm(caption).includes(norm(ctaMain))) || /\bbook\b/i.test(caption);
+    checks.push({ id: 'tone', label: 'Tone matches this job: direct-response promotion', kind: 'rule', result: hasCta ? 'pass' : 'fail', detail: hasCta ? 'One clear booking call to action found' : 'No clear call to action found' });
+    if (!hasCta) add({ check: 'tone', status: 'fail', title: 'The promotion has no clear call to action', where: `Caption v${cv}`, why: `This job’s brief asked for a direct-response promotion with a booking CTA. ${ctaMain ? `The business profile’s wording is “${ctaMain}”.` : ''}`, fixer: 'copywriter', fix: `End with one clear booking call to action${ctaMain ? `, using “${ctaMain}”` : ''}.` });
+  } else {
+    const hit = caption.match(HARD_SELL);
+    checks.push({ id: 'tone', label: 'Tone matches this job: Nexai editorial voice', kind: hit ? 'owner' : 'rule', result: hit ? 'owner' : 'pass', detail: hit ? `“${hit[0]}” reads as a hard sell` : 'Informative and low-pressure; no hard-sell wording found' });
+    if (hit) add({ check: 'tone', status: 'owner', title: 'Reads like a hard sell', quote: lines.find((l) => l.includes(hit[0])) || hit[0], where: `Caption v${cv}, ${lineOf(lines, hit[0])}`, why: 'This job uses Nexai’s editorial voice (the business profile default): an honest, low-pressure update. Only a brief that explicitly asks for a hard sell or a promotional CTA changes that.', fixer: 'copywriter', fix: `Rewrite without “${hit[0]}”: invite a comment or a message in our own voice, or end on the useful point.` });
+  }
 
   // Video posts: logo, files and sample footage are checked on the rendered video version.
   if (graphicVersion?.content?.mode === 'video') return videoChecks({ caption, lines, cv, gv, data, brand, present, profile, checks, findings, add, graphicVersion });

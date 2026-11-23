@@ -112,7 +112,7 @@ try {
   if (idx.status !== 200 || !idx.body.includes('<title>Nexai Marketing HQ</title>')) throw new Failed(`GET /index.html returned ${idx.status}${idx.status === 200 ? ' but not the HQ page' : ''}.`);
   if (!html.includes('js/app.js')) throw new Failed('GET / returned 200 but not the HQ page.');
   step(true, 'GET /index.html returned 200 with the HQ page');
-  for (const [p, re] of [['js/app.js', /javascript/], ['js/store.js', /javascript/], ['css/app.css', /css/], ['assets/agents/vektor.webp', /image/], ['assets/agents/reviewer.svg', /svg/], ['data/profile-seed.json', /json/]]) {
+  for (const [p, re] of [['js/app.js', /javascript/], ['js/store.js', /javascript/], ['css/app.css', /css/], ['assets/agents/vektor.webp', /image/], ['assets/agents/calibre.webp', /image/], ['assets/agents/vantage.webp', /image/], ['assets/agents/cue.webp', /image/], ['data/profile-seed.json', /json/]]) {
     const r = await get(p);
     if (r.status !== 200 || !re.test(r.type)) throw new Failed(`GET /${p} returned ${r.status} (${r.type || 'no content type'}).`);
   }
@@ -129,6 +129,14 @@ try {
   if (api.status < 400 || /text\/html/.test(api.type) || /<html|<!doctype/i.test(api.body)) throw new Failed(`An unknown API route returned ${api.status} ${api.type} instead of an error (it served ${/<html|<!doctype/i.test(api.body) ? 'the homepage HTML' : 'a non-error response'}).`);
   step(true, `Unknown API route returned an error (${api.status}, ${api.type.split(';')[0]}), not the homepage`);
 
+  if (await page.locator('#motion-toggle').count()) {
+    const before = await page.evaluate(() => document.documentElement.dataset.motion);
+    await page.click('#motion-toggle');
+    const after = await page.evaluate(() => document.documentElement.dataset.motion);
+    await page.click('#motion-toggle');
+    if (!before || before === after) throw new Failed('The motion switch didn’t change the HQ animation setting.');
+    step(true, `Motion switch works (${before} → ${after} → ${before})`);
+  }
   const mode = await page.evaluate(async () => (await fetch('api/auth/status').then((r) => r.json()).catch(() => ({}))));
   step(true, `Mode: ${mode.authConfigured ? 'shared workspace configured' : 'browser demo mode'}`);
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'hq.png') });

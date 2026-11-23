@@ -11,6 +11,7 @@ import { londonToday } from './plan.js';
 import * as PB from './publishing.js';
 import * as AN from './analytics.js';
 import { templateStoryboard } from './video.js';
+import { toneFor, voiceOf, hasVoiceField, DEFAULT_VOICE } from './voice.js';
 
 const KEY = 'nexai-hq:v1';
 const MODE_KEY = 'nexai-hq:mode';
@@ -338,6 +339,7 @@ export async function setMode(mode) {
         ws.profileError = 'The starting business profile (data/profile-seed.json) could not be loaded.';
       }
     }
+    seedVoice();
   }
   notify();
 }
@@ -421,6 +423,9 @@ export async function createJob({ id, brief, platform, targetDate, title, planId
   const now = Date.now();
   const job = { id: id || uid('job'), brief: brief.trim(), platform, targetDate, createdAt: now, delegatedAt: now + DELEGATE_MS, taskIds: {}, approval: null, approvals: [] };
   if (kind === 'video') job.kind = 'video';
+  // The tone this job works to, decided once from its brief and shown on the job.
+  const pd = currentProfile()?.data;
+  job.tone = { ...toneFor(job.brief), voiceSource: hasVoiceField(pd) && pd.writing.voice.trim() ? 'profile' : 'default', profileVersion: profileRef() };
   if (title) job.title = title;
   job.profileVersion = profileRef();
   if (planId) { job.planId = planId; job.planDay = planDay; }
@@ -666,6 +671,8 @@ async function dispatchAi(taskId, now) {
     feedback: live.pending.kind === 'revision' ? live.pending.feedback : undefined,
     targetDate: job.targetDate,
     profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null,
+    tone: job.tone || toneFor(job.brief),
+    voice: voiceOf(currentProfile()?.data),
   };
   const usedProfile = profileRef();
   let outcome;
@@ -844,7 +851,7 @@ function restorePlan(planId, plan) {
 }
 
 export async function createPlan({ weekStart, brief, method, days, model }) {
-  const plan = { id: uid('plan'), weekStart, brief: brief.trim(), method, model: model || null, status: 'draft', createdAt: Date.now(), days, profileVersion: profileRef() };
+  const plan = { id: uid('plan'), weekStart, brief: brief.trim(), method, model: model || null, status: 'draft', createdAt: Date.now(), days, profileVersion: profileRef(), tone: toneFor(brief) };
   const res = await commitPlan(plan.id, () => { if (getPlan(plan.id)) return false; state.plans.unshift(plan); return true; });
   return res.ok ? { ok: true, plan: getPlan(plan.id) } : res;
 }
@@ -853,7 +860,7 @@ export async function createPlan({ weekStart, brief, method, days, model }) {
 export async function requestAiPlan(brief, weekStart, days) {
   let r;
   try {
-    r = await fetch('api/vektor/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify({ brief, weekStart, days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName })), profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null }) });
+    r = await fetch('api/vektor/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify({ brief, weekStart, days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName })), profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null, tone: toneFor(brief), voice: voiceOf(currentProfile()?.data) }) });
   } catch {
     return { ok: false, error: 'Can’t reach the HQ server. Nothing was charged; try again when connected.' };
   }
@@ -1282,3 +1289,21 @@ export async function addVideoVersion(taskId, { videoId, mime, ext, label, durat
   if (res.ok && res.noop) return { ok: false, error: 'The video changed since you started this render. Reload the latest version, then render again.' };
   return res.ok ? { ok: true, result: version } : res;
 }
+
+
+/* ---------- Editorial voice in the business profile ---------- */
+/**
+ * Profiles saved before the editorial voice existed get it as a new profile version, with every other field exactly
+ * as the owner left it. A profile that already has a voice (even an edited or blank one) is never touched.
+ */
+function seedVoice() {
+  const cur = currentProfile();
+  if (!cur || hasVoiceField(cur.data)) return;
+  const data = clone(cur.data);
+  data.writing = { ...(data.writing || {}), voice: DEFAULT_VOICE };
+  const n = state.profile.versions.length + 1;
+  state.profile.versions.push({ id: localVersionId(n, data), n, savedAt: Date.now(), savedBy: 'update: editorial voice added', data });
+  state.profile.rev = (state.profile.rev || 0) + 1;
+  saveLocal(false);
+}
+export const activeVoice = () => voiceOf(currentProfile()?.data);

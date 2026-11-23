@@ -10,6 +10,12 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Chakra+Petch:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/app.css">
+  <script>
+    // Motion setting before first paint: your choice (saved in this browser) or else the system's reduced-motion setting.
+    (function () { var m = null; try { m = localStorage.getItem('nexai-hq:motion'); } catch (e) {}
+      if (m !== 'on' && m !== 'off') m = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'off' : 'on';
+      document.documentElement.dataset.motion = m; })();
+  </script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -22,6 +28,10 @@
       <a href="#/" data-nav="hq">HQ</a>
       <a href="#/calendar" data-nav="calendar">Calendar</a>
     </nav>
+    <button type="button" class="motion-btn" id="motion-toggle" aria-pressed="true" title="Turn agent animation on or off">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 12c2.5-5 5.5-5 8 0s5.5 5 8 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span class="motion-label">Motion on</span>
+    </button>
     <a class="ws-pill" id="ws-pill" href="#/workspace" title="Workspace and sign-in. Nothing is published from this app.">Loading…</a>
   </header>
   <main id="main" tabindex="-1"></main>

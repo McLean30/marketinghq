@@ -46,7 +46,7 @@ async function boot(label, entry, port, cwd) {
     assert(home.status === 200 && html.includes('<title>Nexai Marketing HQ</title>'), 'GET / serves HQ');
     const idx = await fetch(`${base}index.html`);
     assert(idx.status === 200 && (await idx.text()).includes('<title>Nexai Marketing HQ</title>'), 'GET /index.html serves HQ');
-    for (const [asset, type] of [['js/app.js', 'javascript'], ['js/store.js', 'javascript'], ['css/app.css', 'css'], ['assets/agents/vektor.webp', 'image/webp'], ['assets/agents/reviewer.svg', 'svg'], ['data/profile-seed.json', 'json']]) {
+    for (const [asset, type] of [['js/app.js', 'javascript'], ['js/store.js', 'javascript'], ['css/app.css', 'css'], ['assets/agents/vektor.webp', 'image/webp'], ['assets/agents/calibre.webp', 'image/webp'], ['assets/agents/cue.webp', 'image/webp'], ['data/profile-seed.json', 'json']]) {
       const r = await fetch(base + asset);
       assert(r.status === 200 && (r.headers.get('content-type') || '').includes(type), `Serves ${asset} (${r.headers.get('content-type')})`);
     }

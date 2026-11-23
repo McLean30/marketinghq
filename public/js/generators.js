@@ -1,9 +1,47 @@
-import { activeOffers } from './profile.js';
+import { activeOffers, norm } from './profile.js';
+import { toneFor, variant } from './voice.js';
 // LOCAL DEMO GENERATORS. No live AI is called in milestone 1.
 // Captions are assembled from templates keyed off the brief; graphics are SVG specs
 // rendered by graphics.js. Every output is flagged `simulated` in the UI.
 
 const THEMES = {
+  building: {
+    match: /jobtrack|what we(?:’|')?ve? learn|we(?:’|')re building|we are building|building (?:our|jobtrack)|lessons from building/i,
+    title: 'What building JobTrack Pro taught us',
+    hooks: ['We’ve been building JobTrack Pro, our own job management app for maintenance teams, and it’s changed how we think about the workflows we build for clients.'],
+    friendlyHook: 'A behind-the-scenes one from us at Nexai: what building our own job app has taught us.',
+    ed: {
+      intros: [
+        'We’ve been building JobTrack Pro, our own job management app for maintenance teams, and it’s changed how we think about the workflows we build for clients.',
+        'An honest update from inside Nexai: building JobTrack Pro ourselves has taught us more about maintenance workflows than any brief could.',
+      ],
+      prompted: 'What prompted it: we kept seeing the same gap between engineers on site and the office, so we started building something to close it ourselves.',
+      problemLead: 'The everyday problem is familiar:',
+      outcomeLead: 'What it’s taught us, and how it shapes the workflows we build for clients:',
+      fixes: [
+        'Capture evidence at the moment the work is done, not later from memory',
+        'Make the next step obvious to whoever picks the job up',
+        'Design out every step where someone re-types or chases information',
+      ],
+    },
+    problem: null,
+    impacts: [
+      'Engineers re-entering details the office already has',
+      'Jobs marked complete that still can’t be invoiced',
+      'Nobody quite sure which version of the job is current',
+    ],
+    fixes: [
+      'Capture evidence at the moment the work is done',
+      'Make the next step obvious to whoever picks the job up',
+      'Keep one version of the job that everyone trusts',
+    ],
+    ctas: ['What would you design out of your own job workflow first?'],
+    hashtags: [['#CommercialMaintenance', '#FieldService', '#WorkflowDesign', '#BuildingInPublic', '#UKBusiness']],
+    headlines: [['What building', 'JobTrack Pro taught us.'], ['Built for the gap', 'between site and office.']],
+    sub: 'Lessons from building our own job app, applied to client workflows.',
+    chip: 'Behind the scenes',
+    scenes: ['office', 'plantroom', 'van'],
+  },
   unbilled: {
     match: /invoic|job sheet|paperwork|unbilled|engineer photos?|missing photos?|photo is missing/i,
     title: 'Finished jobs the office can’t invoice',
@@ -39,6 +77,15 @@ const THEMES = {
       ['Finished on site.', 'Unbilled in the office.'],
       ['No job sheet,', 'no invoice.'],
     ],
+    ed: {
+      intros: [
+        'We’ve been looking closely at why finished jobs sit unbilled, and it’s rarely about what happens on site.',
+        'An honest one from inside Nexai: the job’s done, the client’s happy, and the invoice is still stuck.',
+      ],
+      prompted: 'What prompted it: conversations with maintenance teams where the work was finished but the office still couldn’t invoice it.',
+      problemLead: 'The everyday problem looks like this:',
+      outcomeLead: 'What we’re working towards is a handover where “complete” means ready to invoice:',
+    },
     sub: 'Missing job sheets and photos are holding up cash your engineers have already earned.',
     chip: 'Complete · not invoiced',
     scenes: ['plantroom', 'van', 'office'],
@@ -77,13 +124,35 @@ const THEMES = {
       ['Fewer loose ends.', 'Faster jobs.'],
       ['One job.', 'One version of the truth.'],
     ],
+    ed: {
+      intros: [
+        'A quick update from inside Nexai on something we keep running into.',
+        'We spend a lot of our time on the gap between site and office. Here’s what we’re seeing.',
+      ],
+      prompted: 'What prompted it: the same small handover problems turning up in very different maintenance businesses.',
+      problemLead: 'The everyday problem:',
+      outcomeLead: 'What we’re working towards with the teams we build for:',
+    },
     sub: 'Joined-up job management for UK commercial maintenance teams.',
     chip: 'Site → office',
     scenes: ['plantroom', 'van', 'office'],
   },
 };
 
-const themeFor = (brief) => (THEMES.unbilled.match.test(brief) ? 'unbilled' : 'general');
+const themeFor = (brief) => (THEMES.building.match.test(brief) ? 'building' : THEMES.unbilled.match.test(brief) ? 'unbilled' : 'general');
+
+// Direct-response promotion: used only when the brief explicitly asks for it (see voice.js).
+const PROMO = {
+  hooks: [
+    'Losing hours between site and invoice? We’ll show you where.',
+    'If jobs keep stalling between the engineer and the office, a free workflow review is the quickest way to find out why.',
+  ],
+  benefit: 'In a free workflow review we walk through how a job moves through your business, from booking to invoice, and point out where time and money leak out.',
+  gets: ['A walk-through of your current workflow', 'The three steps worth fixing first', 'No obligation and no jargon'],
+  headlines: [['Free workflow review.', 'Book your slot.'], ['Find the leaks', 'between site and invoice.']],
+  sub: 'A free review of how your jobs move from booking to invoice.',
+  chip: 'Free review',
+};
 
 function audienceFrom(brief) {
   const m = brief.match(/for (?:uk )?([a-z ]*?(?:directors|managers|owners|leaders|teams|engineers))/i);
@@ -98,27 +167,49 @@ export function briefTitle(brief) {
   return clean.length > 64 ? `${clean.slice(0, 61)}…` : clean;
 }
 
-function compose(theme, platform, opts) {
+function compose(theme, platform, opts, ctx = {}) {
   const { hookIdx = 0, ctaIdx = 0, tagIdx = 0, short = false, friendly = false, numberPrompt = false } = opts;
-  const hook = friendly ? theme.friendlyHook : theme.hooks[hookIdx % theme.hooks.length];
+  const mode = ctx.mode || 'editorial';
   const tags = theme.hashtags[tagIdx % theme.hashtags.length];
-  const cta = theme.ctas[ctaIdx % theme.ctas.length];
   const isShort = short || platform === 'X';
   const noTags = platform === 'Google Business Profile'; // Google Business Profile posts don't use hashtags
-  const parts = [hook];
-  if (isShort) {
-    parts.push(`The usual culprit: ${theme.fixes[0].charAt(0).toLowerCase()}${theme.fixes[0].slice(1)} isn’t happening.`);
-    parts.push(cta);
-    if (!noTags) parts.push(tags.slice(0, 3).join(' '));
+  const tagLine = () => (platform === 'Instagram' ? [...tags, '#Engineering', '#BuildingServices'] : isShort ? tags.slice(0, 3) : tags).join(' ');
+  const parts = [];
+  if (mode === 'promo') {
+    // Direct-response, this job only: service first, a concrete benefit, one clear call to action.
+    parts.push(PROMO.hooks[hookIdx % PROMO.hooks.length]);
+    if (!isShort) { parts.push(PROMO.benefit); parts.push(`What you get:\n${PROMO.gets.map((g) => `• ${g}`).join('\n')}`); }
+    if (numberPrompt) parts.push('[Add your own figure here, e.g. how long a typical job takes from completion to invoice.]');
+    parts.push(`${ctx.cta || 'Request a Free Workflow Review'}: send us a message or use the link in our profile to book your slot.`);
   } else {
-    if (theme.problem) parts.push(theme.problem);
-    parts.push(`Across a commercial maintenance business, those small gaps add up:\n${theme.impacts.map((i) => `• ${i}`).join('\n')}`);
-    if (numberPrompt) parts.push('[Add your own figure here, e.g. the value of work completed but not yet invoiced this month.]');
-    parts.push(`Three fixes that help:\n${theme.fixes.map((f, i) => `${i + 1}. ${f}`).join('\n')}`);
-    parts.push(cta);
-    if (!noTags) parts.push((platform === 'Instagram' ? [...tags, '#Engineering', '#BuildingServices'] : tags).join(' '));
+    // Nexai's editorial voice: an honest update from inside Nexai, something useful, low pressure.
+    const ed = theme.ed;
+    const fixes = ed.fixes || theme.fixes;
+    parts.push(friendly ? theme.friendlyHook : ed.intros[hookIdx % ed.intros.length]);
+    if (isShort) parts.push(`One thing that helps: ${fixes[0].charAt(0).toLowerCase()}${fixes[0].slice(1)}.`);
+    else {
+      parts.push(ed.prompted);
+      if (theme.problem) parts.push(theme.problem);
+      parts.push(`${ed.problemLead}\n${theme.impacts.map((i) => `• ${i}`).join('\n')}`);
+      if (numberPrompt) parts.push('[Add your own figure here, e.g. the value of work completed but not yet invoiced this month.]');
+      parts.push(`${ed.outcomeLead}\n${fixes.map((f, i) => `${i + 1}. ${f}`).join('\n')}`);
+      for (const w of ctx.wip || []) parts.push(`${w} is our own product and still a work in progress, so this is what we’re learning as we build, not a finished result we can point to yet.`);
+    }
+    // Vary the ending: invite a comment, invite a message, or end on the useful point.
+    const end = variant(`${ctx.seed || ''}:${ctaIdx}`, 3);
+    if (end === 0) parts.push('If you’re working through the same thing, tell us in the comments how you handle it.');
+    else if (end === 1) parts.push('If any of this sounds familiar, send us a message. We’re always happy to compare notes.');
+    else parts.push(`If you change one thing this month, make it this: ${fixes[0].charAt(0).toLowerCase()}${fixes[0].slice(1)}.`);
   }
+  if (!noTags) parts.push(tagLine());
   return { text: parts.join('\n\n'), opts: { hookIdx, ctaIdx, tagIdx, short, friendly, numberPrompt } };
+}
+
+/** The tone and profile details a template needs: mode, CTA wording, and products mentioned without approved claims. */
+function context(job, profile) {
+  const mode = job.tone?.mode || toneFor(job.brief).mode;
+  const wip = (profile?.proof || []).filter((p) => !p.claims?.trim() && norm(job.brief).includes(norm(p.name))).map((p) => p.name);
+  return { mode, cta: profile?.cta?.main || '', wip, seed: job.id || job.brief };
 }
 
 /**
@@ -157,11 +248,12 @@ function removeQuoted(text, feedback) {
 
 export function draftCaption(job, profile = null, date = null) {
   const theme = THEMES[themeFor(job.brief)];
-  const composed = compose(theme, job.platform, {});
+  const ctx = context(job, profile);
+  const composed = compose(theme, job.platform, {}, ctx);
   const applied = applyProfile(composed.text, job, profile, date);
   return {
-    content: { text: applied.text, opts: composed.opts, audience: audienceFrom(job.brief), offerId: applied.offerId },
-    notes: [`Drafted for ${audienceFrom(job.brief)} on ${job.platform}`, 'Hook → problem → practical fixes → question → hashtags', ...(profile ? ['Used the business profile (offers, hashtag rule)'] : [])],
+    content: { text: applied.text, opts: composed.opts, audience: audienceFrom(job.brief), offerId: applied.offerId, tone: ctx.mode },
+    notes: [`Drafted for ${audienceFrom(job.brief)} on ${job.platform}`, ctx.mode === 'promo' ? 'Direct-response promotion (this job only): service → benefit → what you get → booking CTA' : 'Editorial voice: honest update → what prompted it → everyday problem → what we’re working towards → a useful ending', ...(profile ? ['Used the business profile (voice, offers, hashtag rule)'] : [])],
   };
 }
 
@@ -175,14 +267,14 @@ export function reviseCaption(job, prev, feedback, n, profile = null, date = nul
   if (/short|concise|trim|tight|long/.test(f)) { o.short = true; notes.push('Cut down to a shorter version'); }
   if (/hashtag|tags/.test(f)) { o.tagIdx = (o.tagIdx || 0) + 1; notes.push('Swapped in a different hashtag set'); }
   if (/friendl|casual|warm|less formal|tone/.test(f)) { o.friendly = true; notes.push('Warmer, more conversational opening'); }
-  if (/question|cta|call to action|ending|close/.test(f)) { o.ctaIdx = (o.ctaIdx || 0) + 1; notes.push('New closing question'); }
+  if (/question|cta|call to action|ending|close/.test(f)) { o.ctaIdx = (o.ctaIdx || 0) + 1; notes.push('New ending'); }
   if (/stat|number|figure|data/.test(f)) { o.numberPrompt = true; notes.push('Added a placeholder for your own figure (no invented stats)'); }
   if (/hook|open|start|first line|punch/.test(f) || notes.length === 0) {
     o.friendly = false;
     o.hookIdx = (o.hookIdx || 0) + 1;
     notes.push('Rewrote the opening line');
   }
-  const { text, opts } = compose(theme, job.platform, o);
+  const { text, opts } = compose(theme, job.platform, o, context(job, profile));
   const applied = applyProfile(text, job, profile, date, prev.offerId || null);
   return { content: { ...prev, text: applied.text, opts, offerId: applied.offerId }, notes: [`v${n}: ${notes.join('; ')}`] };
 }
@@ -190,13 +282,15 @@ export function reviseCaption(job, prev, feedback, n, profile = null, date = nul
 export function draftGraphic(job, profile = null) {
   const key = themeFor(job.brief);
   const theme = THEMES[key];
+  const promo = (job.tone?.mode || toneFor(job.brief).mode) === 'promo';
   return {
     content: {
       theme: key,
       scene: theme.scenes[0],
-      headline: theme.headlines[0],
-      sub: theme.sub,
-      chip: theme.chip,
+      headline: promo ? PROMO.headlines[0] : theme.headlines[0],
+      sub: promo ? PROMO.sub : theme.sub,
+      chip: promo ? PROMO.chip : theme.chip,
+      tone: promo ? 'promo' : 'editorial',
       accent: 'cyan',
       logoScale: 1,
       platform: job.platform,

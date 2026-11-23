@@ -1,4 +1,4 @@
-# Nexai AI Marketing HQ (milestone 10)
+# Nexai AI Marketing HQ (milestone 10 + team update)
 
 Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer). Review both together, request revisions with feedback, approve the pair, and see it on the private content calendar.
 
@@ -62,9 +62,45 @@ With no settings the server runs in **browser demo mode**: HQ opens, jobs live i
 
 **Vercel build.** Vercel's zero-config `node` preset compiles `server.js` into one server function and routes `/` and every unmatched path to it, so the function needs `public/` beside it. `vercel.json` adds it with `includeFiles: "public/**"`. Without that, `GET /` returns 404 while `GET /index.html` (served from Vercel's static copy) still works. `npm run test:vercel-build` runs the same build locally from Git-tracked files and checks the function's files and responses.
 
+## Team update before Milestone 11
+
+**Portraits.** Calibre, Vantage and Cue now use the approved three-panel artwork (`design/source-art/team-three-panel.webp`), split by `tools/split-team-art.py` into `public/assets/agents/{calibre,vantage,cue}.webp`. Each is 446 × 695, the same frame as Quill and Prism. The phone strips keep Calibre's inspection lens, Vantage's chart and Cue's camera in view. Names, roles and status are real text, not part of an image.
+
+**An occupied HQ.** This replaces the earlier “idle is still” decision. Every agent has a quiet idle loop:
+
+- **Vektor:** a slow tail sway and an occasional claw adjustment.
+- **Quill:** a glint along the visor and a hovering stylus.
+- **Prism:** the lens refocusing and the projection shimmering.
+- **Calibre:** small focus adjustments of the reticle.
+- **Vantage:** a wrist glow and a head tilt towards the display.
+- **Cue:** a small framing adjustment of the camera.
+
+Each agent has its own rhythm, and the badges still read *Idle*. Work motion is tied to the real state:
+
+- **Vektor (delegating):** lifts the stinger and sends a cyan handoff across HQ to the agents receiving the job.
+- **Quill (writing):** the stylus traces lines.
+- **Prism (designing):** the aperture turns and the artwork comes into focus.
+- **Calibre (reviewing):** a scan passes over the proof and pauses on a finding.
+- **Vantage (analysing):** the display traces a comparison. It's decorative and never shows figures.
+- **Cue (rendering):** the tally light comes on and the monitor bar follows the real render progress.
+
+The moving parts are feathered crops or overlays anchored in each portrait's own pixel space. A faint light sweep crosses the workstations. The **Motion** switch in the header turns all of this off or on and is remembered in the browser. Until you choose, it follows the system's reduced-motion setting. Loops pause while the agents are off screen.
+
+**Kieran's editorial voice.** The business profile has an editable **Editorial voice** (`writing.voice`), seeded with Kieran's guidance. Existing profiles get it as a new version, with every other field kept as the owner left it; a voice that's already there (edited, or deliberately blank) is never overwritten. It's the default tone for organic content:
+
+- Vektor's plans (template and AI);
+- Quill's captions and revisions (demo templates, mock and the live provider prompt);
+- Prism's headlines;
+- Cue's scripts;
+- Calibre's reviews, which flag hard-sell wording in editorial jobs.
+
+Only a brief that explicitly asks for a **hard sell, a direct-response advert or a promotional / booking CTA** switches that job to a promotional tone, ending on the profile's CTA. That applies to the one job only; “write about our services” keeps the default. Audience, channel rules, approved claims, valid offers and your approval before publishing apply either way. Every job, plan and video editor shows the **tone** it's working to; expand it to read the exact voice. The rules live in `public/js/voice.js`, shared by the browser and the server.
+
+Previews: `design/previews/m10u-hq-ambient-and-handoff.mp4` (18 s: idle, a real delegation, back to ambient), `m10u-phone-hq.mp4`, `m10u-phone-hq.png`, `m10u-motion-off.png`, and the three workspace heroes.
+
 ## Cue, the Video Creator (milestone 10)
 
-The sixth agent: a gunmetal robot with a cinema camera rig over its shoulder. The artwork in `public/assets/agents/video.svg` is interim and drawn locally; swap in a rendered character when you have one. Its REC lamp blinks only while a storyboard is being drafted or a video is actually rendering. Its workspace shows the assigned job, progress, the latest output and the history.
+The sixth agent: a gunmetal robot with a cinema camera rig over its shoulder (`public/assets/agents/cue.webp`). Its tally light comes on only while a video is actually rendering. Its workspace shows the assigned job, progress, the latest output and the history.
 
 - **Brief → video:** on HQ choose **Video post (15–30 s)**, pick the platform and add a screen recording or clip (MP4, MOV or WebM, up to 100 MB). Vektor gives the post caption to Quill and the video to Cue. Cue drafts an editable **script and storyboard** from a labelled template (*demo mode, not AI*): scenes with an on-screen caption, script notes, length and the part of the clip to use. In the **video editor** you can trim (“Start here” takes the clip's current time), change scene timing, reorder, add or remove scenes, edit the on-screen captions and set the logo position. The post caption stays separate: it's Quill's, on the post page.
 - **A real video file, made in your browser:** frames are drawn on a 1080 × 1350 canvas and recorded with the browser's MediaRecorder, in real time (a 20 s video takes about 20 s; keep HQ on screen). Captions sit in their own band, so they never cover the screen action. **MP4 (H.264)** is used where the browser can record it, otherwise **WebM**, and the label and file extension say which. WebM files get their duration written in, so other players show the right length. The draft is saved before each render. If rendering fails, or the device can't export (no MediaRecorder), nothing is lost and the editor says so. Nothing is sent to a paid or remote service.
@@ -74,7 +110,7 @@ The sixth agent: a gunmetal robot with a cinema camera rig over its shoulder. Th
 
 ## Vantage, the Marketing Analyst (milestone 9)
 
-The fifth agent: a gunmetal robot studying a chart projected from its wrist. Click its HQ card to open its workspace, which works on a phone. The artwork in `public/assets/agents/analyst.svg` is interim and drawn locally, like the Reviewer's; swap it for a rendered character when you have one. Everything is **rules-based arithmetic on figures you enter**: no AI, no live connections. Platform and Metricool connections come in Milestone 11.
+The fifth agent: a gunmetal robot studying a chart projected from its wrist (`public/assets/agents/vantage.webp`). Click its HQ card to open its workspace, which works on a phone. Everything is **rules-based arithmetic on figures you enter**: no AI, no live connections. Platform and Metricool connections come in Milestone 11.
 
 - **Results belong to the exact published version.** On any published demo post, the **Results** panel shows the platform, publication date, published caption and graphic, and the version numbers. Enter running totals for **impressions**, **link clicks** and **owner-attributed enquiries**, with the date you measured them. Leave a box empty when you don't have the figure: it shows as *Not entered* (unknown), never as 0. Enter 0 only when you checked and it was zero. Each entry is a new measurement of the same post: enter 12 clicks today and 18 tomorrow, and the latest total is 18, with both kept in the history. A total lower than an earlier measurement is refused, because running totals can't go down. Recorded measurements can't be edited or removed.
 - **Comparing posts** (Analyst workspace → Compare): filter by platform, publication date and *your posts* / *sample posts*. Posts are compared only on the same platform and over the same window: the measurement taken *N* days after publishing, 7 by default. *Latest figures* is available but labelled *not comparable*. Click-through = link clicks ÷ impressions, worked out only when both are known and impressions are above zero; the formula is shown beside each figure. Every observation lists the figures behind it, and each result links to its original post.
@@ -120,7 +156,7 @@ The demo publisher's records live in `data/demo-publisher.json` in the shared wo
 - **Needs your judgement:** whether the image looks like a real UK commercial setting. The graphic is shown for you to inspect.
 - Each finding says what was found, where (caption version and paragraph, or graphic version), why it matters and who can fix it. *Send to Quill* and *Send to Prism* open the existing revision controls with the fix pre-filled for you to edit.
 - If the caption or graphic changes, the earlier review is marked outdated and kept in the history. Calibre never approves; you do.
-- **Artwork:** `public/assets/agents/reviewer.svg` is interim, locally drawn artwork (a precision inspection lens). Replace it with a rendered character in the Milestone 6 style (446 × 695 portrait, lens centred near (223, 262)); see `public/js/agents.js`.
+- **Artwork:** `public/assets/agents/calibre.webp`, from the approved three-panel artwork (see the team update above).
 
 `HQ_TEST_DATE=YYYY-MM-DD` on the server fixes "today" for offer and review checks in a test workspace, and the app shows a banner while it's set.
 
@@ -178,6 +214,7 @@ npm run test:m4      # Milestone 4 shared workspace: desktop + iPhone-emulation 
 npm run test:m5      # Milestone 5 weekly planning: template plan, edits, forced failure + retry, approvals, second browser, AI-path (mock) on phone (own server on :4178)
 npm run test:m6      # Milestone 6 redesign: phone/desktop framing, keyboard, state-driven motion, reduced motion; saves design/previews/ (own server on :4179)
 npm run test:m7      # Milestone 7: profile versions, expired-offer review on a fixed test date, phone controls (own server on :4181)
+npm run test:team    # Team update: portraits, ambient/work motion, motion switch, editorial voice, profile migration, recordings (:4187–4189)
 npm run test:m10     # Milestone 10: video brief → storyboard → render → download, ffprobe checks, v2, approval/publishing, phone playback, failures (servers on :4185 shared, :4186 demo)
 npm run test:m9      # Milestone 9: Marketing Analyst, results entry, sample decision, filters, brief to Vektor (server on :4184)
 npm run test:m8      # Milestone 8: demo publishing and scheduling with a test clock (servers on :4182 shared, :4183 demo mode)

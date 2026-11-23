@@ -8,6 +8,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk').default;
 const mock = require('./quill-mock');
+const V = require('../public/js/voice.js'); // the same tone rules the browser uses
 
 // Model and effort are server-side settings. Default: Claude Sonnet 5.5 at medium effort, a cost-effective
 // choice for short social captions (verified against platform.claude.com docs, November 2026).
@@ -52,13 +53,13 @@ const WRITING_PROCESS = `How to write (working stand-in for Nexai's Winner's Wri
 1. Find the one operational moment in the brief the reader will recognise from their own week, and open on it in concrete terms.
 2. Name the real cost of that moment in operational terms (cash held up, admin time, chasing, client friction) without inventing figures.
 3. Give one or two practical things the reader could change on Monday. Be specific about who does what and when.
-4. Close with a genuine question or a light, useful next thought. No pitch.`;
+4. Close with a genuine question, an invitation to comment or message, or simply the useful point. No pitch (unless the tone section says this job is a direct-response promotion).`;
 
 const SELF_REVIEW = `Before answering, silently check (working stand-in for Nexai's self-review checklist):
 - Does it use the operational detail from the brief, not generic marketing language?
 - Is it natural British English (spelling, idiom, tone) that a UK operations director would write themselves?
 - Is every claim either from the brief or plainly framed as common experience? No invented statistics, results, client names or quotes.
-- Is it useful even if the reader never contacts Nexai? No hard sell, no "book a demo", no hype words.
+- Is it useful even if the reader never contacts Nexai? No hard sell, no "book a demo", no hype words (unless the tone section says this job is a direct-response promotion; then one clear call to action is right).
 - Does it fit the platform conventions and any length or format limit in the feedback?`;
 
 const SYSTEM_PROMPT = `You are Quill, the Copywriter for Nexai Digital's internal marketing team.
@@ -68,8 +69,9 @@ Audience: owners, managing directors and operations directors of UK commercial m
 Voice: natural British English (British spelling such as "organise", "colour", "programme"; UK terms such as "job sheet", "engineer", "PPM", "reactive"). Plain, warm, direct. Short paragraphs. No em dashes. No clichés such as "game-changer", "unlock", "in today's fast-paced world". No emojis unless the brief asks.
 
 Rules:
-- Use the operational detail in the brief. Write about the reader's situation, not about Nexai.
-- Give the reader something genuinely useful. Avoid hard selling and calls to buy.
+- Use the operational detail in the brief. Follow the tone section in the user message: by default Nexai's editorial voice from the business profile (an honest update from inside Nexai, first-person plural where it fits).
+- Unless the tone section says this job is a direct-response promotion, give the reader something genuinely useful and avoid hard selling and calls to buy.
+- Keep work in progress distinct from products, results or client work Nexai can genuinely point to.
 - Never invent results, statistics, percentages, client names, testimonials or quotes. If a number would help, leave a clearly marked placeholder in square brackets for the team to fill in.
 - Platform conventions: LinkedIn - line breaks between short paragraphs, end with 3 to 5 relevant hashtags on their own line. Instagram - conversational, up to 8 relevant hashtags at the end. Facebook - conversational, at most 2 hashtags. X - under 280 characters including at most 2 hashtags. Google Business Profile - a short, practical update of 80 to 200 words in plain text with no hashtags; it may end with one low-key line inviting questions, never a sales pitch.
 
@@ -115,6 +117,7 @@ function profileBlock(p, date) {
 function buildUserMessage(req) {
   const lines = [`Platform: ${req.platform}`, `Post date: ${req.targetDate || 'not set'}`, `Job brief (from the Nexai team):\n"""\n${req.brief}\n"""`];
   if (req.profile) lines.push(profileBlock(req.profile, req.targetDate || ''));
+  lines.push(V.promptBlock(req.tone || V.toneFor(req.brief), req.voice || V.voiceOf(req.profile?.data), req.profile?.data?.cta?.main));
   if (req.kind === 'revision') {
     lines.push(`Current caption (version ${req.currentVersion}):\n"""\n${req.currentCaption}\n"""`);
     lines.push(`Reviewer feedback, quoted exactly:\n"""\n${req.feedback}\n"""`);
@@ -151,8 +154,16 @@ function validate(body) {
       feedback: kind === 'revision' ? feedback.trim() : undefined,
       targetDate: /^\d{4}-\d{2}-\d{2}$/.test(body.targetDate || '') ? body.targetDate : null,
       profile: body.profile && typeof body.profile === 'object' && JSON.stringify(body.profile).length < 80000 ? body.profile : null,
+      ...toneAndVoice(body),
     },
   };
+}
+
+/** The job's tone (from the client, or decided here from the brief) and the profile's editorial voice. */
+function toneAndVoice(body) {
+  const t = body.tone && ['editorial', 'promo'].includes(body.tone.mode) ? { mode: body.tone.mode, label: String(body.tone.label || '').slice(0, 120), reason: String(body.tone.reason || '').slice(0, 400) } : V.toneFor(body.brief);
+  const voice = typeof body.voice === 'string' && body.voice.trim() ? body.voice.trim().slice(0, 2000) : V.voiceOf(body.profile?.data);
+  return { tone: t, voice };
 }
 
 /* ---------- Generation ---------- */
@@ -214,7 +225,7 @@ module.exports = { generate, providerInfo, QuillError, buildUserMessage, profile
 /* ---------- Vektor: weekly plan (one explicit request) ---------- */
 const PLAN_SYSTEM = `You are Vektor, Marketing Manager for Nexai Digital's internal marketing team.
 Plan a week of organic social posts for owners, managing directors and operations directors of UK commercial maintenance and building services firms.
-Use natural British English. Each post must give the reader something practical they can use. No hard sell, no invented statistics, results, clients or quotes.
+Use natural British English. Each post must give the reader something practical they can use. Follow the tone section in the user message (by default Nexai's editorial voice; a direct-response tone only when the brief explicitly asks). No invented statistics, results, clients or quotes.
 For every day you're given (date and platform are fixed), return:
 - audience: who this post speaks to, specifically (one short phrase)
 - angle: the single idea of the post (one sentence)
@@ -253,9 +264,10 @@ async function planWeek(body) {
   if (PROVIDER === 'demo') throw new QuillError('No AI provider is configured on the server.', { status: 503, retryable: false, code: 'not_configured' });
   const { value, error } = validatePlanRequest(body);
   if (error) throw new QuillError(error, { status: 400, retryable: false, code: 'invalid' });
-  if (PROVIDER === 'mock') return { days: await mock.planWeek({ ...value, profile: body.profile || null }), provider: 'mock', model: 'mock-vektor' };
+  const tv = toneAndVoice(body);
+  if (PROVIDER === 'mock') return { days: await mock.planWeek({ ...value, ...tv, profile: body.profile || null }), provider: 'mock', model: 'mock-vektor' };
   const prof = body.profile && typeof body.profile === 'object' && JSON.stringify(body.profile).length < 80000 ? `\n\n${profileBlock(body.profile, value.weekStart)}` : '';
-  const user = `Week beginning ${value.weekStart} (Europe/London).${prof}\n\nBrief from the Nexai team:\n"""\n${value.brief}\n"""\n\nDays to plan, in order:\n${value.days.map((d, i) => `${i + 1}. ${d.dayName} ${d.date}: ${d.platform}`).join('\n')}`;
+  const user = `Week beginning ${value.weekStart} (Europe/London).${prof}\n\n${V.promptBlock(tv.tone, tv.voice, body.profile?.data?.cta?.main)}\n\nBrief from the Nexai team:\n"""\n${value.brief}\n"""\n\nDays to plan, in order:\n${value.days.map((d, i) => `${i + 1}. ${d.dayName} ${d.date}: ${d.platform}`).join('\n')}`;
   let response;
   try {
     response = await client.messages.create({

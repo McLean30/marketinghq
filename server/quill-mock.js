@@ -23,6 +23,31 @@ function removeQuoted(caption, feedback) {
 }
 
 function draftFor(req) {
+  // Tone from voice.js (sent by the app, or decided from the brief): the mock follows it so tests can check it.
+  if (req.tone?.mode === 'promo') {
+    return {
+      caption: [
+        'Not sure where jobs slow down between site and invoice? Our free workflow review will show you.',
+        'We walk through how a job moves through your business, from booking to invoice, and point out the steps worth fixing first.',
+        `${req.profile?.data?.cta?.main || 'Request a Free Workflow Review'}: book your slot by sending us a message today.`,
+        req.platform === 'LinkedIn' ? profileTags(req) : '#FacilitiesManagement',
+      ].join('\n\n'),
+      notes: 'Mock direct-response draft (this job only): service, benefit and one booking call to action.',
+    };
+  }
+  if (/jobtrack|what we(?:’|')?ve? learn/i.test(req.brief)) {
+    return {
+      caption: [
+        'We’ve been building JobTrack Pro, our own job app for maintenance teams, and it keeps changing how we design workflows for clients.',
+        'What prompted it: the same gap kept appearing between engineers on site and the office, so we started building something to close it ourselves.',
+        'The biggest lesson so far: capture evidence at the moment the work is done. Everything downstream gets easier when the photo and the signature arrive with the job.',
+        'JobTrack Pro is still a work in progress, so this is what we’re learning as we build rather than a result we can point to yet.',
+        'If you’re wrestling with the same handover, send us a message. We’re happy to compare notes.',
+        req.platform === 'LinkedIn' ? profileTags(req) : '#FieldService',
+      ].join('\n\n'),
+      notes: 'Mock draft in Nexai’s editorial voice: an honest update from inside Nexai, work in progress kept distinct.',
+    };
+  }
   if (/\boffer\b/i.test(req.brief) && activeOffers(req).length) {
     const o = activeOffers(req)[0];
     return {
@@ -65,8 +90,8 @@ function draftFor(req) {
     };
   }
   return {
-    caption: `A quick thought for ${req.platform} on the brief: "${req.brief.slice(0, 120)}".\n\nWhat would you change first?\n\n${TAGS}`,
-    notes: 'Generic mock draft.',
+    caption: `A quick update from us at Nexai on the brief: "${req.brief.slice(0, 120)}".\n\nWhat would you change first? Tell us in the comments.\n\n${TAGS}`,
+    notes: 'Generic mock draft (editorial voice).',
   };
 }
 
@@ -90,14 +115,14 @@ function revisionFor(req) {
 }
 
 async function generate(req) {
-  calls.push({ kind: req.kind, platform: req.platform, brief: req.brief, feedback: req.feedback || null, currentCaption: req.currentCaption || null });
+  calls.push({ kind: req.kind, platform: req.platform, brief: req.brief, feedback: req.feedback || null, currentCaption: req.currentCaption || null, tone: req.tone?.mode || null, voice: req.voice || null });
   await sleep(DELAY_MS);
   return req.kind === 'revision' ? revisionFor(req) : draftFor(req);
 }
 
 const planCalls = [];
 async function planWeek(req) {
-  planCalls.push({ brief: req.brief, weekStart: req.weekStart, days: req.days.map((d) => `${d.dayName} ${d.platform}`) });
+  planCalls.push({ brief: req.brief, weekStart: req.weekStart, days: req.days.map((d) => `${d.dayName} ${d.platform}`), tone: req.tone?.mode || null, voice: req.voice || null });
   await sleep(DELAY_MS);
   const angles = [
     ['Maintenance directors', 'Finished jobs that sit unbilled are cash you have already earned', 'Pull a “complete but not invoiced” list every Monday morning'],

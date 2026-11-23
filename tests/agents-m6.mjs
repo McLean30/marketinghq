@@ -111,7 +111,7 @@ s=Image.new('RGB',(a.width+m.width+24,a.height),(0,0,0)); s.paste(m,(0,0)); s.pa
     await dp.keyboard.press(key);
     await dp.waitForSelector('.sheet .size-hero');
     assert(dp.url().endsWith(`#/agent/${id}`) && (await dp.locator('.sheet .size-hero .char-name').innerText()) === name, `${name} card opens ${name}’s workspace with the same artwork`);
-    assert(await dp.locator(`.sheet .size-hero img[src$="${id === 'manager' ? 'vektor.webp' : id === 'copywriter' ? 'quill.webp' : id === 'designer' ? 'prism.webp' : 'reviewer.svg'}"]`).count() === 1, `${name} workspace uses the same artwork file`);
+    assert(await dp.locator(`.sheet .size-hero img[src$="${id === 'manager' ? 'vektor.webp' : id === 'copywriter' ? 'quill.webp' : id === 'designer' ? 'prism.webp' : id === 'reviewer' ? 'calibre.webp' : id === 'analyst' ? 'vantage.webp' : 'cue.webp'}"]`).count() === 1, `${name} workspace uses the same artwork file`);
     await dp.keyboard.press('Escape');
     await dp.waitForSelector('.sheet', { state: 'detached' });
   }

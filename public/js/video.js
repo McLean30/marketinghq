@@ -105,10 +105,19 @@ export function templateStoryboard(job, clip) {
     { title: 'Why it helps', duration: 5, footage: true, from: d * 0.55, caption: 'The office sees it straight away.', script: 'Show the result the office sees.' },
     { title: 'Takeaway', duration: 3, footage: true, from: d * 0.8, caption: 'Takeaway: capture it before you leave site.', script: 'One practical takeaway.' },
   ];
+  // Tone (voice.js): editorial by default, ending on a useful takeaway; a promo brief ends on one booking CTA.
+  const promo = job.tone?.mode === 'promo';
+  if (promo) {
+    const last = scenes[scenes.length - 1];
+    last.title = 'Call to action';
+    last.caption = 'Request a Free Workflow Review: message us to book.';
+    last.script = 'Direct-response ending for this job only (the brief asked for it). One clear call to action.';
+  } else scenes[scenes.length - 1].script += ' Editorial voice: informative and low-pressure, ending on the useful point.';
   for (const s of scenes) { s.id = sid(); s.from = Math.round(clampFrom(s.from, d, s.duration) * 10) / 10; }
   return {
     template: receipt ? 'receipt-walkthrough' : 'walkthrough',
     label: 'Template script and storyboard (demo mode, not AI)',
+    tone: promo ? 'promo' : 'editorial',
     platform: job.platform,
     scenes,
     logo: { pos: 'top-right' },

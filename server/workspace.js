@@ -33,6 +33,19 @@ function W() {
     ws.profile = { rev: 1, versions: [{ id: versionId(1, seed), n: 1, savedAt: Date.now(), savedBy: 'seed', data: seed }] };
     writeAtomic(file(), JSON.stringify(ws));
   }
+  // Profiles saved before the editorial voice existed get it as a new version; every other field is kept as the
+  // owner left it. A profile that already has a voice (edited, or deliberately blank) is never changed.
+  const cur = ws.profile.versions.at(-1);
+  if (typeof cur.data?.writing?.voice !== 'string') {
+    const V = require('../public/js/voice.js');
+    const data = JSON.parse(JSON.stringify(cur.data));
+    data.writing = { ...(data.writing || {}), voice: V.DEFAULT_VOICE };
+    const n = ws.profile.versions.length + 1;
+    ws.profile.versions.push({ id: versionId(n, data), n, savedAt: Date.now(), savedBy: 'update: editorial voice added', data });
+    ws.profile.rev += 1;
+    ws.rev += 1;
+    writeAtomic(file(), JSON.stringify(ws));
+  }
   state = ws;
   return state;
 }

@@ -1,6 +1,14 @@
-// Vektor, Quill and Prism: artwork from the approved HQ mockup (design/approved-hq-mockup.png, cleaned by
-// tools/make-agent-art.py) plus effect layers positioned in the artwork's own pixel space, so they line up at
-// any size. Effects run only for the real task state carried in [data-state]; idle is still.
+// The HQ team's artwork and motion.
+// Vektor, Quill and Prism come from the approved HQ mockup (design/approved-hq-mockup.png, cleaned by
+// tools/make-agent-art.py). Calibre, Vantage and Cue come from the approved three-panel artwork
+// (design/source-art/team-three-panel.webp, split by tools/split-team-art.py).
+//
+// Motion lives in the artwork's own pixel space, so it stays on the tool, joint or light at any size:
+//   - idle layers: a quiet loop (feathered crops of the portrait that move a few pixels, or a glow), so HQ feels
+//     occupied between jobs. The badge still reads "Idle".
+//   - work layers: run only for the agent's real state in [data-state] (delegating, writing, designing, reviewing,
+//     analysing, rendering). Cue's render progress comes from the actual render (--p on the card).
+// All loops respect reduced motion and the HQ motion switch, and pause while offscreen (see app.js).
 
 const ART = {
   manager: {
@@ -20,84 +28,89 @@ const ART = {
     card: { top: 0, h: 670 },
   },
   reviewer: {
-    // Interim artwork (public/assets/agents/reviewer.svg), drawn locally. Swap for a rendered character in the
-    // Milestone 6 style: same file name or update src/w/h, and keep the lens centre at (223, 262), radius ~104.
-    src: 'assets/agents/reviewer.svg', w: 446, h: 695, alt: 'Calibre, a gunmetal robot whose head is a precision inspection lens with a cyan reticle',
-    thumb: { cx: 223, cy: 262, size: 280 },
-    window: { top: 110, h: 330 },
+    src: 'assets/agents/calibre.webp', w: 446, h: 695, alt: 'Calibre, a gunmetal robot whose head is a precision inspection lens with a cyan reticle, holding a proof under an inspection light',
+    thumb: { cx: 236, cy: 233, size: 230 },
+    window: { top: 90, h: 430 }, // workspace hero: lens, inspection light and proof
     card: { top: 0, h: 670 },
-    banner: { top: 118, h: 290 }, // phone: wide strip centred on the lens
+    banner: { top: 128, h: 230 }, // phone strip: the inspection lens and light
   },
   analyst: {
-    // Interim artwork (public/assets/agents/analyst.svg), drawn locally: a side-profile robot with a visor and dorsal
-    // fin studying a chart projected from its wrist. Swap for a rendered character; keep the chart panel in place.
-    src: 'assets/agents/analyst.svg', w: 446, h: 695, alt: 'Vantage, a gunmetal robot with a glowing visor studying a holographic chart projected from its wrist',
-    thumb: { cx: 150, cy: 235, size: 250 },
-    window: { top: 80, h: 360 },
+    src: 'assets/agents/vantage.webp', w: 446, h: 695, alt: 'Vantage, a gunmetal robot with a cyan visor studying a holographic chart projected from its wrist',
+    thumb: { cx: 140, cy: 190, size: 250 },
+    window: { top: 50, h: 400 },
     card: { top: 0, h: 670 },
-    banner: { top: 90, h: 300 }, // phone: head, visor and chart
+    banner: { top: 62, h: 250 }, // phone strip: head, visor and the projected chart
   },
   video: {
-    // Interim artwork (public/assets/agents/video.svg), drawn locally: a robot with a cinema camera rig mounted over
-    // its right shoulder. Swap for a rendered character; keep the REC lamp and lens where the effects expect them.
-    src: 'assets/agents/video.svg', w: 446, h: 695, alt: 'Cue, a gunmetal robot with a cinema camera rig mounted over its shoulder and a red REC lamp',
-    thumb: { cx: 260, cy: 215, size: 300 },
-    window: { top: 60, h: 360 },
+    src: 'assets/agents/cue.webp', w: 446, h: 695, alt: 'Cue, a gunmetal robot with a cinema camera rig on its shoulder, a monitor and a red tally light',
+    thumb: { cx: 250, cy: 200, size: 290 },
+    window: { top: 30, h: 400 },
     card: { top: 0, h: 670 },
-    banner: { top: 70, h: 300 }, // phone: head and camera rig
+    banner: { top: 48, h: 270 }, // phone strip: head and the camera rig
   },
 };
 
 const pct = (n) => `${+n.toFixed(3)}%`;
 let uidSeq = 0;
 
-/** A box of the artwork re-drawn on top of itself (for effects that move part of the image). */
-function cropLayer(a, x, y, w, h, cls, extra = '') {
+/**
+ * A box of the artwork re-drawn on top of itself, so a part of the portrait (a tail, a hand, a camera) can move a
+ * few pixels. `feather` softens the edges so the moving part blends into the still image underneath.
+ */
+function cropLayer(a, x, y, w, h, cls, { extra = '', origin = null, feather = false } = {}) {
   const L = (x / a.w) * 100, T = (y / a.h) * 100, W = (w / a.w) * 100, H = (h / a.h) * 100;
-  return `<span class="${cls}" aria-hidden="true" style="left:${pct(L)};top:${pct(T)};width:${pct(W)};height:${pct(H)};background-image:url(${a.src});background-size:${pct(10000 / W)} ${pct(10000 / H)};background-position:${pct((L / (100 - W)) * 100)} ${pct((T / (100 - H)) * 100)};${extra}"></span>`;
+  const mask = feather ? 'mask-image:radial-gradient(closest-side,#000 62%,transparent 100%);-webkit-mask-image:radial-gradient(closest-side,#000 62%,transparent 100%);' : '';
+  const o = origin ? `transform-origin:${pct(((origin[0] - x) / w) * 100)} ${pct(((origin[1] - y) / h) * 100)};` : '';
+  return `<span class="${cls}" aria-hidden="true" style="left:${pct(L)};top:${pct(T)};width:${pct(W)};height:${pct(H)};background-image:url(${a.src});background-size:${pct(10000 / W)} ${pct(10000 / H)};background-position:${pct((L / (100 - W)) * 100)} ${pct((T / (100 - H)) * 100)};${o}${mask}${extra}"></span>`;
 }
+const svg = (a, cls, body) => `<svg class="fx ${cls}" viewBox="0 0 ${a.w} ${a.h}" preserveAspectRatio="none" aria-hidden="true">${body}</svg>`;
 
 function effects(id) {
   const a = ART[id];
   if (id === 'manager') {
-    // Delegation pulse travels from the body, up the segmented tail, to the stinger.
-    return `<svg class="fx fx-vektor" viewBox="0 0 ${a.w} ${a.h}" preserveAspectRatio="none" aria-hidden="true">
-      <path class="fx-anim tail-pulse" pathLength="100" d="M560 250 C610 205 670 170 672 110 C674 60 640 15 590 5 C545 0 515 20 510 45 C505 80 500 110 498 145"/>
-      <circle class="fx-anim stinger-glow" cx="499" cy="140" r="9"/>
-    </svg>`;
+    // Idle: slow tail sway, an occasional claw adjustment. Delegating: the stinger lifts and a pulse runs up the tail.
+    return cropLayer(a, 470, 0, 300, 275, 'amb vk-tail', { origin: [565, 262], feather: true }) +
+      cropLayer(a, 0, 235, 245, 310, 'amb vk-claw', { origin: [225, 300], feather: true }) +
+      svg(a, 'fx-vektor', `<path class="fx-anim tail-pulse" pathLength="100" d="M560 250 C610 205 670 170 672 110 C674 60 640 15 590 5 C545 0 515 20 510 45 C505 80 500 110 498 145"/>
+      <circle class="fx-anim stinger-glow" cx="499" cy="140" r="9"/>`);
   }
   if (id === 'copywriter') {
-    // The stylus tip traces a short line on the glowing page.
-    return `<svg class="fx fx-quill" viewBox="0 0 ${a.w} ${a.h}" preserveAspectRatio="none" aria-hidden="true">
+    // Idle: a glint moves along the visor as if reading the draft; the stylus hovers. Writing: the stylus traces lines.
+    return cropLayer(a, 292, 286, 150, 186, 'amb ql-stylus', { origin: [330, 420], feather: true }) +
+      svg(a, 'fx-quill', `<line class="amb ql-visor" pathLength="100" x1="241" y1="95" x2="299" y2="162"/>
       <path class="fx-anim stylus-trace" pathLength="100" d="M398 458 c6 9 12 -7 19 1 s10 10 17 -1 s11 -8 18 3 s10 7 16 -2 s9 -6 14 3 s8 5 12 -1"/>
-      <circle class="fx-anim stylus-tip" cx="400" cy="455" r="6"/>
-    </svg>`;
+      <circle class="fx-anim stylus-tip" cx="400" cy="455" r="6"/>`);
+  }
+  if (id === 'designer') {
+    // Idle: the lens gently refocuses and the projection shimmers. Designing: the aperture turns, the artwork sharpens.
+    return cropLayer(a, 260, 70, 110, 110, 'fx-anim aperture') +
+      cropLayer(a, 106, 184, 214, 182, 'fx-anim projection', { extra: 'clip-path:polygon(2.3% 0,100% 18%,99.5% 100%,0 83%)' }) +
+      cropLayer(a, 252, 45, 140, 140, 'amb pr-lens', { feather: true }) +
+      svg(a, 'fx-prism soft', `<polygon class="amb pr-shimmer" points="111,184 320,217 319,366 106,335"/>`);
   }
   if (id === 'reviewer') {
-    // A scan line sweeps the lens and the reticle turns while a review runs.
-    return `<svg class="fx fx-reviewer" viewBox="0 0 ${a.w} ${a.h}" preserveAspectRatio="none" aria-hidden="true">
-      <clipPath id="rv-lens-${uidSeq++}"><circle cx="223" cy="262" r="104"/></clipPath>
-      <g clip-path="url(#rv-lens-${uidSeq - 1})"><rect class="fx-anim lens-scan" x="110" y="150" width="226" height="10" rx="5"/></g>
-      <circle class="fx-anim reticle-spin" cx="223" cy="262" r="62" fill="none" stroke-dasharray="3 7"/>
-    </svg>`;
-  }
-  if (id === 'video') {
-    // While a video is actually rendering (or a storyboard is being drafted) the REC lamp blinks and the lens pulses.
-    return `<svg class="fx fx-video" viewBox="0 0 ${a.w} ${a.h}" preserveAspectRatio="none" aria-hidden="true">
-      <circle class="fx-anim rec-blink" cx="333" cy="187" r="9"/>
-      <ellipse class="fx-anim lens-pulse" cx="438" cy="236" rx="10" ry="46"/>
-    </svg>`;
+    // Idle: small focus adjustments of the reticle. Reviewing: a scan passes over the proof and pauses on a finding.
+    const clip = `cb-proof-${uidSeq++}`;
+    return svg(a, 'fx-reviewer', `<clipPath id="${clip}"><polygon points="226,410 432,368 412,552 175,588"/></clipPath>
+      <g class="amb cb-reticle"><circle cx="236" cy="233" r="40" fill="none" stroke-dasharray="4 8"/><circle cx="236" cy="233" r="6"/></g>
+      <g clip-path="url(#${clip})"><rect class="fx-anim cb-scan" x="160" y="360" width="290" height="10" rx="5"/></g>
+      <circle class="fx-anim cb-finding" cx="297" cy="477" r="17" fill="none"/>
+      <circle class="fx-anim cb-light" cx="320" cy="368" r="14"/>`);
   }
   if (id === 'analyst') {
-    // The trend line redraws across the projected chart and the newest point pulses while results are analysed.
-    return `<svg class="fx fx-analyst" viewBox="0 0 ${a.w} ${a.h}" preserveAspectRatio="none" aria-hidden="true">
-      <polyline class="fx-anim trend-draw" pathLength="100" points="232,232 266,196 300,214 334,160 368,176 404,128 428,116"/>
-      <circle class="fx-anim point-pulse" cx="404" cy="128" r="7"/>
-    </svg>`;
+    // Idle: the wrist display glows and the head tilts towards it. Analysing: the display traces a comparison.
+    // Decorative only: these shapes never show figures; real numbers live in the workspace as text.
+    return cropLayer(a, 20, 55, 215, 255, 'amb va-head', { origin: [115, 300], feather: true }) +
+      svg(a, 'fx-analyst', `<circle class="amb va-glow" cx="319" cy="343" r="16"/>
+      <polyline class="fx-anim va-trace" pathLength="100" points="249,230 281,190 309,197 339,160 366,165 395,128 420,105"/>
+      <polyline class="fx-anim va-compare" pathLength="100" points="249,246 281,226 309,229 339,206 366,214 395,190 420,178"/>`);
   }
-  // Prism: the aperture turns and the projection comes into focus.
-  return cropLayer(a, 260, 70, 110, 110, 'fx-anim aperture') +
-    cropLayer(a, 106, 184, 214, 182, 'fx-anim projection', 'clip-path:polygon(2.3% 0,100% 18%,99.5% 100%,0 83%)');
+  // Cue. Idle: the camera makes a small framing adjustment. Rendering: the tally light comes on and the monitor
+  // shows the real render progress (--p, 0–1, set from the render).
+  return cropLayer(a, 150, 40, 296, 300, 'amb cu-camera', { origin: [250, 330], feather: true }) +
+    svg(a, 'fx-cue', `<circle class="fx-anim cu-tally" cx="246" cy="174" r="11"/>
+    <rect class="cu-track" x="116" y="118" width="58" height="6" rx="3"/>
+    <rect class="cu-progress" x="116" y="118" width="58" height="6" rx="3"/>`);
 }
 
 /** The artwork block. `windowed` crops a portrait character to its focal band (workspace hero). */
