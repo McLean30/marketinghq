@@ -294,6 +294,25 @@ try {
     const sent = await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('nexai-hq:demo-publisher') || '{}')).length);
     if (sent) throw new Failed('Something reached the demo publisher without a confirmation.');
     step(true, `Schedule (demo) form and confirmation render (${tz.match(/(GMT|BST)/)[0]}); backed out without confirming. Scheduler: ${/in this browser/.test(note) ? 'runs in this browser while HQ is open' : 'runs on the HQ server'}`);
+    if (EXPECT_SCHEDULING) {
+      // The calendar opens and shows the approved post once; then the same on a phone-sized screen.
+      await page.goto(new URL('#/calendar', page.url()).toString());
+      try { await page.waitForSelector('.cal-grid', { timeout: 10000 }); } catch { throw new Failed('The calendar didn’t open.'); }
+      const onGrid = await page.locator(`.cal-grid [data-testid="cal-entry"][data-job="${jobId}"]`).count();
+      if (onGrid !== 1) throw new Failed(`The calendar shows the approved post ${onGrid} times (expected once).`);
+      step(true, 'Calendar opens (desktop month grid) and shows the approved post once');
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.reload();
+      try { await page.waitForSelector('.agenda [data-testid="cal-entry"]', { timeout: 10000 }); } catch { throw new Failed('The phone-sized calendar list didn’t render.'); }
+      const listed = await page.$$eval(`.agenda [data-testid="cal-entry"][data-job="${jobId}"]`, (els) => els.filter((e) => e.offsetParent).length);
+      if (listed !== 1) throw new Failed(`The phone-sized calendar list shows the approved post ${listed} times (expected once).`);
+      await page.goto(new URL(`#/job/${jobId}`, page.url()).toString());
+      try { await page.waitForSelector('[data-testid="publish-panel"] [data-testid="schedule"]', { timeout: 10000 }); } catch { throw new Failed('The publishing controls didn’t render on a phone-sized screen.'); }
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      if (overflow > 1) throw new Failed(`The post page scrolls sideways on a phone-sized screen (${overflow}px).`);
+      step(true, 'Phone-sized screen (390 × 844): calendar list shows the post once; publishing controls render with no sideways scroll');
+      await page.setViewportSize({ width: 1280, height: 860 });
+    }
   }
 
   if (pageErrors.length) throw new Failed(`Uncaught error in the app: ${pageErrors[0]}`);
