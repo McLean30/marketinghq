@@ -183,6 +183,8 @@ class QuillError extends Error {
 /** Map an OpenAI client error to Quill's error (keeps status, retryability and a useful message). */
 const asQuillError = (e) => (e instanceof ai.AiError ? Object.assign(new QuillError(e.message, { status: e.status, retryable: e.retryable, code: e.code }), { usage: e.usage }) : new QuillError('Generation failed unexpectedly. Your work is saved; try again.', { code: 'unknown' }));
 
+/** The test mock answers after the same configured delay as its captions (QUILL_MOCK_DELAY_MS), like a real reply. */
+const mockPause = () => new Promise((r) => setTimeout(r, Number(process.env.QUILL_MOCK_DELAY_MS || 0)));
 async function liveText(opts) {
   try { return await ai.textJson(opts); } catch (e) { throw asQuillError(e); }
 }
@@ -325,7 +327,7 @@ async function wordingReview(body) {
   const prof = body.profile && typeof body.profile === 'object' ? body.profile : null;
   const user = [`Platform: ${body.platform}`, prof ? profileBlock(prof, '') : '', catalogueBlock(body.catalogue), V.promptBlock(tv.tone, tv.voice, prof?.data?.cta?.main), `Caption to review:\n"""\n${body.caption}\n"""`].filter(Boolean).join('\n\n');
   let out;
-  if (PROVIDER === 'mock') out = { data: mock.wordingReview(body.caption, tv.tone), model: 'mock-calibre', usage: null };
+  if (PROVIDER === 'mock') { await mockPause(); out = { data: mock.wordingReview(body.caption, tv.tone), model: 'mock-calibre', usage: null }; }
   else out = await liveText({ instructions: WORDING_SYSTEM, input: user, schemaName: 'calibre_wording', schema: WORDING_SCHEMA, maxOutputTokens: 3000 });
   // Only keep suggestions that quote words actually in the caption.
   const sugg = (out.data.suggestions || []).filter((x) => x.quote && body.caption.includes(x.quote)).slice(0, 5).map((x) => ({ quote: x.quote.slice(0, 300), issue: String(x.issue).slice(0, 300), suggestion: String(x.suggestion).slice(0, 400) }));
@@ -354,7 +356,7 @@ async function interpret(body) {
   const show = (v) => (v == null ? 'not entered' : String(v));
   const user = `Posts measured ${window} days after publishing (same platform comparisons only):\n${clean.map((r) => `- "${r.title}"${r.sample ? ' (SAMPLE, made-up figures)' : ''}, ${r.platform}, published ${r.publishedOn}: impressions ${show(r.impressions)}, link clicks ${show(r.clicks)}, click-through ${r.ctrPct == null ? 'not available' : `${r.ctrPct.toFixed(1)}%`}, owner-attributed enquiries ${show(r.enquiries)}`).join('\n')}`;
   let out;
-  if (PROVIDER === 'mock') out = { data: { text: mock.interpret(clean, body.mockInvent) }, model: 'mock-vantage', usage: null };
+  if (PROVIDER === 'mock') { await mockPause(); out = { data: { text: mock.interpret(clean, body.mockInvent) }, model: 'mock-vantage', usage: null }; }
   else out = await liveText({ instructions: INTERPRET_SYSTEM, input: user, schemaName: 'vantage_interpretation', schema: INTERPRET_SCHEMA, maxOutputTokens: 2000 });
   const bad = numbersAllowed(out.data.text, clean, window);
   if (bad.length) throw Object.assign(new QuillError(`The interpretation mentioned a figure that isn’t in your data (${bad.slice(0, 3).join(', ')}), so it wasn’t shown.`, { status: 422, retryable: true, code: 'invented_figure' }), { usage: out.usage, model: out.model });

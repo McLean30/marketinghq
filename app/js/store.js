@@ -701,13 +701,13 @@ export function agentState(agentId, now = Date.now()) {
     return 'idle';
   }
   if (agentId === 'analyst') {
-    if (analysing) return 'working';
+    if (analysing || interpreting) return 'working';
     if (resultsToEnter().length) return 'queued';
     if (AN.suggestTest(AN.comparisonRows(state.jobs).rows).kind === 'test') return 'awaiting_review';
     return 'idle';
   }
   if (agentId === 'reviewer') {
-    if (reviewing.size) return 'working';
+    if (reviewing.size || wording.size) return 'working'; // checks, or the AI wording review, in progress
     const items = reviewQueue();
     if (items.some((x) => x.kind === 'findings')) return 'awaiting_review';
     if (items.length) return 'queued';
@@ -1747,6 +1747,9 @@ export async function aiWordingReview(jobId) {
 }
 
 /** Vantage: an optional written interpretation of the actual figures (numbers are checked server-side). */
+let interpreting = 0; // Vantage is at work while an interpretation is being written
 export async function aiInterpret(rows, window) {
-  return postJson('api/analyst/interpret', { requestKey: newRequestKey('interpret'), rows, window });
+  interpreting++;
+  notify();
+  try { return await postJson('api/analyst/interpret', { requestKey: newRequestKey('interpret'), rows, window }); } finally { interpreting--; notify(); }
 }

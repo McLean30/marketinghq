@@ -31,7 +31,8 @@
     "test:scheduler": "node tests/hosted-scheduler.mjs",
     "test:m13": "node tests/catalogue-m13.mjs",
     "test:m14": "node tests/private-m14.mjs",
-    "test:m15": "node tests/creative-m15.mjs"
+    "test:m15": "node tests/creative-m15.mjs",
+    "test:m15-motion": "node tests/helpers/record-agents.mjs . 4295 /tmp/hq-m15-agents-check.webm --check"
   },
   "engines": {
     "node": ">=20.6"

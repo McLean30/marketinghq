@@ -83,9 +83,11 @@ function effects(id) {
   }
   if (id === 'designer') {
     // Idle: the lens gently refocuses and the projection shimmers. Designing: the aperture turns, the artwork sharpens.
+    // Idle: now and then the aperture turns a few degrees, as if adjusting. Designing (or generating an image): the
+    // aperture turns and the projection comes into focus.
     return cropLayer(a, 260, 70, 110, 110, 'fx-anim aperture') +
       cropLayer(a, 106, 184, 214, 182, 'fx-anim projection', { extra: 'clip-path:polygon(2.3% 0,100% 18%,99.5% 100%,0 83%)' }) +
-      cropLayer(a, 252, 45, 140, 140, 'amb pr-lens', { feather: true }) +
+      cropLayer(a, 252, 45, 140, 140, 'amb pr-lens', { feather: true, origin: [315, 125] }) +
       svg(a, 'fx-prism soft', `<polygon class="amb pr-shimmer" points="111,184 320,217 319,366 106,335"/>`);
   }
   if (id === 'reviewer') {
@@ -100,15 +102,22 @@ function effects(id) {
   if (id === 'analyst') {
     // Idle: the wrist display glows and the head tilts towards it. Analysing: the display traces a comparison.
     // Decorative only: these shapes never show figures; real numbers live in the workspace as text.
+    // Analysing: the projected chart expands from the wrist while the comparison traces across it.
     return cropLayer(a, 20, 55, 215, 255, 'amb va-head', { origin: [115, 300], feather: true }) +
+      cropLayer(a, 236, 78, 202, 196, 'fx-anim va-chart', { origin: [320, 343], feather: true }) +
       svg(a, 'fx-analyst', `<circle class="amb va-glow" cx="319" cy="343" r="16"/>
       <polyline class="fx-anim va-trace" pathLength="100" points="249,230 281,190 309,197 339,160 366,165 395,128 420,105"/>
       <polyline class="fx-anim va-compare" pathLength="100" points="249,246 281,226 309,229 339,206 366,214 395,190 420,178"/>`);
   }
   // Cue. Idle: the camera makes a small framing adjustment. Rendering: the tally light comes on and the monitor
   // shows the real render progress (--p, 0–1, set from the render).
+  // Idle: the hand turns the focus ring a touch. Drafting the script or editing: a playhead runs along a timeline on
+  // the monitor. Rendering: the tally light and the real render progress.
   return cropLayer(a, 150, 40, 296, 300, 'amb cu-camera', { origin: [250, 330], feather: true }) +
-    svg(a, 'fx-cue', `<circle class="fx-anim cu-tally" cx="246" cy="174" r="11"/>
+    cropLayer(a, 212, 248, 86, 86, 'amb cu-focus', { origin: [255, 291], feather: true }) +
+    svg(a, 'fx-cue', `<rect class="cu-timeline" x="120" y="106" width="92" height="9" rx="4.5"/>
+    <rect class="fx-anim cu-playhead" x="120" y="96" width="9" height="28" rx="4"/>
+    <circle class="fx-anim cu-tally" cx="246" cy="174" r="11"/>
     <rect class="cu-track" x="116" y="118" width="58" height="6" rx="3"/>
     <rect class="cu-progress" x="116" y="118" width="58" height="6" rx="3"/>`);
 }

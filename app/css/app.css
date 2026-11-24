@@ -766,46 +766,57 @@ svg .amb { position: static; }
 .va-compare { fill: none; stroke: #9FF8FF; stroke-width: 3; stroke-linejoin: round; stroke-dasharray: 100; stroke-dashoffset: 100; opacity: 0; }
 .cu-tally { fill: #FF3B3B; opacity: 0; }
 .cu-track { fill: rgba(5, 11, 22, .85); opacity: 0; }
+.va-chart { position: absolute; display: block; background-repeat: no-repeat; pointer-events: none; opacity: 0; transform-box: fill-box; }
+.cu-timeline { fill: rgba(5, 11, 22, .8); opacity: 0; }
+.cu-playhead { fill: #FF3B3B; opacity: 0; filter: drop-shadow(0 0 4px #FF3B3B); }
+.char-video[data-state="working"]:not([data-rendering]) .cu-timeline { opacity: 1; }
 .cu-progress { fill: #2EE6FF; opacity: 0; transform-box: fill-box; transform-origin: left center; transform: scaleX(var(--p, 0)); transition: transform .3s linear; }
 /* Real states, shown even with motion off (no loops needed to read them) */
 .char-video[data-rendering] .cu-tally { opacity: 1; filter: drop-shadow(0 0 6px #FF3B3B); }
 .char-video[data-rendering] :is(.cu-track, .cu-progress) { opacity: 1; }
 .char-reviewer[data-state="working"] .cb-light { opacity: .7; }
 
-html[data-motion="on"] .char-manager .vk-tail { animation: vkSway 7.4s ease-in-out infinite; }
-html[data-motion="on"] .char-manager .vk-claw { animation: vkClaw 9.3s ease-in-out 1.2s infinite; }
+/* Idle (Milestone 15): one small move per character, now and then. Each cycle is mostly stillness, with different
+   lengths and offsets, so the team rarely moves at once and nothing loops like a glow. Work motion is stronger and
+   runs only for the agent's real task state ([data-state] / [data-rendering]); it stops when the task finishes,
+   fails or waits for review. */
+html[data-motion="on"] .char-manager .vk-claw { animation: vkClaw 11s ease-in-out 1.2s infinite; }
 html[data-motion="on"] .char-manager[data-state="delegating"] .vk-tail { animation: vkLift 1.5s ease-in-out infinite; }
-html[data-motion="on"] .char-copywriter .ql-stylus { animation: qlHover 3.7s ease-in-out infinite; }
-html[data-motion="on"] .char-copywriter .ql-visor { animation: qlRead 5.3s ease-in-out .6s infinite; }
+html[data-motion="on"] .char-copywriter .ql-stylus { animation: qlReposition 13s ease-in-out 3.4s infinite; }
 html[data-motion="on"] .char-copywriter:is([data-state="working"], [data-state="revising"]) .ql-stylus { animation: qlWrite 2.2s ease-in-out infinite; }
-html[data-motion="on"] .char-designer .pr-lens { animation: prFocus 6.1s ease-in-out infinite; }
-html[data-motion="on"] .char-designer .pr-shimmer { animation: prShimmer 7.3s ease-in-out 2s infinite; }
-html[data-motion="on"] .char-reviewer .cb-reticle { animation: cbFocus 4.7s ease-in-out infinite; }
+html[data-motion="on"] .char-copywriter:is([data-state="working"], [data-state="revising"]) .ql-visor { animation: qlRead 2.2s ease-in-out infinite; }
+html[data-motion="on"] .char-designer .pr-lens { animation: prAdjust 17s ease-in-out 6.1s infinite; }
+html[data-motion="on"] .char-designer:is([data-state="working"], [data-state="revising"]) .pr-lens { animation: none; }
+html[data-motion="on"] .char-reviewer .cb-reticle { animation: cbSettle 19s ease-in-out 8.7s infinite; }
+html[data-motion="on"] .char-reviewer[data-state="working"] .cb-reticle { animation: cbFocus 1.7s ease-in-out infinite; }
 html[data-motion="on"] .char-reviewer[data-state="working"] .cb-scan { animation: cbScan 3.4s ease-in-out infinite; }
 html[data-motion="on"] .char-reviewer[data-state="working"] .cb-finding { animation: cbFinding 3.4s ease-in-out infinite; }
 html[data-motion="on"] .char-reviewer[data-state="working"] .cb-light { animation: cbLight 3.4s ease-in-out infinite; }
-html[data-motion="on"] .char-analyst .va-head { animation: vaTilt 8.2s ease-in-out infinite; }
-html[data-motion="on"] .char-analyst .va-glow { animation: vaGlow 5.9s ease-in-out infinite; }
+html[data-motion="on"] .char-analyst .va-head { animation: vaGlance 23s ease-in-out 12s infinite; }
+html[data-motion="on"] .char-analyst .va-glow { animation: vaGlowBrief 23s ease-in-out 12s infinite; }
+html[data-motion="on"] .char-analyst[data-state="working"] .va-chart { animation: vaExpand 2.4s ease-in-out infinite; }
 html[data-motion="on"] .char-analyst[data-state="working"] .va-trace { animation: trace 2.4s ease-in-out infinite; }
 html[data-motion="on"] .char-analyst[data-state="working"] .va-compare { animation: trace 2.4s ease-in-out .35s infinite; }
-html[data-motion="on"] .char-video .cu-camera { animation: cuFrame 6.7s ease-in-out 3s infinite; }
-html[data-motion="on"] .char-video[data-rendering] .cu-camera { animation: none; }
+html[data-motion="on"] .char-video .cu-focus { animation: cuFocus 29s ease-in-out 15s infinite; }
+html[data-motion="on"] .char-video[data-state="working"]:not([data-rendering]) .cu-playhead { animation: cuPlay 3.2s linear infinite; }
+html[data-motion="on"] .char-video[data-rendering] .cu-focus { animation: none; }
 
-@keyframes vkSway { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-.9deg); } }
-@keyframes vkClaw { 0%, 70%, 100% { transform: rotate(0); } 76% { transform: rotate(.8deg) translateY(-1px); } 84% { transform: rotate(-.3deg); } }
+@keyframes vkClaw { 0%, 84%, 100% { transform: rotate(0); } 88% { transform: rotate(1.4deg) translateY(-1.5px); } 93% { transform: rotate(-.4deg); } }
 @keyframes vkLift { 0%, 100% { transform: rotate(-1.6deg) translateY(-3px); } 50% { transform: rotate(-3deg) translateY(-6px); } }
-@keyframes qlHover { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes qlReposition { 0%, 80%, 100% { transform: translate(0, 0) rotate(0); } 84%, 92% { transform: translate(-3px, -4px) rotate(-2deg); } }
 @keyframes qlWrite { 0%, 100% { transform: translate(0, 0); } 25% { transform: translate(2px, 1px); } 50% { transform: translate(4px, 0); } 75% { transform: translate(2px, -1px); } }
 @keyframes qlRead { 0%, 15% { stroke-dashoffset: 14; opacity: 0; } 25% { opacity: .75; } 75% { opacity: .75; } 85%, 100% { stroke-dashoffset: -100; opacity: 0; } }
-@keyframes prFocus { 0%, 100% { transform: scale(1); filter: brightness(1); } 50% { transform: scale(1.018); filter: brightness(1.08); } }
-@keyframes prShimmer { 0%, 100% { opacity: 0; } 50% { opacity: .1; } }
-@keyframes cbFocus { 0%, 100% { opacity: .35; transform: scale(1); } 30% { opacity: .55; transform: scale(1.05); } 60% { opacity: .4; transform: scale(.97); } }
+@keyframes prAdjust { 0%, 82%, 100% { transform: rotate(0); filter: brightness(1); } 86% { transform: rotate(-7deg); filter: brightness(1.12); } 91% { transform: rotate(3deg); filter: brightness(1.05); } 95% { transform: rotate(0); } }
+@keyframes cbSettle { 0%, 78%, 100% { opacity: 0; transform: translate(0, 0) scale(1); } 82% { opacity: .5; transform: translate(4px, 3px) scale(1.06); } 90% { opacity: .55; transform: translate(6px, 5px) scale(.96); } 96% { opacity: 0; transform: translate(6px, 5px) scale(.96); } }
+@keyframes cbFocus { 0%, 100% { opacity: .45; transform: scale(1); } 50% { opacity: .75; transform: scale(1.06); } }
 @keyframes cbScan { 0% { opacity: 0; transform: translateY(0); } 10% { opacity: .85; } 40%, 62% { opacity: .85; transform: translateY(112px); } 92% { opacity: .85; transform: translateY(225px); } 100% { opacity: 0; transform: translateY(225px); } }
 @keyframes cbFinding { 0%, 38% { opacity: 0; transform: scale(.6); } 45%, 60% { opacity: 1; transform: scale(1); } 70%, 100% { opacity: 0; transform: scale(1.2); } }
 @keyframes cbLight { 0%, 100% { opacity: .45; } 50% { opacity: .9; } }
-@keyframes vaTilt { 0%, 100% { transform: rotate(0); } 45%, 60% { transform: rotate(-1.4deg); } }
-@keyframes vaGlow { 0%, 100% { opacity: .12; } 50% { opacity: .42; } }
-@keyframes cuFrame { 0%, 55%, 100% { transform: rotate(0) translateX(0); } 65%, 80% { transform: rotate(.7deg) translateX(1px); } }
+@keyframes vaGlance { 0%, 80%, 100% { transform: rotate(0); } 85%, 93% { transform: rotate(-1.6deg); } }
+@keyframes vaGlowBrief { 0%, 80%, 100% { opacity: 0; } 86%, 92% { opacity: .4; } }
+@keyframes vaExpand { 0%, 100% { opacity: 0; transform: scale(1); filter: brightness(1); } 35%, 70% { opacity: 1; transform: scale(1.07); filter: brightness(1.18); } }
+@keyframes cuFocus { 0%, 86%, 100% { transform: rotate(0); } 90% { transform: rotate(9deg); } 95% { transform: rotate(4deg); } }
+@keyframes cuPlay { 0% { transform: translateX(0); opacity: 1; } 92% { transform: translateX(83px); opacity: 1; } 100% { transform: translateX(83px); opacity: 0; } }
 
 /* Motion off (switch or reduced motion): no loops at all; state still shows through text and static lights. */
 html[data-motion="off"] .amb, html[data-motion="off"] .fx-anim, html[data-motion="off"] .team::after, html[data-motion="off"] .handoff * { animation: none !important; }
