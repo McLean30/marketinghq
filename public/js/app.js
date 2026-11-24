@@ -220,7 +220,7 @@ function renderHQ() {
   </section>
   <nav class="hq-links" aria-label="Settings">
     <a href="#/profile" data-testid="profile-link" data-profile-link>Business profile <span class="mini">${esc(S.currentProfile()?.id || '')}</span></a>
-    <a class="ws-inline" href="#/workspace" data-testid="ws-inline">Workspace: ${esc(wsPillText())}</a>
+    ${needsSignIn() ? '<a class="ws-inline signin-cta" href="#/workspace" data-testid="ws-inline">Sign in to use live AI</a>' : `<a class="ws-inline" href="#/workspace" data-testid="ws-inline">Workspace: ${esc(wsPillText())}</a>`}
   </nav>
   ${S.ws.testDate ? `<p class="test-date" data-testid="test-date">Test date in use: ${esc(PF.fmt(S.ws.testDate))}. Offer and review checks treat this as today.</p>` : ''}
   <p class="manager-line" aria-live="polite"><span class="who">Vektor</span> ${esc(managerLine())}</p>
@@ -1754,6 +1754,15 @@ function wsPillText() {
   if (ws.mode === 'shared') return ws.status === 'signed_out' ? 'Signed out' : ws.status === 'offline' ? 'Offline' : 'Shared workspace';
   return ws.authConfigured ? 'This browser only' : 'Private demo';
 }
+/** Short header label for phones; "Sign in" whenever the owner could sign in but hasn't. */
+const needsSignIn = () => S.ws.ready && S.ws.authConfigured && !S.ws.signedIn;
+function wsPillShort() {
+  const ws = S.ws;
+  if (!ws.ready) return '…';
+  if (needsSignIn() || (ws.mode === 'shared' && ws.status === 'signed_out')) return 'Sign in';
+  if (ws.mode === 'shared') return ws.status === 'offline' ? 'Offline' : 'Signed in';
+  return ws.authConfigured ? 'This browser' : 'Demo';
+}
 
 function renderWorkspace() {
   const ws = S.ws;
@@ -1908,7 +1917,7 @@ function render() {
   $main.dataset.view = r.view;
   S.setFocusJob(r.view === 'job' || r.view === 'studio' || r.view === 'vstudio' ? r.id : null);
   const pill = document.getElementById('ws-pill');
-  if (pill) { pill.textContent = wsPillText(); pill.dataset.mode = S.ws.mode; pill.dataset.status = S.ws.status; }
+  if (pill) { pill.textContent = wsPillText(); pill.dataset.short = wsPillShort(); pill.toggleAttribute('data-signin', needsSignIn()); pill.dataset.mode = S.ws.mode; pill.dataset.status = S.ws.status; }
   if (!S.ws.ready) { $main.innerHTML = '<p class="empty">Loading your workspace…</p>'; return; }
   // Keep playing videos and drawn canvases across re-renders (same element moves into the new markup).
   // The same video can appear more than once (output, history, publishing preview), so keys include the occurrence.

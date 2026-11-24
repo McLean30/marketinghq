@@ -857,3 +857,18 @@ html[data-motion="off"] .handoff path.pulse { stroke-dasharray: none; stroke-wid
 .pf-colours li { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .pf-colours .swatch { width: 22px; height: 22px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, .35); flex: none; }
 .pf-colours li .mini { flex-basis: 100%; margin-left: 30px; }
+
+/* Workspace / sign-in button: always reachable. Desktop shows the full label; phones a short one ("Sign in"). */
+.ws-pill[data-signin] { color: var(--black); background: var(--cyan); border-color: var(--cyan); }
+.hq-links .ws-inline.signin-cta { color: var(--black); background: var(--cyan); padding: 8px 14px; border-radius: 999px; font-weight: 700; display: inline-flex; }
+@media (max-width: 640px) {
+  .ws-pill { display: inline-flex; align-items: center; min-height: 40px; font-size: 0; padding: 0 12px; }
+  .ws-pill::after { content: attr(data-short); font-size: .8rem; }
+  .topbar .nav { gap: 2px; }
+  .topbar .nav a { padding: 5px 12px; }
+}
+@media (max-width: 430px) {
+  .topbar .brand span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .topbar { gap: 8px; }
+  .motion-btn { padding: 4px 8px; }
+}
