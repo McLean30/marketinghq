@@ -872,3 +872,7 @@ html[data-motion="off"] .handoff path.pulse { stroke-dasharray: none; stroke-wid
   .topbar { gap: 8px; }
   .motion-btn { padding: 4px 8px; }
 }
+
+/* Hosted scheduling (Milestone 12) */
+.scheduler-note.warn { border-color: var(--warn); color: var(--text); }
+.published-demo strong { display: inline-block; padding: 2px 10px; border-radius: 999px; background: var(--ok); color: #03140d; }

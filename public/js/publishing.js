@@ -10,12 +10,17 @@ import { offerState, fmt } from './profile.js';
 export const TZ = 'Europe/London';
 export const MISSED_MS = 15 * 60 * 1000; // a scheduled post more than 15 minutes late waits for your decision
 export const RETRY_MS = 10 * 1000; // automatic retry spacing after the publisher didn't answer
+export const CLAIM_MS = 3 * 60 * 1000; // a claimed delivery with no outcome after this is checked, never blindly resent
+export const BATCH = 10; // the hosted worker sends at most this many publications per run
 
-/** Simulated destinations. Not connected to any real account. */
+/**
+ * The intended destinations, each with a simulated demo stand-in. Nothing here is connected to a real account; the
+ * live connections come in a later milestone and replace only the publisher, not these records.
+ */
 export const DEMO_ACCOUNTS = {
-  LinkedIn: { id: 'demo-linkedin', name: 'Nexai Digital', kind: 'LinkedIn company page' },
-  Facebook: { id: 'demo-facebook', name: 'Nexai Digital', kind: 'Facebook page' },
-  'Google Business Profile': { id: 'demo-gbp', name: 'Nexai Digital', kind: 'Google Business Profile listing' },
+  LinkedIn: { id: 'demo-linkedin', name: 'Kieran’s', kind: 'personal LinkedIn profile' },
+  Facebook: { id: 'demo-facebook', name: 'Nexai Digital', kind: 'Facebook Page' },
+  'Google Business Profile': { id: 'demo-gbp', name: 'Nexai Digital', kind: 'Google Business Profile' },
 };
 export const accountFor = (platform) => DEMO_ACCOUNTS[platform] || null;
 export const accountLabel = (a) => `${a.name} ${a.kind} (demo account, simulated)`;
@@ -103,7 +108,7 @@ export function staleReasons(bundle, pub) {
 }
 
 /** Create the record for an explicit "Publish now" or "Schedule" you confirmed. Never called by approval. */
-export function authorise(bundle, { action, scheduledFor, now, by }) {
+export function authorise(bundle, { action, scheduledFor, now, by, media = null }) {
   const job = bundle.job;
   const a = job.approval;
   const { copy, graphic } = tasksOf(bundle);
@@ -122,6 +127,8 @@ export function authorise(bundle, { action, scheduledFor, now, by }) {
     id: `pub_${job.id.slice(4)}_${n}`, n, action, platform: job.platform, account: { ...account },
     copyVersion: a.copyVersion, graphicVersion: a.graphicVersion, visual: graphic.type === 'video' ? 'video' : 'graphic', approvedAt: a.at,
     scheduledFor: action === 'now' ? now : scheduledFor, createdAt: now, by, status: 'scheduled', attempts: 0, receipt: null, events: [],
+    // The exact media file, stored with the workspace so the hosted worker can deliver it with every browser closed.
+    ...(media ? { media: { assetId: media.assetId, type: media.type, size: media.size, sha256: media.sha256 || null } } : {}),
   };
   event(pub, now, 'authorised', action === 'now'
     ? `You confirmed Publish now (demo) to ${accountLabel(account)} with caption v${pub.copyVersion} and ${pub.visual} v${pub.graphicVersion}.`
@@ -183,18 +190,28 @@ export function payloadFor(bundle, pub) {
     copyVersion: pub.copyVersion, graphicVersion: pub.graphicVersion, caption: cv.content.text,
     visual: visualOf(pub),
     graphic: { version: gv.n, mode: gv.content.mode === 'photo' ? 'photo' : gv.content.mode === 'video' ? 'video' : 'simulated', headline: gv.content.mode === 'video' ? `${gv.content.videoId} ${gv.content.mime} ${gv.content.durationMs}ms` : gv.content.headline || '' },
+    ...(pub.media ? { media: { ...pub.media } } : {}),
   };
 }
 
+/* ---------- Claiming and delivering (shared by the browser demo, the HQ server and the hosted worker) ----------
+   1. claimDue: on a fresh copy of the job, recheck everything (approval, cancellation, versions, the 15-minute rule,
+      expired offers), then mark each due publication as being delivered under a new claim id. The caller saves that
+      with a revision check, so when two scheduler runs overlap only one claim is saved; the other sends nothing.
+   2. The claim winner sends the authorised payload to the publisher, keyed by the stable publication id.
+   3. applyOutcome: records the result on the latest copy of the job, only if that claim is still current. */
+
 /**
- * Run whatever is due on one job bundle. `publisher.accept(id, payload)` returns { receipt, duplicate } or throws
- * ({ lost: true } when the request was sent but no answer came back). Returns true if the bundle changed.
- * `force` retries a post awaiting confirmation straight away (your "Retry" tap) instead of waiting RETRY_MS.
+ * Due work on one job. Returns { changed, claimed: [pubs to send now], checks: [pubs whose earlier delivery has
+ * no outcome yet] }. Nothing is sent here.
  */
-export function runDue(bundle, { now, profileData, publisher, by, force = false }) {
+export function claimDue(bundle, { now, profileData, by, claimId, limit = BATCH }) {
   let changed = syncPublications(bundle, now, by);
   const { copy } = tasksOf(bundle);
+  const claimed = [];
+  const checks = [];
   for (const p of publications(bundle.job)) {
+    if (claimed.length + checks.length >= limit) break;
     if (p.status === 'scheduled' && p.scheduledFor <= now) {
       changed = true;
       if (p.action === 'schedule' && now - p.scheduledFor > MISSED_MS) {
@@ -210,12 +227,68 @@ export function runDue(bundle, { now, profileData, publisher, by, force = false 
         continue;
       }
       p.status = 'publishing';
-      event(p, now, 'sending', `Sending to the demo publisher (${accountLabel(p.account)}).`, by);
-      attempt(bundle, p, now, publisher, by);
-    } else if (p.status === 'publishing' && (force || now - (p.lastAttemptAt || 0) >= RETRY_MS)) {
+      p.claim = { id: claimId, at: now, by };
+      p.deliveryStartedAt = p.deliveryStartedAt || now;
+      p.attempts = (p.attempts || 0) + 1;
+      p.lastAttemptAt = now;
+      event(p, now, 'sending', `Delivery started: sending to the demo publisher (${accountLabel(p.account)}), attempt ${p.attempts}.`, by);
+      claimed.push(p);
+    } else if (p.status === 'publishing' && (!p.claim || now - p.claim.at >= CLAIM_MS || p.events.at(-1)?.type === 'no_response')) {
+      // An earlier delivery has no recorded outcome. Ask the publisher what happened before doing anything else.
       changed = true;
-      attempt(bundle, p, now, publisher, by);
+      p.claim = { id: claimId, at: now, by };
+      event(p, now, 'checking', `Checking with the publisher what happened to attempt ${p.attempts || 1} (no outcome was recorded).`, by);
+      checks.push(p);
     }
+  }
+  return { changed, claimed, checks };
+}
+
+/**
+ * Record what happened to a claimed delivery. outcome: { receipt, duplicate } | { lost: true } | { refused: message }
+ * | { uncertain: detail } (a live platform might have accepted it: never resent automatically) | { notFound: true }
+ * (a check found the publisher never received it: safe to send again). Returns false if the claim is no longer current.
+ */
+export function applyOutcome(bundle, pubId, claimId, outcome, { now, by }) {
+  const p = publications(bundle.job).find((x) => x.id === pubId);
+  if (!p || p.status !== 'publishing' || p.claim?.id !== claimId) return false;
+  delete p.claim;
+  if (outcome.receipt) {
+    p.status = 'published';
+    p.receipt = outcome.receipt;
+    p.publishedAt = outcome.receipt.acceptedAt;
+    event(p, now, 'published', outcome.duplicate
+      ? `Published (demo). The publisher had already accepted this post on an earlier attempt, so it returned the original receipt ${outcome.receipt.id}. Nothing was published twice.`
+      : `Published (demo) to ${accountLabel(p.account)}. Receipt ${outcome.receipt.id}.`, by);
+  } else if (outcome.lost) {
+    event(p, now, 'no_response', 'Sent to the demo publisher but no answer came back. It may already have been accepted. The scheduler checks with the publisher by this post’s id before anything is sent again, so it can’t be published twice.', by);
+  } else if (outcome.notFound) {
+    p.status = 'scheduled';
+    p.scheduledFor = now;
+    event(p, now, 'not_received', 'The publisher confirmed it never received this post, so it will be sent again with the same publication id.', by);
+  } else if (outcome.uncertain) {
+    p.status = 'attention';
+    p.attentionReason = `Delivery may or may not have reached ${p.platform}: ${outcome.uncertain}`;
+    event(p, now, 'uncertain', `${p.attentionReason} It won’t be resent automatically. Check the account, then cancel or schedule again.`, by);
+  } else {
+    hold(p, now, by, 'refused', `The demo publisher refused it: ${outcome.refused || 'unknown error'}`);
+  }
+  return true;
+}
+
+/**
+ * Run whatever is due on one job bundle. `publisher.accept(id, payload)` returns { receipt, duplicate } or throws
+ * ({ lost: true } when the request was sent but no answer came back). Returns true if the bundle changed.
+ * `force` retries a post awaiting confirmation straight away (your "Retry" tap) instead of waiting RETRY_MS.
+ */
+export function runDue(bundle, { now, profileData, publisher, by, force = false }) {
+  if (force) for (const p of publications(bundle.job)) if (p.status === 'publishing' && p.claim) p.claim.at = -Infinity;
+  const claimId = `run_${now.toString(36)}`;
+  const { changed, claimed, checks } = claimDue(bundle, { now, profileData, by, claimId, limit: Infinity });
+  for (const p of [...claimed, ...checks]) {
+    let outcome;
+    try { outcome = publisher.accept(p.id, payloadFor(bundle, p)); } catch (e) { outcome = e.lost ? { lost: true } : { refused: e.message }; }
+    applyOutcome(bundle, p.id, claimId, outcome, { now, by });
   }
   return changed;
 }
@@ -225,25 +298,6 @@ function hold(p, now, by, kind, reason) {
   p.holdKind = kind;
   p.holdReason = reason;
   event(p, now, 'held', `Held for your decision. ${reason}`, by);
-}
-
-function attempt(bundle, p, now, publisher, by) {
-  p.attempts = (p.attempts || 0) + 1;
-  p.lastAttemptAt = now;
-  try {
-    const { receipt, duplicate } = publisher.accept(p.id, payloadFor(bundle, p));
-    p.status = 'published';
-    p.receipt = receipt;
-    p.publishedAt = receipt.acceptedAt;
-    event(p, now, 'published', duplicate
-      ? `Published (demo). The publisher had already accepted this post on an earlier attempt, so it returned the original receipt ${receipt.id}. Nothing was published twice.`
-      : `Published (demo) to ${accountLabel(p.account)}. Receipt ${receipt.id}.`, by);
-  } catch (e) {
-    event(p, now, e.lost ? 'no_response' : 'error', e.lost
-      ? 'Sent to the demo publisher but no answer came back. It may already have been accepted. Retrying is safe: the publisher recognises this post by its id and won’t publish it twice.'
-      : `The demo publisher refused it: ${e.message}`, by);
-    if (!e.lost) { p.status = 'held'; p.holdKind = 'refused'; p.holdReason = `The demo publisher refused it: ${e.message}`; }
-  }
 }
 
 /* ---------- The simulated publisher ---------- */
@@ -260,25 +314,34 @@ const SLUG = { 'demo-linkedin': 'linkedin', 'demo-facebook': 'facebook', 'demo-g
  * store: { get(id), put(id, record) } (synchronous). now(): the publisher's clock. takeFault(): 'lose' to accept the
  * post but lose the answer (test hook), else null.
  */
+export const contentHashOf = (payload) => hashText(`${payload.caption}|${payload.graphic.version}|${payload.graphic.mode}|${payload.graphic.headline}`);
+/** The record the demo publisher keeps for one accepted post (keyed by publication id). */
+export function demoRecord(id, payload, at, random = Math.random) {
+  const rid = `rcpt_${hashText(`${id}|${at}|${random()}`)}`;
+  const receipt = {
+    id: rid, publicationId: id, platform: payload.platform, accountId: payload.accountId, acceptedAt: at,
+    copyVersion: payload.copyVersion, graphicVersion: payload.graphicVersion, scheduledFor: payload.scheduledFor,
+    visual: payload.visual || 'graphic', ...(payload.visual === 'video' ? { videoVersion: payload.graphicVersion } : {}),
+    ...(payload.media ? { media: { assetId: payload.media.assetId, size: payload.media.size, type: payload.media.type } } : {}),
+    postUrl: `https://demo-publisher.invalid/${SLUG[payload.accountId] || 'post'}/${rid.slice(5)}`, simulated: true,
+  };
+  return { receipt, contentHash: contentHashOf(payload), caption: payload.caption, graphic: payload.graphic };
+}
+/** Compare a stored record with a payload: the same post returns its original receipt, a different one is refused. */
+export function demoAnswer(existing, payload) {
+  if (existing.contentHash !== contentHashOf(payload)) throw new Error('a different post was already accepted under this publication id');
+  return { receipt: existing.receipt, duplicate: true };
+}
+
 export function makePublisher({ store, now, takeFault = () => null, random = () => Math.random() }) {
   return {
     accept(id, payload) {
-      const contentHash = hashText(`${payload.caption}|${payload.graphic.version}|${payload.graphic.mode}|${payload.graphic.headline}`);
       const existing = store.get(id);
-      if (existing) {
-        if (existing.contentHash !== contentHash) throw new Error('a different post was already accepted under this publication id');
-        return { receipt: existing.receipt, duplicate: true };
-      }
-      const rid = `rcpt_${hashText(`${id}|${now()}|${random()}`)}`;
-      const receipt = {
-        id: rid, publicationId: id, platform: payload.platform, accountId: payload.accountId, acceptedAt: now(),
-        copyVersion: payload.copyVersion, graphicVersion: payload.graphicVersion, scheduledFor: payload.scheduledFor,
-        visual: payload.visual || 'graphic', ...(payload.visual === 'video' ? { videoVersion: payload.graphicVersion } : {}),
-        postUrl: `https://demo-publisher.invalid/${SLUG[payload.accountId] || 'post'}/${rid.slice(5)}`, simulated: true,
-      };
-      store.put(id, { receipt, contentHash, caption: payload.caption, graphic: payload.graphic });
+      if (existing) return demoAnswer(existing, payload);
+      const rec = demoRecord(id, payload, now(), random);
+      store.put(id, rec);
       if (takeFault() === 'lose') throw Object.assign(new Error('response lost'), { lost: true });
-      return { receipt, duplicate: false };
+      return { receipt: rec.receipt, duplicate: false };
     },
   };
 }

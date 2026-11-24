@@ -65,7 +65,7 @@ function runDue({ jobId = null, force = false } = {}) {
 let timer = null;
 function start() {
   // Vercel runs no long-lived process, so there's no timer there: due posts run when HQ asks (/api/publish/run).
-  if (process.env.VERCEL) return null;
+  if (process.env.VERCEL || require('./backend').useSupabase()) return null; // the hosted worker sends posts there
   const every = process.env.HQ_SCHEDULER_MS === undefined ? 15000 : Number(process.env.HQ_SCHEDULER_MS);
   if (!every || timer) return null;
   timer = setInterval(() => { runDue().catch((e) => console.error('[scheduler] run failed:', e.message)); }, every);

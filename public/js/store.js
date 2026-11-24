@@ -309,6 +309,7 @@ export async function init() {
     ws.signedIn = !!r.data.signedIn;
     ws.testDate = r.data.testDate || null;
     ws.scheduler = r.data.scheduler || { runsOn: 'browser' };
+    if (ws.scheduler.runsOn === 'hosted') refreshHostedStatus();
     if (ws.scheduler.now) ws.clockOffset = ws.scheduler.now - Date.now();
   } catch {
     ws.authConfigured = false;
@@ -1066,6 +1067,13 @@ function syncPubs(jobId) {
   if (job?.publications?.length) PB.syncPublications(liveBundle(jobId), now(), deviceKind());
 }
 export const schedulerInfo = () => (ws.mode === 'shared' ? { runsOn: 'server', ...ws.scheduler } : { runsOn: 'browser' });
+/** Supabase workspaces: whether the hosted scheduler is on for this workspace and how its latest run went. */
+let hostedTimer = null;
+async function refreshHostedStatus() {
+  const r = await api('api/scheduler/status').catch(() => null);
+  if (r?.ok && r.data.hosted) { ws.hostedStatus = r.data; notify(); }
+  if (!hostedTimer && typeof setInterval === 'function') hostedTimer = setInterval(() => { if (ws.mode === 'shared' && ws.scheduler?.runsOn === 'hosted') refreshHostedStatus(); }, 60000);
+}
 
 // Demo mode: the simulated publisher keeps its own records in this browser, apart from HQ's data, like a remote service.
 const PUB_KEY = 'nexai-hq:demo-publisher';
@@ -1130,9 +1138,9 @@ async function pubCommit(jobId, fn, action) {
 export const isPubBusy = (jobId) => pubBusy.has(jobId);
 
 /** "Publish now (demo)" or "Schedule (demo)", after you confirmed the destination, versions and time. */
-export async function authorisePublication(jobId, { action, scheduledFor }) {
+export async function authorisePublication(jobId, { action, scheduledFor, media = null }) {
   const res = await pubCommit(jobId, (b, t) => {
-    const out = PB.authorise(b, { action, scheduledFor, now: t, by: deviceKind() });
+    const out = PB.authorise(b, { action, scheduledFor, now: t, by: deviceKind(), media });
     if (out.pub) log(jobId, 'manager', action === 'now' ? `Publish now (demo) confirmed for ${b.job.platform}.` : `Scheduled (demo) for ${PB.fmtLondon(scheduledFor)} on ${b.job.platform}.`);
     return out;
   }, 'publish');

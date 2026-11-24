@@ -138,7 +138,7 @@ async function handleApi(req, res, urlPath) {
 
   /* --- Sign-in --- */
   // HQ_TEST_DATE (YYYY-MM-DD) fixes "today" for offer and review checks in test workspaces.
-  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, storage: auth.configured() ? backendMod.store().kind : null, setupProblem: auth.misconfigured(), settings: { passwordHash: !!(process.env.HQ_OWNER_PASSWORD_HASH || '').trim(), supabase: backendMod.useSupabase(), openai: ai.hasKey() }, testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null, scheduler: auth.configured() ? { runsOn: 'server', everyMs: schedulerEvery, now: scheduler.now(), testClock: scheduler.testClock() } : { runsOn: 'browser' } });
+  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, storage: auth.configured() ? backendMod.store().kind : null, setupProblem: auth.misconfigured(), settings: { passwordHash: !!(process.env.HQ_OWNER_PASSWORD_HASH || '').trim(), supabase: backendMod.useSupabase(), openai: ai.hasKey() }, testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null, scheduler: !auth.configured() ? { runsOn: 'browser' } : backendMod.useSupabase() ? { runsOn: 'hosted', cron: 'nexai-hq-demo-scheduler', everyMs: 60000, now: Date.now() } : { runsOn: 'server', everyMs: schedulerEvery, now: scheduler.now(), testClock: scheduler.testClock() } });
   if (urlPath === '/api/auth/login' && method === 'POST') {
     const body = await readJsonBody(req);
     const r = await auth.login(req, body.password, deviceOf(req));
@@ -180,8 +180,14 @@ async function handleApi(req, res, urlPath) {
   /* --- Demo publishing (simulated accounts; the server runs due posts on its own timer too) --- */
   if (urlPath === '/api/publish/run' && method === 'POST') {
     const body = await readJsonBody(req);
+    // Supabase workspaces: the hosted worker (Supabase Cron → hq-scheduler) is the only thing that sends posts.
+    if (backendMod.useSupabase()) return sendJson(res, 200, { changed: [], hosted: true, now: Date.now() });
     const changed = await scheduler.runDue({ jobId: typeof body.jobId === 'string' ? body.jobId : null, force: !!body.jobId });
     return sendJson(res, 200, { changed, now: scheduler.now() });
+  }
+  if (urlPath === '/api/scheduler/status' && method === 'GET') {
+    if (!backendMod.useSupabase()) return sendJson(res, 200, { hosted: false });
+    return sendJson(res, 200, { hosted: true, cron: 'nexai-hq-demo-scheduler', ...(await backendMod.store().schedulerStatus()) });
   }
   if (urlPath === '/api/publish/receipts' && method === 'GET') return sendJson(res, 200, { posts: (await scheduler.posts()).map((p) => p.receipt), now: scheduler.now() });
   if (urlPath === '/api/test/clock' && method === 'POST') {
@@ -308,7 +314,7 @@ http
     console.log(`Quill caption provider: ${info.label}${info.model ? ` (${info.model}${info.effort ? `, effort ${info.effort}` : ''})` : ''}`);
     console.log(auth.configured() ? `Shared workspace: on (owner sign-in required). ${backendMod.useSupabase() ? `Storage: Supabase (${(process.env.SUPABASE_URL || '').replace(/^https?:\/\//, '').split('/')[0]}, workspace ${backendMod.WORKSPACE()})` : `Data folder: ${storage.dataDir()}`}` : auth.misconfigured() ? `Shared workspace: off. ${auth.misconfigured()}` : 'Shared workspace: off (run npm run set-password to turn it on). Local demo mode only.');
     if (auth.configured()) {
-      schedulerEvery = scheduler.start();
+      schedulerEvery = backendMod.useSupabase() ? null : scheduler.start();
       console.log(schedulerEvery ? `Demo scheduler: on, every ${schedulerEvery / 1000} s while this server runs (simulated accounts only).` : 'Demo scheduler: timer off (HQ_SCHEDULER_MS=0); due posts run when HQ asks.');
     }
     if (auth.configured() && HOST !== '127.0.0.1' && HOST !== 'localhost') console.log('Warning: plain HTTP on your network. Use only on a Wi-Fi network you trust.');

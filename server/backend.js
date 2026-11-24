@@ -292,6 +292,19 @@ function supabaseStore() {
       const info = await call(`/storage/v1/object/info/${BUCKET}/${objectPath(id)}`);
       return info ? { size: Number(info.size ?? info.metadata?.size), type: info.content_type || info.metadata?.mimetype || '' } : null;
     },
+    /** The hosted scheduler: is this workspace enabled, and how did the worker's latest run go? */
+    async schedulerStatus() {
+      const [en, runs] = await Promise.all([
+        call(`/rest/v1/hq_scheduler_workspaces?workspace=eq.${q(ws)}&select=enabled`).catch(() => null),
+        call('/rest/v1/hq_worker_runs?select=started_at,finished_at,trigger,claimed,published,held,checked,ok,errors&order=started_at.desc&limit=1').catch(() => null),
+      ]);
+      const r = runs?.[0];
+      return {
+        installed: Array.isArray(en) && Array.isArray(runs),
+        enabled: !!en?.[0]?.enabled,
+        lastRun: r ? { startedAt: Date.parse(r.started_at), finishedAt: r.finished_at ? Date.parse(r.finished_at) : null, trigger: r.trigger, claimed: r.claimed, published: r.published, held: r.held, checked: r.checked, ok: r.ok, errors: (r.errors || []).length } : null,
+      };
+    },
     /** A short-lived link for viewing (images, video with byte ranges). */
     async assetSignedUrl(id, seconds = 3600) {
       const out = await call(`/storage/v1/object/sign/${BUCKET}/${objectPath(id)}`, { method: 'POST', body: { expiresIn: seconds } });

@@ -586,6 +586,36 @@ function renderJob(id) {
 }
 
 /* ---------- Demo publishing ---------- */
+/** Save the exact approved media to the workspace's private storage (shared workspaces only). */
+async function mediaSnapshot(job) {
+  if (S.ws.mode !== 'shared') return null;
+  const { graphic } = S.jobTasks(job);
+  const gv = graphic.versions[(job.approval?.graphicVersion || graphic.versions.length) - 1];
+  const c = gv.content;
+  if (c.mode === 'video') return { assetId: c.videoId, type: c.mime, size: c.size };
+  let blob;
+  if (c.mode === 'photo') {
+    const [photo, logo] = await Promise.all([P.loadBitmap(c.photoId), P.loadBitmap(c.logoId)]);
+    if (!photo || !logo) throw new Error('The approved photo or logo couldn’t be loaded, so it couldn’t be saved for the scheduler. Nothing was queued.');
+    blob = await P.renderToPngBlob(c, { photo, logo });
+  } else {
+    const url = URL.createObjectURL(new Blob([renderGraphic(c)], { type: 'image/svg+xml' }));
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const cv = document.createElement('canvas');
+      cv.width = 1080; cv.height = 1080;
+      cv.getContext('2d').drawImage(img, 0, 0, 1080, 1080);
+      blob = await new Promise((res) => cv.toBlob(res, 'image/png'));
+    } finally { URL.revokeObjectURL(url); }
+  }
+  const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const id = `photo_r${job.id.slice(4).replace(/[^a-z0-9]/g, '').slice(0, 20)}v${gv.n}${sha.slice(0, 8)}`;
+  await P.putAsset({ id, kind: 'photo', name: `approved-${job.platform.toLowerCase().replace(/\W+/g, '-')}-v${gv.n}.png`, blob, createdAt: Date.now() });
+  return { assetId: id, type: 'image/png', size: blob.size, sha256: sha };
+}
+
 function pubPill(job) {
   const p = PB.currentPub(job);
   if (!p || p.status === 'replaced') return '';
@@ -594,6 +624,13 @@ function pubPill(job) {
 
 function schedulerNote() {
   const info = S.schedulerInfo();
+  if (info.runsOn === 'hosted') {
+    const st = S.ws.hostedStatus;
+    const last = st?.lastRun;
+    const lastText = last ? ` Last run: ${esc(PB.fmtLondon(last.startedAt, { short: true }))}${last.ok === false ? ' (with an error; open the post for details)' : last.published ? `, ${last.published} sent` : ''}.` : '';
+    if (st && (!st.installed || !st.enabled)) return `<p class="scheduler-note warn" role="alert" data-testid="scheduler-note"><strong>The hosted scheduler isn’t switched on for this workspace yet.</strong> Scheduled posts stay queued and nothing is sent until it is (see docs/hosted-scheduler.md).</p>`;
+    return `<p class="scheduler-note" data-testid="scheduler-note" data-runs-on="hosted"><strong>How the demo scheduler runs here:</strong> hosted. Supabase Cron runs it every minute and sends due demo posts, even with every browser closed and no HQ server running. A post more than 15 minutes late waits for your decision instead of going out late.${lastText}</p>`;
+  }
   if (info.runsOn === 'browser') {
     return `<p class="scheduler-note" data-testid="scheduler-note"><strong>How the demo scheduler runs here:</strong> in this browser. Scheduled demo posts are sent only while HQ is open in this browser (any page). If HQ is closed when one is due, it isn’t sent late: it waits for your decision when you come back. Sign in to a shared workspace to have the HQ server send them on its own.</p>`;
   }
@@ -659,10 +696,14 @@ function pubCard(job, p, u) {
   const when = PB.fmtLondon(p.scheduledFor);
   const body = {
     scheduled: () => `<p data-testid="pub-when"><strong>${p.action === 'now' ? 'Publishing now (demo)' : `Scheduled (demo) for ${esc(when)}`}</strong></p>`,
-    publishing: () => lastEv?.type === 'no_response'
-      ? `<p role="alert" data-testid="pub-no-response"><strong>No confirmation yet.</strong> ${esc(lastEv.text)}</p><div class="row-actions"><button class="btn btn-primary" data-pub-retry="${job.id}" ${S.isPubBusy(job.id) ? 'disabled' : ''}>Retry now</button></div>`
-      : '<p><strong>Sending to the demo publisher…</strong></p>',
-    published: () => `<p data-testid="pub-receipt"><strong>Published (demo)</strong> ${esc(PB.fmtLondon(p.publishedAt))}. Receipt <code>${esc(p.receipt?.id)}</code></p><p class="mini">Demo post address (not a real page): <code>${esc(p.receipt?.postUrl)}</code></p>`,
+    publishing: () => {
+      const started = p.deliveryStartedAt ? `<p class="mini" data-testid="pub-started">Delivery started ${esc(PB.fmtLondon(p.deliveryStartedAt, { short: true }))}, attempt ${p.attempts || 1}. It can’t be cancelled or moved now; the publisher is asked by this post’s id, so it can’t go out twice.</p>` : '';
+      if (lastEv?.type === 'no_response' || lastEv?.type === 'checking') {
+        return `<p role="alert" data-testid="pub-no-response"><strong>No confirmation yet.</strong> ${esc(lastEv.text)}</p>${started}${S.schedulerInfo().runsOn === 'hosted' ? '<p class="mini">The hosted scheduler checks with the publisher on its next run (within a minute).</p>' : `<div class="row-actions"><button class="btn btn-primary" data-pub-retry="${job.id}" ${S.isPubBusy(job.id) ? 'disabled' : ''}>Retry now</button></div>`}`;
+      }
+      return `<p><strong>Sending to the demo publisher…</strong></p>${started}`;
+    },
+    published: () => `<p class="published-demo" data-testid="pub-receipt"><strong>Published (demo)</strong> ${esc(PB.fmtLondon(p.publishedAt))}. Receipt <code>${esc(p.receipt?.id)}</code></p><p class="mini">Simulated: nothing was posted to ${esc(p.platform)}. Demo post address (not a real page): <code>${esc(p.receipt?.postUrl)}</code>${p.receipt?.media ? `. Media delivered: <code>${esc(p.receipt.media.assetId)}</code> (${Math.round(p.receipt.media.size / 1024)} KB)` : ''}</p>`,
     held: () => `<p role="alert" data-testid="pub-held"><strong>Held for your decision.</strong> ${esc(p.holdReason)}</p>`,
     attention: () => `<p role="alert" data-testid="pub-attention"><strong>${esc(p.attentionReason)}</strong> A queued post never picks up a different version. Review the new version, approve it, then schedule it again.</p>`,
     cancelled: () => `<p data-testid="pub-cancelled"><strong>Cancelled.</strong> It won’t be published${p.action === 'schedule' ? ` (it was set for ${esc(when)})` : ''}.</p>`,
@@ -1899,7 +1940,7 @@ let lastSig = '';
 function signature() {
   const s = S.getState();
   const w = S.ws;
-  return [s.jobs.map((j) => `${(j.aiUsage || []).length}.${(j.wordingReviews || []).length}${S.isWordingReviewing(j.id) ? 'w' : ''}`).join(), s.tasks.map((t) => `${S.isImaging(t.id) ? 'i' : ''}${t.imageRequest?.error ? 'e' : ''}${t.draft?.savedAt || ''}`).join(), S.videoTasks().map((t) => { const p = S.renderProgress(t.id); return p == null ? '' : Math.round(p * 50); }).join(), s.jobs.map((j) => (j.measurements || []).length).join(), S.agentState('analyst'), s.jobs.map((j) => (j.publications || []).map((p) => `${p.status}${p.events.length}${p.scheduledFor}`).join(';')).join(), S.isPubBusy && s.jobs.some((j) => S.isPubBusy(j.id)), S.currentProfile()?.id, S.agentState('reviewer'), s.jobs.map((j) => `${(j.reviews || []).length}${S.isReviewing(j.id) ? 'r' : ''}`).join(), S.ws.testDate, (s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
+  return [S.ws.hostedStatus?.lastRun?.startedAt, S.ws.hostedStatus?.enabled, s.jobs.map((j) => `${(j.aiUsage || []).length}.${(j.wordingReviews || []).length}${S.isWordingReviewing(j.id) ? 'w' : ''}`).join(), s.tasks.map((t) => `${S.isImaging(t.id) ? 'i' : ''}${t.imageRequest?.error ? 'e' : ''}${t.draft?.savedAt || ''}`).join(), S.videoTasks().map((t) => { const p = S.renderProgress(t.id); return p == null ? '' : Math.round(p * 50); }).join(), s.jobs.map((j) => (j.measurements || []).length).join(), S.agentState('analyst'), s.jobs.map((j) => (j.publications || []).map((p) => `${p.status}${p.events.length}${p.scheduledFor}`).join(';')).join(), S.isPubBusy && s.jobs.some((j) => S.isPubBusy(j.id)), S.currentProfile()?.id, S.agentState('reviewer'), s.jobs.map((j) => `${(j.reviews || []).length}${S.isReviewing(j.id) ? 'r' : ''}`).join(), S.ws.testDate, (s.plans || []).map((p) => `${p.id}${p.status}${p.days.map((d) => (d.include ? 1 : 0) + (d.jobId || '')).join('')}`).join(), w.ready, w.mode, w.status, w.signedIn, Object.keys(w.updates).join(), Object.keys(w.conflicts).join(), S.brand().logoId, S.quill.provider, S.quill.checked, S.agentState('manager'), S.agentState('copywriter'), S.agentState('designer'), ...s.jobs.map((j) => S.jobStatus(j)), ...s.tasks.map((t) => `${t.versions.length}${t.pending ? 'p' : ''}${t.pending?.error ? 'e' : ''}${S.taskStatus(t)}`), s.log.length].join('|');
 }
 
 function render() {
@@ -2296,14 +2337,18 @@ document.addEventListener('click', (e) => {
     u.busy = true;
     t.disabled = true;
     const job = S.getJob(id);
+    // In a shared workspace the exact approved media file is saved first, so the scheduler can send it later with
+    // every browser closed. Demo mode keeps it in this browser.
+    const withMedia = (opts) => mediaSnapshot(job).then((media) => S.authorisePublication(id, { ...opts, media }), (e) => ({ ok: false, error: e.message || 'The approved media couldn’t be prepared. Nothing was queued.' }));
     const run = {
-      'now-confirm': () => S.authorisePublication(id, { action: 'now' }),
-      'schedule-confirm': () => S.authorisePublication(id, { action: 'schedule', scheduledFor: u.ms }),
+      'now-confirm': () => withMedia({ action: 'now' }),
+      'schedule-confirm': () => withMedia({ action: 'schedule', scheduledFor: u.ms }),
       'reschedule-confirm': () => S.reschedulePublication(id, u.pubId, u.ms),
       'release-confirm': () => S.releaseHeldPublication(id, u.pubId),
       'cancel-confirm': () => S.cancelPublication(id, u.pubId),
     }[u.step];
-    const done = { 'now-confirm': 'Sent to the demo publisher.', 'schedule-confirm': `Scheduled (demo) for ${u.ms ? PB.fmtLondon(u.ms) : ''}.`, 'reschedule-confirm': `Rescheduled (demo) to ${u.ms ? PB.fmtLondon(u.ms) : ''}.`, 'release-confirm': 'Sent to the demo publisher.', 'cancel-confirm': 'Cancelled. It won’t be published.' }[u.step];
+    const hosted = S.schedulerInfo().runsOn === 'hosted';
+    const done = { 'now-confirm': hosted ? 'Queued: the hosted scheduler sends it within about a minute.' : 'Sent to the demo publisher.', 'schedule-confirm': `Scheduled (demo) for ${u.ms ? PB.fmtLondon(u.ms) : ''}.`, 'reschedule-confirm': `Rescheduled (demo) to ${u.ms ? PB.fmtLondon(u.ms) : ''}.`, 'release-confirm': hosted ? 'Queued: the hosted scheduler sends it within about a minute.' : 'Sent to the demo publisher.', 'cancel-confirm': 'Cancelled. It won’t be published.' }[u.step];
     run().then((res) => {
       if (res.ok && !res.existing) { delete ui.pub[id]; toast(done); }
       else if (res.existing) { delete ui.pub[id]; toast(`Already ${PB.PUB_LABEL[res.existing.status].toLowerCase()}: nothing new was queued.`); }

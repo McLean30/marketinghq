@@ -137,7 +137,7 @@ try {
   await phone.locator('[data-testid="publish-panel"]').screenshot({ path: `${OUT}/m8-phone-01-publish-panel.png` });
   await schedule(phone, target, '10:30');
   const reading = await phone.locator('[data-testid="publish-confirm"]').innerText();
-  assert(/Schedule \(demo\) for .* 10:30 (GMT|BST)/.test(reading) && /LinkedIn: Nexai Digital LinkedIn company page \(demo account, simulated\)/.test(reading) && /Caption v1 and graphic v1/.test(reading), 'Separate confirmation names the action, Europe/London time with GMT/BST, destination and versions');
+  assert(/Schedule \(demo\) for .* 10:30 (GMT|BST)/.test(reading) && /LinkedIn: Kieran’s personal LinkedIn profile \(demo account, simulated\)/.test(reading) && /Caption v1 and graphic v1/.test(reading), 'Separate confirmation names the action, Europe/London time with GMT/BST, destination and versions');
   assert((await jobOf(phone, li)).publications === undefined || !(await jobOf(phone, li)).publications.length, 'Nothing is queued until you confirm');
   await phone.screenshot({ path: `${OUT}/m8-phone-02-confirm.png`, fullPage: false });
   await phone.click('[data-testid="confirm-publish"]');
@@ -157,7 +157,7 @@ try {
   await waitPub(desk, 'scheduled');
   assert((await desk.locator('[data-testid="pub-when"]').innerText()) === whenPhone, `Same time on both devices (${whenPhone})`);
   const auth = await desk.locator('[data-testid="pub-authorised"]').innerText();
-  assert(/caption v1 and graphic v1/.test(auth) && /LinkedIn company page \(demo account/.test(auth), 'Same destination and versions on the second browser');
+  assert(/caption v1 and graphic v1/.test(auth) && /personal LinkedIn profile \(demo account/.test(auth), 'Same destination and versions on the second browser');
   await desk.goto(`${BASE}#/calendar`);
   await desk.waitForSelector(`[data-testid="cal-entry"][data-job="${li}"]`);
   const entries = await desk.locator(`.cal-grid [data-testid="cal-entry"][data-job="${li}"]`).count();
