@@ -246,7 +246,8 @@ export function claimDue(bundle, { now, profileData, by, claimId, limit = BATCH 
 
 /**
  * Record what happened to a claimed delivery. outcome: { receipt, duplicate } | { lost: true } | { refused: message }
- * | { uncertain: detail } (a live platform might have accepted it: never resent automatically) | { notFound: true }
+ * | { blocked: reason } (HQ's own pre-send check stopped it) | { uncertain: detail } (a live platform might have accepted
+ * it: never resent automatically) | { notFound: true }
  * (a check found the publisher never received it: safe to send again). Returns false if the claim is no longer current.
  */
 export function applyOutcome(bundle, pubId, claimId, outcome, { now, by }) {
@@ -270,6 +271,8 @@ export function applyOutcome(bundle, pubId, claimId, outcome, { now, by }) {
     p.status = 'attention';
     p.attentionReason = `Delivery may or may not have reached ${p.platform}: ${outcome.uncertain}`;
     event(p, now, 'uncertain', `${p.attentionReason} It won’t be resent automatically. Check the account, then cancel or schedule again.`, by);
+  } else if (outcome.blocked) {
+    hold(p, now, by, 'blocked', `Not sent: ${outcome.blocked}. Nothing reached the publisher. Save the design again, approve it, then schedule it again.`);
   } else {
     hold(p, now, by, 'refused', `The demo publisher refused it: ${outcome.refused || 'unknown error'}`);
   }

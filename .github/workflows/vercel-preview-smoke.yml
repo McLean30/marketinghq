@@ -159,6 +159,7 @@ jobs:
           if git cat-file -e "${SHA}:public/js/analytics.js" 2>/dev/null; then echo "analyst=1" >> "$GITHUB_OUTPUT"; else echo "analyst=0" >> "$GITHUB_OUTPUT"; fi
           if git cat-file -e "${SHA}:public/js/video.js" 2>/dev/null; then echo "video=1" >> "$GITHUB_OUTPUT"; else echo "video=0" >> "$GITHUB_OUTPUT"; fi
           if git cat-file -e "${SHA}:server/openai.js" 2>/dev/null; then echo "openai=1" >> "$GITHUB_OUTPUT"; else echo "openai=0" >> "$GITHUB_OUTPUT"; fi
+          if git cat-file -e "${SHA}:supabase/functions/hq-scheduler/worker.js" 2>/dev/null; then echo "scheduling=1" >> "$GITHUB_OUTPUT"; else echo "scheduling=0" >> "$GITHUB_OUTPUT"; fi
 
       - uses: actions/setup-node@v4
         if: steps.dep.outputs.state == 'success'
@@ -181,6 +182,7 @@ jobs:
           EXPECT_ANALYST: ${{ steps.expect.outputs.analyst }}
           EXPECT_VIDEO: ${{ steps.expect.outputs.video }}
           EXPECT_OPENAI: ${{ steps.expect.outputs.openai }}
+          EXPECT_SCHEDULING: ${{ steps.expect.outputs.scheduling }}
           REQUIRE_SHA_MATCH: ${{ inputs.preview_url && '1' || '0' }}
           EXPECT_SHA: ${{ steps.dep.outputs.sha }}
           SMOKE_RESULT: smoke-result.json

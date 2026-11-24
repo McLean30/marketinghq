@@ -245,7 +245,7 @@ try {
   fake.objects.delete(`${WS}/photo_missing0001`);
   put(noMedia);
   await w({ now: () => T0 + 5000 });
-  assert(p0('job_edgemedia').status === 'held' && /media file/.test(p0('job_edgemedia').holdReason), 'Approved media missing from storage: held, not sent without it');
+  assert(p0('job_edgemedia').status === 'held' && /^Not sent: the approved media file/.test(p0('job_edgemedia').holdReason) && !receipts(WS).some((x) => x.id === p0('job_edgemedia').id), 'Approved media missing from storage: held with “Not sent: …”, nothing reached the publisher');
   // Bounded batch.
   for (let i = 0; i < 14; i++) put(queue(fresh(`job_edgebatch${String(i).padStart(2, '0')}`), T0));
   r = await w({ now: () => T0 + 5000 });

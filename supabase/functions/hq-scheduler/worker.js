@@ -133,7 +133,7 @@ async function runJob(D, row, { now, limit, stats, profileOf, faults, uncheckabl
   for (const p of claimed) {
     const payload = PB.payloadFor(bundle, p);
     const problem = await mediaProblem(D, ws, p.media);
-    outcomes.push([p.id, problem ? { refused: problem } : await publisher.send(p.id, payload, now())]);
+    outcomes.push([p.id, problem ? { blocked: problem } : await publisher.send(p.id, payload, now())]);
   }
   for (const p of checks) {
     outcomes.push([p.id, publisher.canCheck ? await publisher.check(p.id, PB.payloadFor(bundle, p)) : { uncertain: `attempt ${p.attempts || 1} has no recorded outcome, and this platform can’t be asked whether it arrived.` }]);
@@ -147,7 +147,7 @@ async function runJob(D, row, { now, limit, stats, profileOf, faults, uncheckabl
     if (!any) return;
     if (await D.put(ws, 'job', row.id, cur.rev, b2, 'scheduler')) {
       stats.published += outcomes.filter(([, o]) => o.receipt).length;
-      stats.held += outcomes.filter(([, o]) => o.refused).length;
+      stats.held += outcomes.filter(([, o]) => o.refused || o.blocked).length;
       log(`job ${row.id}: ${outcomes.map(([pid, o]) => `${pid} ${o.receipt ? 'published' : Object.keys(o)[0]}`).join(', ')}`);
       return;
     }

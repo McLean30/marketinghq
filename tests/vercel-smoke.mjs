@@ -10,6 +10,8 @@
 //   EXPECT_VIDEO=1                   also require the Video Creator and render a video from the labelled sample (Milestone 10+)
 //   EXPECT_OPENAI=1                  also check the preview stays in demo mode for AI: no live provider for anonymous
 //                                    visitors, the demo note and Prism's Upload photo, no paid button (Milestone 11A+)
+//   EXPECT_SCHEDULING=1              also check the demo destinations (Kieran’s personal LinkedIn profile) and that the
+//                                    preview schedules in this browser only, never the hosted worker (Milestone 12+)
 //   REQUIRE_SHA_MATCH=1              block unless the deployment itself reports EXPECT_SHA (a URL you passed in)
 //   EXPECT_SHA=<commit>              refuse a deployment that reports a different commit (/api/version)
 //   SMOKE_RESULT=path.json           where to write { status: pass|fail|blocked, summary, steps }
@@ -32,6 +34,7 @@ const EXPECT_PUBLISHING = process.env.EXPECT_PUBLISHING === '1';
 const EXPECT_ANALYST = process.env.EXPECT_ANALYST === '1';
 const EXPECT_VIDEO = process.env.EXPECT_VIDEO === '1';
 const EXPECT_OPENAI = process.env.EXPECT_OPENAI === '1';
+const EXPECT_SCHEDULING = process.env.EXPECT_SCHEDULING === '1';
 const REQUIRE_SHA_MATCH = process.env.REQUIRE_SHA_MATCH === '1';
 const EXPECT_SHA = (process.env.EXPECT_SHA || '').trim();
 const RESULT = process.env.SMOKE_RESULT || '';
@@ -278,6 +281,12 @@ try {
     await page.waitForSelector('[data-testid="publish-confirm"]', { timeout: 5000 }).catch(() => {});
     const conf = await page.locator('[data-testid="publish-confirm"]').innerText().catch(() => '');
     if (!/Schedule \(demo\) for .* (GMT|BST)/.test(conf) || !/demo account, simulated/.test(conf)) throw new Failed('The separate confirmation step didn’t show the action, time and destination.');
+    if (EXPECT_SCHEDULING) {
+      if (!/Kieran’s personal LinkedIn profile \(demo account, simulated\)/.test(conf)) throw new Failed('The confirmation doesn’t name the intended destination (Kieran’s personal LinkedIn profile, demo stand-in).');
+      const hosted = await page.locator('[data-testid="scheduler-note"][data-runs-on="hosted"]').count();
+      if (hosted) throw new Failed('This preview says the hosted scheduler sends its posts. Public previews must stay in browser-only demo mode.');
+      step(true, 'Confirmation names Kieran’s personal LinkedIn profile (demo stand-in); the preview schedules in this browser only');
+    }
     if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'publishing-confirm.png'), fullPage: true });
     await page.click('[data-pub-back]');
     await page.click('[data-pub-back]');
