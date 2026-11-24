@@ -208,7 +208,7 @@ For every day you're given (date and platform are fixed), return:
 - audience: who this post speaks to, specifically (one short phrase)
 - angle: the single idea of the post (one sentence)
 - takeaway: one practical thing the reader can do (one sentence)
-- visual: a brief for the designer describing a realistic UK commercial maintenance photo to use (one or two sentences, no text in the image)
+- visual: a brief for the designer (one or two sentences, no text in the image) chosen for that day's audience and point. Show an engineer, a van or a site visit only when the post is specifically about field work. For businesses with past customers (any sector) prefer a booking diary, a quiet appointment slot, an owner picking up a reply, or a simple branded graphic with no people. Give each day a different scene.
 Vary the angles across the week so posts don't repeat each other, and fit each to its platform. Return exactly one entry per day, in the same order.`;
 
 const PLAN_SCHEMA = {

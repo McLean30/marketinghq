@@ -1,0 +1,32 @@
+[
+  {
+    "day": "Monday",
+    "headline": "A simple, respectful way to reconnect.",
+    "scene": "Owner of a small UK business at their desk, looking back through past jobs and customer notes on a laptop; warm, natural light.",
+    "dup": false
+  },
+  {
+    "day": "Tuesday",
+    "headline": "Work done, parts used, time on site.",
+    "scene": "A small business owner at their desk smiling as they read a reply from a past customer on their phone; natural light, candid, no visible text.",
+    "dup": false
+  },
+  {
+    "day": "Wednesday",
+    "headline": "Capture the client’s sign-off on site, on.",
+    "scene": "A paper booking diary open on a small business counter, a pen resting beside an empty afternoon slot; warm natural light, no people.",
+    "dup": false
+  },
+  {
+    "day": "Thursday",
+    "headline": "Name one owner for closing this gap.",
+    "scene": "Simple branded graphic: deep navy background, a single line-drawn calendar with one slot filled in electric blue; no people, no text.",
+    "dup": false
+  },
+  {
+    "day": "Friday",
+    "headline": "A useful question to ask about.",
+    "scene": "A quiet appointment slot highlighted on a tablet calendar on a tidy counter; soft daylight, no people.",
+    "dup": false
+  }
+]

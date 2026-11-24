@@ -127,7 +127,9 @@ async function prismImage(body) {
     if (!a) throw Object.assign(new Error('The image to edit isn’t in the shared workspace.'), { status: 404, retryable: false });
     base = { mime: a.meta.type, buffer: a.buffer };
   }
-  const prompt = `${body.prompt.trim()}\n\nA realistic photograph for a UK commercial maintenance and building services company's ${body.platform || 'social'} post. Believable UK setting and PPE. ${BRAND.imageDirection}`;
+  // The post this image illustrates (exact caption version, audience, angle): context for the scene only, never text in it.
+  const ctxText = typeof body.context === 'string' && body.context.trim() ? `\n\nThe post this image illustrates (context for the scene only; never render any of these words in the image):\n${body.context.trim().slice(0, 1200)}` : '';
+  const prompt = `${body.prompt.trim()}${ctxText}\n\nA realistic photograph for Nexai Digital's ${body.platform || 'social'} post, for the audience described. Believable UK setting; people only where the scene calls for them. ${BRAND.imageDirection}`;
   let out;
   if (quill.providerInfo().provider === 'mock') {
     await new Promise((r) => setTimeout(r, Number(process.env.QUILL_MOCK_DELAY_MS || 300)));

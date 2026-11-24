@@ -89,6 +89,23 @@ function draftFor(req) {
       notes: 'Opened on the Friday moment from the brief and gave one practical fix: photos required to close the job.',
     };
   }
+  // A post about a catalogue item: written from its approved public wording only (the job's public context).
+  const it = req.catalogue?.items?.[0];
+  if (it && it.wording) {
+    const lc = (x) => (x ? x.charAt(0).toLowerCase() + x.slice(1) : '');
+    return {
+      caption: [
+        it.status === 'available' ? 'A quick note on something we do at Nexai.' : 'Something we’re working on at Nexai right now, and why.',
+        it.wording,
+        it.problem ? `The everyday problem: ${lc(it.problem)}` : '',
+        it.outcome ? `What we’re aiming for: ${lc(it.outcome)}` : '',
+        it.status === 'available' ? '' : 'It’s still in development, so this is where we’re heading rather than results we can point to yet.',
+        'If you’re dealing with the same thing, tell us in the comments how you handle it.',
+        req.platform === 'LinkedIn' ? '#SmallBusiness #UKBusiness #CustomerRelationships' : '',
+      ].filter(Boolean).join('\n\n'),
+      notes: 'Mock draft from the approved public wording (test mode, not AI).',
+    };
+  }
   return {
     caption: `A quick update from us at Nexai on the brief: "${req.brief.slice(0, 120)}".\n\nWhat would you change first? Tell us in the comments.\n\n${TAGS}`,
     notes: 'Generic mock draft (editorial voice).',

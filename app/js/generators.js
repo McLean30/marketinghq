@@ -1,6 +1,7 @@
 import { activeOffers, norm } from './profile.js';
 import { toneFor, variant } from './voice.js';
 import { STATUS } from './catalogue.js';
+import { proposeConcept } from './creative.js';
 
 /* ---------- Posts about a service or product in the catalogue ----------
    The job carries only the public context its brief needed (job.catalogue, from catalogue.js contextFor): the
@@ -47,7 +48,9 @@ const catNote = (job, it) => `Used the business profile’s approved public word
 
 const THEMES = {
   building: {
-    match: /jobtrack|what we(?:’|')?ve? learn|we(?:’|')re building|we are building|building (?:our|jobtrack)|lessons from building/i,
+    // Only a post that is actually about JobTrack Pro. "We're building…" alone used to match too, which gave a
+    // customer-reactivation post the headline "What building JobTrack Pro taught us" (Milestone 15).
+    match: /jobtrack/i,
     title: 'What building JobTrack Pro taught us',
     hooks: ['We’ve been building JobTrack Pro, our own job management app for maintenance teams, and it’s changed how we think about the workflows we build for clients.'],
     friendlyHook: 'A behind-the-scenes one from us at Nexai: what building our own job app has taught us.',
@@ -340,6 +343,13 @@ export function draftGraphic(job, profile = null) {
       },
       notes: [`Graphic from the approved public wording (${it.name ? it.name : 'described without naming'}); status chip: ${STATUS[it.status]}`],
     };
+  }
+  // A post without its own template gets a headline from its own brief, never a fixed one from another topic.
+  if (themeFor(job.brief) === 'general' && !/promo/.test(context(job, profile).mode || '')) {
+    const h = proposeConcept({ brief: job.brief, caption: null }).headline.replace(/\.$/, '');
+    const cut = h.split(' ');
+    const half = Math.ceil(cut.length / 2);
+    return { content: { theme: 'general', scene: 'office', headline: [cut.slice(0, half).join(' '), `${cut.slice(half).join(' ')}.`].filter((x) => x && x !== '.'), sub: '', chip: 'Nexai', tone: 'editorial', accent: 'cyan', logoScale: 1, platform: job.platform }, notes: ['Simulated graphic; headline from this post’s brief'] };
   }
   const key = themeFor(job.brief);
   const theme = THEMES[key];

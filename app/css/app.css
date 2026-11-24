@@ -902,3 +902,19 @@ html[data-motion="off"] .handoff path.pulse { stroke-dasharray: none; stroke-wid
 .status-banner { margin: 0 0 16px; }
 .dest-state { margin: 8px 0; }
 .quill-mode.warn { border-color: var(--warn); }
+
+/* ---------- Creative brief, headline edits and the week's concepts (Milestone 15) ---------- */
+.concept-form .concept-source { margin: 0 0 8px; }
+.concept-form .brief-caption { white-space: pre-line; max-height: 12em; overflow: auto; }
+.concept-form input[type="text"], .concept-board input[type="text"] { width: 100%; }
+label.check { display: flex; gap: 8px; align-items: center; font-weight: 500; margin: 6px 0 10px; }
+label.check input { width: auto; min-height: 0; }
+.concept-rows { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 12px; }
+.concept-row { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--navy); }
+.concept-row.dup { border-color: var(--warn); }
+.dup-flag { color: var(--warn); margin: 6px 0 0; font-weight: 600; }
+.basis { display: inline-block; margin-left: 6px; font-size: .78rem; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.basis-render { border-color: var(--ok); color: var(--ok); }
+.basis-description, .basis-not-checked { border-color: var(--warn); color: var(--warn); }
+.blocking-note { color: var(--warn); margin: 6px 0; }
+.finding.f-advisory { border-left-color: var(--line); }

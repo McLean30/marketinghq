@@ -14,6 +14,8 @@ import { templateStoryboard } from './video.js';
 import { BRAND, officialLogoKnown } from './brand.js';
 import { toneFor, voiceOf, hasVoiceField, DEFAULT_VOICE } from './voice.js';
 import * as CAT from './catalogue.js';
+import * as CR from './creative.js';
+import * as P from './photo.js';
 
 const KEY = 'nexai-hq:v1';
 const MODE_KEY = 'nexai-hq:mode';
@@ -681,6 +683,7 @@ export async function approveJob(jobId) {
     if (st !== 'ready_for_review' && st !== 'needs_reapproval') return false;
     const t = jobTasks(j);
     if (t.copy.versions.length !== shown.copyVersion || t.graphic.versions.length !== shown.graphicVersion) return false;
+    if (creativeBlockers(j).length) return false; // an unrelated headline or a missing image is corrected first
     j.approval = { ...shown, at: Date.now() };
     j.approvals = [...(j.approvals || []), j.approval];
     log(j.id, 'manager', `Approved caption v${shown.copyVersion} with graphic v${shown.graphicVersion}. Added to the private calendar. Nothing is published or scheduled until you choose to.`);
@@ -716,6 +719,7 @@ export function agentState(agentId, now = Date.now()) {
     return 'idle';
   }
   const mine = state.tasks.filter((t) => t.agent === agentId);
+  if (agentId === 'designer' && mine.some((t) => isImaging(t.id))) return 'working'; // generating or editing an image
   const active = mine.filter((t) => t.pending && !t.pending.error);
   if (active.some((t) => now >= t.pending.startAt)) return active.some((t) => t.pending.kind === 'revision') ? 'revising' : 'working';
   if (mine.some((t) => t.pending?.error)) return 'failed';
@@ -836,6 +840,93 @@ export function cancelFailedRevision(taskId) {
   }, { action: 'cancel' });
 }
 
+/* ---------- Prism's creative brief (Milestone 15) ---------- */
+/**
+ * Everything Prism works from, taken from the job as it is now: the exact current caption (owner edits count) and
+ * its version, platform, audience, the plan day's angle and visual brief, and the public Business Profile wording.
+ */
+export function creativeBrief(job) {
+  const { copy } = jobTasks(job);
+  const cv = currentVersion(copy);
+  const items = job.catalogue?.items || [];
+  const pd = job.planDay || {};
+  return {
+    jobId: job.id,
+    brief: job.brief,
+    platform: job.platform,
+    caption: cv ? { n: cv.n, text: cv.content.text, by: cv.source === 'human' ? 'you' : AGENTS.copywriter.name, simulated: isSimulatedVersion(copy, cv) } : null,
+    captionPending: !!copy.pending && !copy.pending.error,
+    captionFailed: !!copy.pending?.error,
+    audience: pd.audience || items[0]?.audience || currentProfile()?.data?.audience?.summary || '',
+    dayName: pd.dayName || null,
+    angle: pd.angle || null,
+    takeaway: pd.takeaway || null,
+    visual: pd.visual || items[0]?.visual || null,
+    catalogue: items.map((i) => ({ id: i.id, name: i.name || null, status: i.status, wording: i.wording, headline: i.headline || [], audience: i.audience, problem: i.problem, outcome: i.outcome })),
+    tone: job.tone?.mode || 'editorial',
+  };
+}
+/** The headline and scene for this post: the owner's saved concept, else a free local proposal from the brief. */
+export function conceptFor(job) {
+  const b = creativeBrief(job);
+  const c = job.concept;
+  if (c) return { ...c, captionNow: b.caption?.n || null, stale: !!(b.caption && c.captionVersion && c.captionVersion !== b.caption.n) };
+  const p = CR.proposeConcept(b, { seed: job.id });
+  return { headline: p.headline, scene: p.scene, noHeadline: false, captionVersion: b.caption?.n || null, source: 'proposal', from: p.from, sceneFrom: p.sceneFrom, topic: p.topic, alts: p.alts, captionNow: b.caption?.n || null, stale: false };
+}
+/** A week's concepts in day order: saved ones as they are, proposals varied so no two days repeat. */
+export function weekConcepts(plan) {
+  const jobs = plan.days.filter((d) => d.jobId && getJob(d.jobId)).map((d) => getJob(d.jobId));
+  const varied = CR.varyWeek(jobs.map((j) => conceptFor(j)));
+  return jobs.map((j, i) => ({ job: j, concept: varied[i] }));
+}
+/** The concept for one post, as the week board shows it (varied against the other days of its plan). */
+export function conceptInWeek(job) {
+  const plan = job.planId ? getPlan(job.planId) : null;
+  return (plan && weekConcepts(plan).find((x) => x.job.id === job.id)?.concept) || conceptFor(job);
+}
+/** Forget the saved headline and scene, so they're proposed again from the current caption. */
+export const clearConcept = (jobId) => commit(jobId, () => { const j = getJob(jobId); if (!j.concept) return false; delete j.concept; return true; }, { action: 'concept' });
+/** Save the owner's headline and scene for this post (no image is requested). */
+export function saveConcept(jobId, { headline, scene, noHeadline, source = 'owner' }) {
+  return commit(jobId, () => {
+    const j = getJob(jobId);
+    const b = creativeBrief(j);
+    const next = { headline: String(headline || '').trim().slice(0, 140), scene: String(scene || '').trim().slice(0, 800), noHeadline: !!noHeadline, captionVersion: b.caption?.n || null, source, at: Date.now() };
+    const prev = j.concept;
+    if (prev && prev.headline === next.headline && prev.scene === next.scene && !!prev.noHeadline === next.noHeadline && prev.captionVersion === next.captionVersion) return false;
+    j.concept = next;
+    return true;
+  }, { action: 'concept' });
+}
+/**
+ * Whether the current graphic was made for the current caption. A graphic records the caption version it was made
+ * for; if the caption has moved on (a revision, or your edit while Prism worked), the owner reviews the pairing.
+ */
+export function pairing(job) {
+  const { copy, graphic } = jobTasks(job);
+  const gv = currentVersion(graphic);
+  const cv = currentVersion(copy);
+  if (!gv || !cv || graphic.type !== 'graphic' || !gv.content?.basis?.copyVersion) return null;
+  return gv.content.basis.copyVersion === cv.n ? { ok: true, copyVersion: cv.n } : { ok: false, madeFor: gv.content.basis.copyVersion, now: cv.n, graphicVersion: gv.n };
+}
+
+/**
+ * What must be corrected before this pair can be approved: an empty photo slot, or a headline that clearly isn't
+ * this post's (it names a different product, or shares no point with the caption). Everything else is advisory.
+ */
+export function creativeBlockers(job) {
+  const { copy, graphic } = jobTasks(job);
+  const cv = currentVersion(copy);
+  const gv = currentVersion(graphic);
+  if (!cv || !gv || graphic.type !== 'graphic' || gv.content?.mode !== 'photo') return [];
+  const out = [];
+  if (!gv.content.photoId) out.push({ title: 'The photo slot is empty', why: 'The exported graphic would show the “Photo missing” placeholder.', fix: 'Generate an image or upload a photo, then save the layout.' });
+  const b = creativeBrief(job);
+  for (const f of CR.headlineFindings({ headline: gv.content.headline, noHeadline: gv.content.noHeadline, caption: cv.content.text, brief: job.brief, angle: b.angle || '', profileData: currentProfile()?.data, catalogue: b.catalogue, tone: b.tone, where: `Graphic v${gv.n} headline` })) if (f.blocking) out.push(f);
+  return out;
+}
+
 /* ---------- Prism Photo layout ---------- */
 /**
  * Append a Photo layout version built on `baseVersions` (the number of graphic versions the editor started from).
@@ -859,7 +950,8 @@ export async function saveGraphicVersion(taskId, content, notes, baseVersions) {
     const t = getTask(taskId);
     if (baseVersions != null && t.versions.length !== baseVersions) return false;
     const n = t.versions.length + 1;
-    version = { n, content: { ...content, mode: 'photo' }, notes, feedback: null, by: 'You with Prism', simulated: false, source: 'photo', createdAt: Date.now(), profileVersion: profileRef() };
+    const cvNow = currentVersion(jobTasks(getJob(t.jobId)).copy);
+    version = { n, content: { ...content, mode: 'photo', basis: { copyVersion: content.basis?.keep ? content.basis.copyVersion : cvNow?.n || null } }, notes, feedback: null, by: 'You with Prism', simulated: false, source: 'photo', createdAt: Date.now(), profileVersion: profileRef() };
     t.versions.push(version);
     log(t.jobId, 'designer', `Photo layout saved as graphic v${n}.`);
     return true;
@@ -1115,6 +1207,9 @@ export async function runReview(jobId) {
   const cv = currentVersion(copy);
   const gv = currentVersion(graphic);
   if (!cv || !gv || copy.pending || graphic.pending) return { ok: false, error: 'Wait for Quill and Prism to finish before reviewing.' };
+  const last = latestReview(job);
+  // The same caption, graphic and profile were reviewed already: reuse that review (no new checks, no paid calls).
+  if (last && last.copyVersion === cv.n && last.graphicVersion === gv.n && last.profileVersion === currentProfile()?.id && last.checkDate === reviewDate(job)) return { ok: true, reused: true, review: last };
   reviewing.add(jobId);
   notify();
   try {
@@ -1125,6 +1220,7 @@ export async function runReview(jobId) {
     const date = reviewDate(job);
     const result = runChecks({ job, copyVersion: cv, graphicVersion: gv, profile, brand: brand(), date, present });
     addDisclosureCheck(result, cv, gv, profile, date);
+    await addCreativeChecks(result, job, cv, gv, profile);
     return await commit(jobId, () => {
       const j = getJob(jobId);
       const t = jobTasks(j);
@@ -1438,6 +1534,44 @@ function addDisclosureCheck(result, cv, gv, profile, date) {
   found.forEach((f, i) => result.findings.push({ id: `catalogue-${result.findings.length + 1}`, check: 'catalogue', status: 'fail', title: f.title, quote: f.quote, where: `Caption v${cv.n}${onImage.trim() ? ` or graphic v${gv.n}` : ''}`, why: f.why, fixer: 'copywriter', fix: f.fix }));
 }
 
+/**
+ * Calibre's creative review (Milestone 15): the exact caption with the headline as rendered on the selected graphic
+ * version, the platform and the profile. Each check says what it was made on: the final render (the same drawing as
+ * the exported PNG), the text, or only the scene description. What wasn't checked is said plainly.
+ */
+async function addCreativeChecks(result, job, cv, gv, profile) {
+  if (gv.content?.mode !== 'photo') return;
+  const b = creativeBrief(job);
+  const where = `Graphic v${gv.n}`;
+  const push = (f) => result.findings.push({ id: `creative-${result.findings.length + 1}`, where, ...f });
+  // 1. Headline against the caption's point, named products and claims, and the voice.
+  const hf = CR.headlineFindings({ headline: gv.content.headline, noHeadline: gv.content.noHeadline, caption: cv.content.text, brief: job.brief, angle: b.angle || '', profileData: profile.data, catalogue: b.catalogue, tone: b.tone, where: `${where} headline` });
+  result.checks.push({ id: 'headline', label: 'Headline expresses this post’s point (no unrelated products, claims or hard sell)', kind: 'rule', basis: 'text', result: hf.some((f) => f.status === 'fail') ? 'fail' : hf.length ? 'owner' : 'pass', detail: gv.content.noHeadline ? 'Headline-free design: nothing to check' : `“${gv.content.headline || ''}” checked against caption v${cv.n}` });
+  hf.forEach(push);
+  // 2. Was the graphic made for this caption?
+  const pr = pairing(job);
+  result.checks.push({ id: 'pairing', label: 'Graphic was made for this caption version', kind: 'rule', basis: 'record', result: pr && !pr.ok ? 'owner' : 'pass', detail: pr ? (pr.ok ? `Made for caption v${pr.copyVersion}` : `Made for caption v${pr.madeFor}; caption is now v${pr.now}`) : 'No source caption recorded (made before Milestone 15)' });
+  if (pr && !pr.ok) push({ check: 'pairing', status: 'owner', title: `Graphic v${gv.n} was made for caption v${pr.madeFor}, not v${pr.now}`, why: 'The caption changed after the graphic was made, so its headline may no longer say the same thing as the post.', fixer: 'designer', fix: 'Read the headline against the new caption. Change it (same image, no new request) or keep it for this caption.' });
+  // 3. The final render: what the exported PNG contains.
+  let m = null;
+  try {
+    const [photo, logo] = await Promise.all([gv.content.photoId ? P.loadBitmap(gv.content.photoId) : null, gv.content.logoId ? P.loadBitmap(gv.content.logoId) : null]);
+    m = await P.renderMetrics(gv.content, { photo, logo });
+    if (gv.content.photoId && !photo) m.missingPhoto = true;
+  } catch { m = null; }
+  if (m) {
+    const rf = CR.renderFindings(m, `${where} (final render)`);
+    result.checks.push({ id: 'render', label: 'Final render: logo placement, headline clipping and phone readability', kind: 'rule', basis: 'render', result: rf.some((f) => f.status === 'fail') ? 'fail' : rf.some((f) => f.status === 'owner') ? 'owner' : 'pass', detail: `Checked on the composed 1080 × 1350 render (the same drawing as the export)${m.noHeadline ? '; no headline by design' : `: headline ${m.lines.length} line${m.lines.length === 1 ? '' : 's'} at ${m.headlineSize}px (about ${Math.round(m.headlineSize / 3)}px on a phone)`}` });
+    rf.forEach(push);
+  } else result.checks.push({ id: 'render', label: 'Final render: logo placement, headline clipping and phone readability', kind: 'human', basis: 'not-checked', result: 'human', detail: 'Not checked: the render couldn’t be drawn here (the photo or logo couldn’t be loaded).' });
+  // 4. The scene: only its description can be checked; nobody has looked at the picture's content for you.
+  const scene = gv.content.generated?.scene || gv.content.generated?.prompt || '';
+  const topic = CR.topicOf({ brief: job.brief, caption: cv.content.text, angle: b.angle || '', catalogueId: b.catalogue[0]?.id });
+  const fieldMismatch = scene && CR.sceneIsFieldWork(scene) && !['field', 'jobtrack'].includes(topic);
+  result.checks.push({ id: 'scene', label: 'Scene suits the audience and the point', kind: fieldMismatch ? 'owner' : 'rule', basis: scene ? 'description' : 'not-checked', result: fieldMismatch ? 'owner' : scene ? 'pass' : 'human', detail: scene ? `Checked the scene description only (“${scene.slice(0, 90)}${scene.length > 90 ? '…' : ''}”), not the image itself` : 'Not checked: this graphic has no scene description (an uploaded photo). Look at the image yourself.' });
+  if (fieldMismatch) push({ check: 'scene', status: 'advisory', title: 'The scene shows field work, but this post isn’t about field work', quote: scene, why: topic === 'reactivation' ? 'This post is for businesses of any sector with past customers. An engineer on site suggests maintenance work and can lose the reader the post is for.' : 'The picture should show the post’s point for its audience.', fixer: 'designer', fix: topic === 'reactivation' ? 'Consider a booking diary, a quiet appointment slot, an owner picking up a reply, or a simple branded graphic with no people.' : 'Consider a scene closer to the caption’s point.' });
+}
+
 /** This browser's demo profile: add the service catalogue as a new version, keeping every existing edit. */
 function seedCatalogue() {
   const cur = currentProfile();
@@ -1526,7 +1660,7 @@ export function useTemplateStoryboard(taskId) {
  */
 const imaging = new Set();
 export const isImaging = (taskId) => imaging.has(taskId) || !!getTask(taskId)?.imageRequest?.inFlight;
-export async function prismImage(taskId, { op, prompt, scene }) {
+export async function prismImage(taskId, { op, prompt, scene, headline = null, noHeadline = false }) {
   const task = getTask(taskId);
   if (!task || task.type !== 'graphic') return { ok: false, error: 'Graphic task not found.' };
   if (task.pending) return { ok: false, error: 'Prism is still working on this graphic. Wait for it to finish.' };
@@ -1536,14 +1670,19 @@ export async function prismImage(taskId, { op, prompt, scene }) {
   if (op === 'edit' && !baseAssetId) return { ok: false, error: 'There’s no photo to edit yet. Generate or upload one first.' };
   imaging.add(taskId);
   notify();
+  // The caption this image is for, fixed now: if the caption changes while Prism works, the result stays linked to it.
+  const basis = { copyVersion: currentVersion(jobTasks(getJob(task.jobId)).copy)?.n || null };
   try {
     // Reuse the key of an unfinished request for the same action (a refresh or retry), else make a new one.
     const prior = task.imageRequest && !task.imageRequest.doneAt && task.imageRequest.op === op && task.imageRequest.prompt === prompt.trim() ? task.imageRequest : null;
     const requestKey = prior?.requestKey || newRequestKey(`${taskId}:img`);
-    const claimed = await commit(task.jobId, () => { const t = getTask(taskId); t.imageRequest = { requestKey, op, prompt: prompt.trim(), scene: scene || null, at: Date.now(), by: DEVICE, inFlight: true }; return true; }, { action: 'image' });
+    const claimed = await commit(task.jobId, () => { const t = getTask(taskId); t.imageRequest = { requestKey, op, prompt: prompt.trim(), scene: scene || null, headline, noHeadline: !!noHeadline, basis, at: Date.now(), by: DEVICE, inFlight: true }; return true; }, { action: 'image' });
     if (!claimed.ok) return claimed;
     const job = getJob(task.jobId);
-    const res = await postJson('api/prism/image', { requestKey, jobId: job.id, op, prompt: prompt.trim(), platform: job.platform, baseAssetId });
+    // Prism sees the post it's illustrating: the exact caption version, audience and platform (for the scene only).
+    const cb = creativeBrief(job);
+    const context = cb.caption ? `Caption v${cb.caption.n}: ${cb.caption.text.slice(0, 600)}\nAudience: ${cb.audience}${cb.angle ? `\nAngle: ${cb.angle}` : ''}` : '';
+    const res = await postJson('api/prism/image', { requestKey, jobId: job.id, op, prompt: prompt.trim(), platform: job.platform, baseAssetId, context });
     let version;
     const saved = await commit(task.jobId, () => {
       const t = getTask(taskId);
@@ -1557,7 +1696,9 @@ export async function prismImage(taskId, { op, prompt, scene }) {
         content: {
           mode: 'photo', photoId: d.assetId, photoName: d.name, photoOrigin: d.provider === 'openai' ? 'ai' : 'mock', generated: { op, prompt: prompt.trim(), scene: scene || null, model: d.model, provider: d.provider, requestKey },
           logoId: state.brand?.logoId || (officialLogoKnown() ? BRAND.logo.id : null) || last?.content.logoId || null, logoName: state.brand?.logoName || (officialLogoKnown() ? BRAND.logo.name : null) || last?.content.logoName || null,
-          headline: last?.content.headline || (realOnly() ? (getJob(t.jobId)?.catalogue?.items?.[0]?.headline || []).join(' ') : (lastSim?.content.headline || []).join(' ')) || '', headlinePos: last?.content.headlinePos || 'bottom', crop: { zoom: 1, fx: 0.5, fy: 0.5 }, logoScale: last?.content.logoScale || 1,
+          // The headline is the one shown with the scene before the request (never a demo template's or another post's).
+          headline: headline != null ? headline : last?.content.headline || conceptFor(getJob(t.jobId)).headline || '', noHeadline: !!noHeadline, headlinePos: last?.content.headlinePos || 'bottom', crop: { zoom: 1, fx: 0.5, fy: 0.5 }, logoScale: last?.content.logoScale || 1,
+          basis,
         },
         notes: [op === 'edit' ? `v${n}: Image edited with ${d.model}: “${prompt.trim()}”. Logo, headline and crop are added locally.` : `v${n}: Image generated with ${d.model}${scene ? ` for “${scene}”` : ''}. Logo, headline and crop are added locally.`],
       };
@@ -1584,6 +1725,7 @@ export async function aiWordingReview(jobId) {
   const { copy } = jobTasks(job);
   const cv = currentVersion(copy);
   if (!cv) return { ok: false, error: 'There’s no caption to review yet.' };
+  if ((job.wordingReviews || []).some((w) => w.copyVersion === cv.n)) return { ok: true, reused: true }; // same caption: no new request
   wording.add(jobId);
   notify();
   try {

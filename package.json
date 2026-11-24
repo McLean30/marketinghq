@@ -30,7 +30,8 @@
     "worker:sync": "node scripts/sync-worker.cjs",
     "test:scheduler": "node tests/hosted-scheduler.mjs",
     "test:m13": "node tests/catalogue-m13.mjs",
-    "test:m14": "node tests/private-m14.mjs"
+    "test:m14": "node tests/private-m14.mjs",
+    "test:m15": "node tests/creative-m15.mjs"
   },
   "engines": {
     "node": ">=20.6"

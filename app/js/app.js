@@ -11,6 +11,7 @@ import * as V from './video.js';
 import * as VO from './voice.js';
 import { BRAND, officialLogoAvailable, officialLogoKnown } from './brand.js';
 import * as CAT from './catalogue.js';
+import * as CR from './creative.js';
 
 const $main = document.getElementById('main');
 const $sheet = document.getElementById('sheet-root');
@@ -119,7 +120,8 @@ function aiImageBox(job, task) {
     </div>
     ${busy ? `<p class="working-note" role="status">Prism is ${req?.op === 'edit' ? 'editing the image' : 'generating the image'} with ${esc(S.quill.imageModel || 'the image model')}… This is one paid request.</p>` : ''}
     ${req?.error && !busy ? `<div class="error-box" role="alert" data-testid="image-error"><p><strong>The image request failed.</strong> ${esc(req.error)}</p><p class="mini">Your graphic versions and caption are unchanged.${open ? ' Your description is kept below: check it, then press the button again to retry.' : ` <button class="btn btn-small" data-ai-image-open="${task.id}|${req.op || 'generate'}" data-testid="image-retry">Try again</button>`}</p></div>` : ''}
-    ${open && !busy ? `<form class="rev-form" data-ai-image-form="${task.id}|${open}">
+    ${open === 'generate' && !busy ? conceptForm(job, task, req) : ''}
+    ${open === 'edit' && !busy ? `<form class="rev-form" data-ai-image-form="${task.id}|${open}">
       <label for="aip-${task.id}">${open === 'edit' ? `What should change in image v${v.n}?` : 'Scene to generate'}</label>
       <textarea id="aip-${task.id}" rows="3" required maxlength="800" placeholder="${open === 'edit' ? 'e.g. Make it early morning light; keep the engineer and the van' : 'e.g. Engineer checking a fire alarm panel in a school corridor'}">${open === 'generate' ? esc(req?.error && req.op === 'generate' && req.prompt ? req.prompt : scene) : req?.error && req.op === 'edit' ? esc(req.prompt || '') : ''}</textarea>
       ${open === 'generate' ? '<p class="mini" data-testid="visual-brief-source">Filled in from this post’s visual brief. Nothing is generated until you press the button.</p>' : ''}
@@ -129,6 +131,59 @@ function aiImageBox(job, task) {
     ${!canLive ? `<p class="mini">${S.liveAi() ? 'AI images need the shared workspace.' : 'AI images are off here (demo mode). Upload a photo to build the graphic yourself.'}</p>` : ''}
     ${S.realOnly() && !S.liveAi() ? '<p class="mini">Live AI isn’t set up on this server, so Generate will report that. Upload photo always works.</p>' : ''}
   </div>`;
+}
+
+/**
+ * Prism's creative brief (Milestone 15): the headline and scene together, from the exact current caption version,
+ * before any paid image request. Both are editable; a headline-free design is a choice, not a missing field.
+ */
+function conceptForm(job, task, req) {
+  const b = S.creativeBrief(job);
+  const c = S.conceptInWeek(job);
+  const failed = req?.error && req.op === 'generate';
+  const cap = b.caption
+    ? `<p class="concept-source" data-testid="concept-source">From <strong>caption v${b.caption.n}</strong> (${b.caption.by === 'you' ? 'edited by you' : `by ${esc(b.caption.by)}`})${c.source === 'owner' ? ', your saved headline and scene' : `; headline from ${esc(c.from || 'the caption')}, scene from ${esc(c.sceneFrom || 'the brief')}`}.${c.stale ? ` <strong data-testid="concept-stale">The caption has changed since you saved these (they were for v${c.captionVersion}).</strong> <button type="button" class="btn btn-small" data-concept-refresh="${job.id}">Refresh from caption v${b.caption.n}</button>` : ''}</p>`
+    : b.captionPending ? '<p class="concept-source" data-testid="concept-pending">Quill is still writing the caption. The headline will follow it; you can still describe the scene now.</p>'
+      : '<p class="concept-source" data-testid="concept-pending">There’s no caption yet (the request failed). Retry Quill first so the headline can follow the caption.</p>';
+  return `<form class="rev-form concept-form" data-ai-image-form="${task.id}|generate" data-testid="concept-form">
+    ${cap}
+    <details class="brief-detail" data-key="cb-${job.id}"><summary>What Prism works from</summary>
+      <dl class="confirm-list" data-testid="creative-brief">
+        <div><dt>Platform</dt><dd>${esc(b.platform)}</dd></div>
+        <div><dt>Audience</dt><dd>${esc(b.audience || '—')}</dd></div>
+        ${b.angle ? `<div><dt>${esc(b.dayName || 'Day')}’s angle</dt><dd>${esc(b.angle)}</dd></div>` : ''}
+        ${b.visual ? `<div><dt>Visual brief</dt><dd>${esc(b.visual)}</dd></div>` : ''}
+        ${b.catalogue.length ? `<div><dt>Public wording</dt><dd>${b.catalogue.map((i) => esc(i.wording)).join(' · ')}</dd></div>` : ''}
+        <div><dt>Caption${b.caption ? ` v${b.caption.n}` : ''}</dt><dd class="brief-caption">${b.caption ? esc(b.caption.text) : '—'}</dd></div>
+      </dl></details>
+    <label for="aih-${task.id}">Headline on the image</label>
+    <input id="aih-${task.id}" type="text" maxlength="80" value="${esc(failed && req.headline != null ? req.headline : c.headline || '')}" data-testid="concept-headline" ${c.noHeadline ? 'disabled' : ''}>
+    <label class="check"><input type="checkbox" id="ainh-${task.id}" data-testid="concept-noheadline" ${c.noHeadline ? 'checked' : ''}> No headline (image and logo only)</label>
+    <label for="aip-${task.id}">Scene idea</label>
+    <textarea id="aip-${task.id}" rows="3" required maxlength="800">${esc(failed && req.prompt ? req.prompt : c.scene || '')}</textarea>
+    <p class="mini" data-testid="visual-brief-source">Nothing is generated until you press the button. The image never contains text: the headline and official logo are laid over it afterwards, so you can change them later without a new request.</p>
+    <div class="row-actions">
+      <button class="btn btn-primary" type="submit" data-testid="send-image-generate">Generate this scene (1 image request)</button>
+      <button class="btn" type="button" data-concept-save="${task.id}" data-testid="concept-save">Save headline and scene</button>
+      <button class="btn btn-ghost" type="button" data-ai-image-open="${task.id}|">Cancel</button>
+    </div>
+  </form>`;
+}
+
+/** Change the headline on the current image: a new version that reuses the same image (no image request). */
+function headlineEditor(job, task, v) {
+  if (!v || v.content.mode !== 'photo') return '';
+  const open = ui.headlineEdit?.[task.id];
+  const pr = S.pairing(job);
+  return `${pr && !pr.ok ? `<div class="sync-box update" role="status" data-testid="pairing-notice"><p><strong>Graphic v${pr.graphicVersion} was made for caption v${pr.madeFor}; the caption is now v${pr.now}.</strong> Check the headline still says what the post says. Change it (same image, no new request) or keep this graphic for caption v${pr.now}.</p>
+      <div class="row-actions"><button class="btn" data-open-headline="${task.id}">Change headline</button><button class="btn btn-ghost" data-keep-pairing="${task.id}" data-testid="keep-pairing">Keep it for caption v${pr.now}</button></div></div>` : ''}
+    ${open ? `<form class="rev-form" data-headline-form="${task.id}" data-testid="headline-form">
+      <label for="hl-${task.id}">Headline on graphic v${v.n}</label>
+      <input id="hl-${task.id}" type="text" maxlength="80" value="${esc(v.content.noHeadline ? '' : v.content.headline || '')}" data-testid="headline-input">
+      <label class="check"><input type="checkbox" id="hlnone-${task.id}" ${v.content.noHeadline ? 'checked' : ''} data-testid="headline-none"> No headline (image and logo only)</label>
+      <p class="mini">Saves graphic v${task.versions.length + 1} with the same image, logo and crop. No image request.</p>
+      <div class="row-actions"><button class="btn btn-primary" type="submit" data-testid="headline-save">Save headline</button><button class="btn btn-ghost" type="button" data-open-headline="${task.id}">Cancel</button></div>
+    </form>` : `<div class="row-actions"><button class="btn" data-open-headline="${task.id}" data-testid="change-headline">Change headline</button></div>`}`;
 }
 
 /* ---------- Videos (rendered versions and source clips) ---------- */
@@ -549,6 +604,7 @@ function assetPanel(job, task) {
     ${task.type === 'graphic' && S.getJob(task.jobId)?.planDay?.visual ? `<p class="visual-brief"><strong>Visual brief:</strong> ${esc(S.getJob(task.jobId).planDay.visual)}</p>` : ''}
     ${v ? outputBlock(task, v) : ''}
     ${v?.notes?.length && v.n > 1 ? `<div class="change-note">${v.feedback ? `<p class="feedback-quote">Your feedback: “${esc(v.feedback)}”</p>` : ''}<p><strong>What changed:</strong> ${esc(v.notes.join(' '))}</p></div>` : ''}
+    ${task.type === 'graphic' && !busy ? headlineEditor(job, task, v) : ''}
     ${task.type === 'graphic' && !busy ? aiImageBox(job, task) : ''}
     ${v && !busy ? `
       <div class="asset-actions">
@@ -589,6 +645,8 @@ function renderJob(id) {
   else if (st === 'caption_needed') approveText = 'The current caption is a legacy simulated template. Request a revision from Quill or edit it yourself, then approve.';
   else approveText = 'Approval opens when both the caption and graphic are ready.';
   const problems = S.realOnly() ? S.approvalProblems(job) : [];
+  const blockers = canApprove ? S.creativeBlockers(job) : [];
+  if (blockers.length) approveText = `Correct this before approving: ${blockers.map((x) => x.title.replace(/\.$/, '')).join('; ')}. ${blockers[0].fix || ''}`;
   const flag = problems.length ? `<div class="error-box" role="alert" data-testid="approval-flag"><p><strong>The approved pair contains simulated content:</strong> ${esc(problems.map((x) => x.text).join('; '))}. The approval is kept in history, but this pair can’t be sent. Replace it with a real ${problems.map((x) => (x.type === 'copy' ? 'caption' : 'graphic')).join(' and ')}, then approve again.</p></div>` : '';
   return `
   <nav class="crumbs"><a href="#/">← HQ</a>${job.sample ? ` · <a href="#/agent/analyst">Vantage’s analysis</a>` : ''}</nav>
@@ -613,7 +671,7 @@ function renderJob(id) {
   ${flag}
   <div class="approve-bar" data-status="${st}" data-testid="approve-bar">
     <p>${esc(approveText)}</p>
-    ${st === 'approved' ? `<a class="btn" href="#/calendar">View calendar</a>` : `<button class="btn btn-primary" data-approve="${job.id}" ${canApprove ? '' : 'disabled'}>${st === 'needs_reapproval' ? 'Approve changed pair' : 'Approve pair'}</button>`}
+    ${st === 'approved' ? `<a class="btn" href="#/calendar">View calendar</a>` : `<button class="btn btn-primary" data-approve="${job.id}" ${canApprove && !blockers.length ? '' : 'disabled'} ${blockers.length ? 'data-blocked="1"' : ''}>${st === 'needs_reapproval' ? 'Approve changed pair' : 'Approve pair'}</button>`}
   </div>
   ${S.realOnly() ? destinationPanel(job) : publishPanel(job)}
   ${S.realOnly() ? '' : resultsPanel(job)}`;
@@ -1201,7 +1259,9 @@ const clamp01 = (x) => Math.min(1, Math.max(0, x));
 function initStudio(job, task) {
   if (ui.studio?.jobId === job.id) return ui.studio;
   const last = [...task.versions].reverse().find((x) => x.content.mode === 'photo')?.content;
-  const lastSim = [...task.versions].reverse().find((x) => x.content.mode !== 'photo')?.content;
+  // The headline starts from this post's own concept (its caption, plan day and public wording), never from a
+  // simulated version: that's how an unrelated demo headline once reached real photo layouts (Milestone 15).
+  const concept = S.conceptFor(job);
   const brand = S.brand();
   const stored = (id, name) => (id ? { id, name, bitmap: null, stored: true } : null);
   ui.studio = {
@@ -1211,7 +1271,8 @@ function initStudio(job, task) {
     // Owner-set logo first, then the official brand file deployed with HQ, then the last one used on this graphic.
     logo: brand.logoId ? stored(brand.logoId, brand.logoName) : officialLogoKnown() ? stored(BRAND.logo.id, BRAND.logo.name) : last ? stored(last.logoId, last.logoName) : null,
     logoReused: !!brand.logoId || officialLogoKnown(),
-    headline: last ? last.headline : lastSim?.headline ? lastSim.headline.join(' ') : '',
+    headline: last ? last.headline : concept.noHeadline ? '' : concept.headline || '',
+    noHeadline: last ? !!last.noHeadline : !!concept.noHeadline,
     headlinePos: last?.headlinePos || P.DEFAULT_SPEC.headlinePos,
     crop: { ...(last?.crop || P.DEFAULT_SPEC.crop) },
     logoScale: last?.logoScale || P.DEFAULT_SPEC.logoScale,
@@ -1223,7 +1284,7 @@ function initStudio(job, task) {
   return ui.studio;
 }
 
-const studioSpec = (st) => ({ headline: st.headline, headlinePos: st.headlinePos, crop: { ...st.crop }, logoScale: st.logoScale });
+const studioSpec = (st) => ({ headline: st.noHeadline ? '' : st.headline, noHeadline: !!st.noHeadline, headlinePos: st.headlinePos, crop: { ...st.crop }, logoScale: st.logoScale });
 
 function renderStudio(jobId) {
   const job = S.getJob(jobId);
@@ -1267,6 +1328,7 @@ function renderStudio(jobId) {
       <label for="st-headline">Graphic headline</label>
       <textarea id="st-headline" rows="2" maxlength="80" placeholder="e.g. Job finished. Report still waiting.">${esc(st.headline)}</textarea>
       <p class="mini"><span id="st-count">${st.headline.length}</span>/80. Shown on the image only; Quill’s caption is separate.</p>
+      <label class="check"><input type="checkbox" id="st-noheadline" ${st.noHeadline ? 'checked' : ''} data-testid="st-noheadline"> No headline (image and logo only)</label>
 
       <fieldset>
         <legend>Photo crop</legend>
@@ -1343,6 +1405,7 @@ document.addEventListener('input', (e) => {
   if (!st || !e.target.closest('#studio-form')) return;
   const t = e.target;
   if (t.id === 'st-headline') { st.headline = t.value; document.getElementById('st-count').textContent = t.value.length; }
+  else if (t.id === 'st-noheadline') st.noHeadline = t.checked;
   else if (t.id === 'st-zoom') st.crop.zoom = Number(t.value) / 100;
   else if (t.id === 'st-fx') st.crop.fx = Number(t.value) / 100;
   else if (t.id === 'st-fy') st.crop.fy = Number(t.value) / 100;
@@ -1615,6 +1678,7 @@ function renderWeekOverview(pl) {
     <h2 id="att-h">Needs your attention</h2>
     ${items.length ? `<ul>${attentionMarkup(items)}</ul>` : '<p>Nothing right now. Every post is approved.</p>'}
   </section>
+  ${conceptBoard(pl)}
   <ol class="week-days" data-testid="week-days">
   ${pl.days.map((d) => {
     const job = d.jobId ? S.getJob(d.jobId) : null;
@@ -1632,6 +1696,35 @@ function renderWeekOverview(pl) {
     </li>`;
   }).join('')}
   </ol>`;
+}
+
+/**
+ * The week's headlines and scene ideas side by side, before any image is paid for (Milestone 15). Each comes from
+ * that post's own caption and plan day; near-duplicates are flagged so the owner can vary them first.
+ */
+function conceptBoard(pl) {
+  const wc = S.weekConcepts(pl);
+  const rows = wc.map(({ job, concept }) => ({ d: pl.days.find((x) => x.jobId === job.id), job, c: concept, b: S.creativeBrief(job), gv: S.currentVersion(S.jobTasks(job).graphic) }));
+  if (!rows.length) return '';
+  const dups = CR.nearDuplicates(rows.map((r) => ({ headline: r.c.noHeadline ? '' : r.c.headline, scene: r.c.scene })));
+  const flags = (i) => dups.filter((x) => x.a === i || x.b === i).map((x) => ({ what: x.what, other: rows[x.a === i ? x.b : x.a].d.dayName }));
+  return `<section class="panel concept-board" aria-labelledby="cb-h" data-testid="concept-board">
+    <h2 id="cb-h">Headlines and scene ideas</h2>
+    <p class="mini">Each comes from that post’s caption and plan day. Change any of them here before paying for images; saving requests nothing.${dups.length ? ` <strong data-testid="dup-summary">${dups.length} near-duplicate${dups.length === 1 ? '' : 's'} flagged.</strong>` : ' No near-duplicates.'}</p>
+    <ol class="concept-rows">${rows.map((r, i) => {
+      const f = flags(i);
+      return `<li class="concept-row${f.length ? ' dup' : ''}" data-testid="concept-row" data-job="${r.job.id}" data-day="${esc(r.d.dayName)}">
+        <div class="plan-day-head"><span class="day-id"><strong>${esc(r.d.dayName)}</strong><span class="plat plat-${platSlug(r.job.platform)}">${esc(r.job.platform)}</span></span>
+          <span class="mini">${r.b.caption ? `caption v${r.b.caption.n}` : r.b.captionPending ? 'caption being written' : 'no caption yet'}${r.gv ? ` · graphic v${r.gv.n}` : ' · no graphic yet'}${r.c.stale ? ' · <strong>caption changed since saved</strong>' : ''}</span></div>
+        <label for="wk-h-${r.job.id}">Headline</label>
+        <input id="wk-h-${r.job.id}" type="text" maxlength="80" value="${esc(r.c.noHeadline ? '' : r.c.headline || '')}" ${r.c.noHeadline ? 'placeholder="No headline (image only)"' : ''} data-testid="wk-headline">
+        <label for="wk-s-${r.job.id}">Scene idea</label>
+        <textarea id="wk-s-${r.job.id}" rows="2" maxlength="800" data-testid="wk-scene">${esc(r.c.scene || '')}</textarea>
+        ${f.length ? `<p class="dup-flag" role="note" data-testid="dup-flag">${f.map((x) => `Similar ${x.what} to ${esc(x.other)}`).join('; ')}: consider varying it.</p>` : ''}
+      </li>`;
+    }).join('')}</ol>
+    <div class="row-actions"><button class="btn btn-primary" data-save-concepts="${pl.id}" data-testid="save-concepts">Save headlines and scenes</button><span class="mini">No images are requested.</span></div>
+  </section>`;
 }
 
 function renderWeek(id) {
@@ -1657,6 +1750,8 @@ function planEditsFromDom(pl) {
 /* ---------- Brand & Quality Reviewer: on the post ---------- */
 const FIXER = { copywriter: 'Quill (Copywriter)', designer: 'Prism (Creative Designer)', owner: 'You (owner)' };
 const KIND = { rule: ['Rule', 'Checked by the app'], owner: ['Owner', 'Needs owner review'], human: ['You', 'Needs your judgement'] };
+// What a check was actually made on (Milestone 15): Calibre says when it looked at the real render, only at a description, or not at all.
+const BASIS = { render: 'Checked on the final render', text: 'Checked on the text', description: 'Checked on the scene description only, not the image', record: 'Checked on the saved record', 'not-checked': 'Not checked' };
 
 /** Mark lines of the current caption that a fresh review found problems in. */
 function highlightCaption(task, v) {
@@ -1721,8 +1816,9 @@ function renderReview(job, r, rs) {
     ${group('fail', 'Problems found')}
     ${group('owner', 'Needs owner review')}
     ${group('human', 'Needs your judgement')}
+    ${group('advisory', 'Suggestions (advisory, approval isn’t blocked)')}
     <details class="checks" data-key="rvc-${job.id}-${r.n}"><summary>Checks (${r.checks.filter((c) => c.kind === 'rule').length} ran automatically, ${r.checks.filter((c) => c.kind !== 'rule').length} need you)</summary>
-      <ul class="check-list">${r.checks.map((c) => `<li><span class="kind kind-${c.kind}" title="${KIND[c.kind][1]}">${KIND[c.kind][0]}</span> <strong>${esc(c.label)}</strong>: <span class="res res-${c.result}">${{ pass: 'Passed', fail: 'Problem found', na: 'Not applicable', owner: 'Needs owner review', human: 'Needs your judgement' }[c.result]}</span> <span class="mini">${esc(c.detail)}</span></li>`).join('')}</ul></details>
+      <ul class="check-list">${r.checks.map((c) => `<li><span class="kind kind-${c.kind}" title="${KIND[c.kind][1]}">${KIND[c.kind][0]}</span> <strong>${esc(c.label)}</strong>: <span class="res res-${c.result}">${{ pass: 'Passed', fail: 'Problem found', na: 'Not applicable', owner: 'Needs owner review', human: 'Needs your judgement' }[c.result]}</span> <span class="mini">${esc(c.detail)}</span>${c.basis ? ` <span class="basis basis-${c.basis}" data-testid="check-basis" data-basis="${c.basis}">${esc(BASIS[c.basis] || c.basis)}</span>` : ''}</li>`).join('')}</ul></details>
   </div>`;
 }
 
@@ -1732,10 +1828,11 @@ function renderFinding(job, r, f, fresh) {
   return `<article class="finding f-${f.status}" data-testid="finding-${f.check}">
     <h4>${esc(f.title)}</h4>
     ${f.quote ? `<blockquote class="finding-quote">${esc(f.quote)}</blockquote>` : ''}
-    <dl><dt>Where</dt><dd>${esc(f.where)}</dd><dt>Why it matters</dt><dd>${esc(f.why)}</dd><dt>Who can fix it</dt><dd>${FIXER[f.fixer]}</dd></dl>
+    <dl><dt>Where</dt><dd>${esc(f.where)}</dd><dt>Why it matters</dt><dd>${esc(f.why)}</dd>${f.fix ? `<dt>Fix</dt><dd data-testid="finding-fix">${esc(f.fix)}</dd>` : ''}<dt>Who can fix it</dt><dd>${FIXER[f.fixer]}</dd></dl>
+    ${f.blocking ? '<p class="blocking-note" data-testid="finding-blocking"><strong>Correct this before approving.</strong></p>' : f.status === 'advisory' ? '<p class="mini">Advisory: your call.</p>' : ''}
     ${reviewedGraphic?.content.mode === 'video' ? `<div class="reviewed-video">${graphicMarkup(S.jobTasks(job).graphic, reviewedGraphic, { title: `Video v${reviewedGraphic.n}` })}</div>` : ''}
     ${reviewedGraphic && reviewedGraphic.content.mode !== 'video' ? `<button class="graphic-btn small" data-lightbox="${S.jobTasks(job).graphic.id}:${reviewedGraphic.n}" aria-label="Inspect graphic v${reviewedGraphic.n} full screen">${graphicMarkup(S.jobTasks(job).graphic, reviewedGraphic)}</button>` : ''}
-    ${route ? `<div class="row-actions">${f.fixer === 'copywriter' ? `<button class="btn" data-route-finding="${job.id}|${r.n}|${f.id}">Send to Quill</button>` : `<a class="btn" href="#/job/${job.id}/studio">Open Photo layout</a><button class="btn btn-ghost" data-route-finding="${job.id}|${r.n}|${f.id}">Send to Prism</button>`}</div>` : ''}
+    ${route ? `<div class="row-actions">${f.fixer === 'copywriter' ? `<button class="btn" data-route-finding="${job.id}|${r.n}|${f.id}">Send to Quill</button>` : ['headline', 'pairing', 'render'].includes(f.check) || S.realOnly() ? `<a class="btn" href="#/job/${job.id}" data-open-headline="${S.jobTasks(job).graphic.id}">Change headline</a><a class="btn btn-ghost" href="#/job/${job.id}/studio">Open Photo layout</a>` : `<a class="btn" href="#/job/${job.id}/studio">Open Photo layout</a><button class="btn btn-ghost" data-route-finding="${job.id}|${r.n}|${f.id}">Send to Prism</button>`}</div>` : ''}
   </article>`;
 }
 
@@ -2114,6 +2211,11 @@ function restoreDrafts() {
     restoredDrafts.add(id);
   }
 }
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (/^ainh-/.test(t.id || '')) { const h = document.getElementById(t.id.replace('ainh-', 'aih-')); if (h) h.disabled = t.checked; }
+  if (/^hlnone-/.test(t.id || '')) { const h = document.getElementById(t.id.replace('hlnone-', 'hl-')); if (h) h.disabled = t.checked; }
+});
 document.addEventListener('input', (e) => { if (draftable(e.target)) { clearTimeout(saveDrafts.t); saveDrafts.t = setTimeout(saveDrafts, 250); } });
 
 function render() {
@@ -2373,10 +2475,30 @@ document.addEventListener('submit', (e) => {
     if (S.isImaging(id)) return; // one tap, one paid request
     f.querySelectorAll('button').forEach((b) => (b.disabled = true));
     const scene = op === 'generate' ? prompt.slice(0, 120) : null;
-    const pending = S.prismImage(id, { op, prompt, scene });
+    // The headline shown with the scene goes onto the image layout (or none, by choice); the image itself has no text.
+    const noHeadline = op === 'generate' && !!document.getElementById(`ainh-${id}`)?.checked;
+    const headline = op === 'generate' ? (noHeadline ? '' : (document.getElementById(`aih-${id}`)?.value || '').trim()) : null;
+    const jobId = S.getTask(id).jobId;
+    const pending = (op === 'generate' ? S.saveConcept(jobId, { headline, scene: prompt, noHeadline }) : Promise.resolve({ ok: true }))
+      .then(() => S.prismImage(id, { op, prompt, scene, headline, noHeadline }));
     render();
     pending.then((res) => {
       if (res.ok) { ui.aiImage[id] = null; clearDraft(`aip-${id}`); toast(`Image saved as graphic v${res.version.n}. Add the logo, headline and crop in Photo layout (no extra charge).`); } else if (res.error) toast(res.error);
+      render();
+    });
+    return;
+  }
+  if (f.dataset.headlineForm) {
+    e.preventDefault();
+    const id = f.dataset.headlineForm;
+    const task = S.getTask(id);
+    const v = S.currentVersion(task);
+    const noHeadline = !!document.getElementById(`hlnone-${id}`)?.checked;
+    const headline = noHeadline ? '' : document.getElementById(`hl-${id}`).value.trim();
+    if (!noHeadline && !headline) { document.getElementById(`hl-${id}`).focus(); return; }
+    f.querySelectorAll('button').forEach((b) => (b.disabled = true));
+    S.saveGraphicVersion(id, { ...v.content, headline, noHeadline }, [noHeadline ? 'Headline removed by you; same image and logo, no image request.' : `Headline changed by you to “${headline}”; same image and logo, no image request.`], task.versions.length).then((res) => {
+      if (res.ok) { ui.headlineEdit[id] = false; clearDraft(`hl-${id}`); toast(`Saved as graphic v${res.result.n}. Same image, no new request.`); } else if (res.error) toast(res.error);
       render();
     });
     return;
@@ -2638,6 +2760,49 @@ document.addEventListener('click', (e) => {
   }
   if (t.dataset.mode) { S.chooseMode(t.dataset.mode).then(() => { toast(t.dataset.mode === 'shared' ? 'Using the shared workspace.' : 'Using this browser only.'); render(); }); return; }
   if (t.matches('[data-reload]')) { location.reload(); return; }
+  if (t.dataset.conceptSave) {
+    const id = t.dataset.conceptSave;
+    const noHeadline = !!document.getElementById(`ainh-${id}`)?.checked;
+    const headline = noHeadline ? '' : (document.getElementById(`aih-${id}`)?.value || '').trim();
+    const scene = (document.getElementById(`aip-${id}`)?.value || '').trim();
+    S.saveConcept(S.getTask(id).jobId, { headline, scene, noHeadline }).then((res) => { toast(res.ok ? 'Headline and scene saved. No image requested.' : res.error || 'Not saved.'); render(); });
+    return;
+  }
+  if (t.dataset.saveConcepts) {
+    const pl = S.getPlan(t.dataset.saveConcepts);
+    t.disabled = true;
+    const jobs = pl.days.filter((d) => d.jobId && S.getJob(d.jobId)).map((d) => S.getJob(d.jobId));
+    (async () => {
+      let saved = 0;
+      for (const j of jobs) {
+        const h = document.getElementById(`wk-h-${j.id}`)?.value.trim() ?? '';
+        const sc = document.getElementById(`wk-s-${j.id}`)?.value.trim() ?? '';
+        const c = S.conceptInWeek(j);
+        if (c.source === 'owner' && h === (c.noHeadline ? '' : c.headline) && sc === c.scene) continue;
+        const res = await S.saveConcept(j.id, { headline: h, scene: sc, noHeadline: !h });
+        if (res.ok && !res.noop) saved++;
+      }
+      toast(saved ? `Saved ${saved} headline${saved === 1 ? '' : 's'} and scene${saved === 1 ? '' : 's'}. No images requested.` : 'Nothing changed.');
+      render();
+    })();
+    return;
+  }
+  if (t.dataset.conceptRefresh) { S.clearConcept(t.dataset.conceptRefresh).then(() => render()); return; }
+  if (t.dataset.openHeadline) {
+    e.preventDefault();
+    const id = t.dataset.openHeadline;
+    ui.headlineEdit = { ...(ui.headlineEdit || {}), [id]: !ui.headlineEdit?.[id] };
+    render();
+    document.getElementById(`hl-${id}`)?.focus({ preventScroll: false });
+    return;
+  }
+  if (t.dataset.keepPairing) {
+    const task = S.getTask(t.dataset.keepPairing);
+    const v = S.currentVersion(task);
+    const now = S.currentVersion(S.jobTasks(S.getJob(task.jobId)).copy).n;
+    S.saveGraphicVersion(task.id, { ...v.content }, [`Kept for caption v${now} after you checked the pairing. Same image, no image request.`], task.versions.length).then((res) => { toast(res.ok ? `Graphic v${res.result.n} kept for caption v${now}.` : res.error || 'Not saved.'); render(); });
+    return;
+  }
   if (t.matches('[data-resignin]')) { saveDrafts(); location.reload(); return; } // the server shows sign-in, then this page again
   if (t.matches('[data-signout]')) { S.signOut().then(() => { ui.importPlan = ui.importResult = null; toast('Signed out.'); render(); }); return; }
   if (t.matches('[data-import-preview]')) {

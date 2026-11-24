@@ -289,27 +289,31 @@ export async function drawLayout(ctx, spec, { photo, logo }) {
   if (logoTop && pos !== 'top') shade(0, lb.h + M * 2 + 40, 0.62, 0);
   if (!logoTop && pos !== 'bottom') shade(H, H - lb.h - M * 2 - 40, 0.62, 0);
 
-  // 3. Headline with cyan rule.
+  // 3. Headline with cyan rule (left out entirely for an intentional headline-free design).
+  const noHeadline = !!spec.noHeadline;
   const text = (spec.headline || '').trim() || 'Add a headline';
-  const { size, lines } = fitHeadline(ctx, text);
-  ctx.font = FONT(size);
-  ctx.textBaseline = 'alphabetic';
-  const lh = Math.round(size * 1.08);
-  const blockH = lh * lines.length;
-  let top;
-  if (pos === 'top') top = logoTop ? M + lb.h + 60 : M + 20;
-  else if (pos === 'middle') top = Math.round((H - blockH) / 2);
-  else top = H - M - 40 - blockH;
-  ctx.fillStyle = CYAN;
-  ctx.fillRect(M - 28, top + Math.round(size * 0.12), 10, blockH - Math.round(size * 0.1));
-  ctx.shadowColor = 'rgba(0,0,0,.55)';
-  ctx.shadowBlur = 14;
-  ctx.shadowOffsetY = 2;
-  ctx.fillStyle = (spec.headline || '').trim() ? '#FFFFFF' : 'rgba(255,255,255,.55)';
-  lines.forEach((l, i) => ctx.fillText(l, M, top + Math.round(size * 0.9) + i * lh));
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
+  let size = 0, lines = [], top = 0, blockH = 0, neededLines = 0;
+  if (!noHeadline) {
+    ({ size, lines } = fitHeadline(ctx, text));
+    ctx.font = FONT(size);
+    neededLines = wrap(ctx, text, W - 80 - 110).length;
+    ctx.textBaseline = 'alphabetic';
+    const lh = Math.round(size * 1.08);
+    blockH = lh * lines.length;
+    if (pos === 'top') top = logoTop ? M + lb.h + 60 : M + 20;
+    else if (pos === 'middle') top = Math.round((H - blockH) / 2);
+    else top = H - M - 40 - blockH;
+    ctx.fillStyle = CYAN;
+    ctx.fillRect(M - 28, top + Math.round(size * 0.12), 10, blockH - Math.round(size * 0.1));
+    ctx.shadowColor = 'rgba(0,0,0,.55)';
+    ctx.shadowBlur = 14;
+    ctx.shadowOffsetY = 2;
+    ctx.fillStyle = (spec.headline || '').trim() ? '#FFFFFF' : 'rgba(255,255,255,.55)';
+    lines.forEach((l, i) => ctx.fillText(l, M, top + Math.round(size * 0.9) + i * lh));
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+  }
 
   // 4. Logo (or a labelled placeholder when the official logo hasn't been supplied).
   const ly = logoTop ? M : H - M - lb.h;
@@ -330,7 +334,15 @@ export async function drawLayout(ctx, spec, { photo, logo }) {
     ctx.textAlign = 'left';
   }
   ctx.restore();
-  return { headlineSize: size, headlineLines: lines };
+  // What the render actually contains, for Calibre's checks on the final image (same numbers as the export).
+  const logoRect = { x: M, y: ly, w: lb.w, h: lb.h };
+  const textRect = noHeadline ? null : { x: M - 28, y: top, w: W - M - 110 + 28, h: blockH };
+  const overlap = !!textRect && logoRect.x < textRect.x + textRect.w && textRect.x < logoRect.x + logoRect.w && logoRect.y < textRect.y + textRect.h && textRect.y < logoRect.y + logoRect.h;
+  return {
+    headlineSize: size, headlineLines: lines, lines, neededLines, noHeadline, clipped: !noHeadline && neededLines > lines.length,
+    missingPhoto: !photo, missingLogo: !logo, overlap, logo: logoRect, text: textRect,
+    logoOutside: logoRect.x < 40 || logoRect.y < 40 || logoRect.x + logoRect.w > W - 40 || logoRect.y + logoRect.h > H - 40,
+  };
 }
 
 export async function renderToCanvas(spec, assets, canvas = document.createElement('canvas')) {
@@ -338,6 +350,13 @@ export async function renderToCanvas(spec, assets, canvas = document.createEleme
   canvas.height = H;
   await drawLayout(canvas.getContext('2d'), spec, assets);
   return canvas;
+}
+
+/** Draw the layout offscreen and return what the render contains (for Calibre's checks on the final image). */
+export async function renderMetrics(spec, assets) {
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  return drawLayout(c.getContext('2d'), spec, assets);
 }
 
 export async function renderToPngBlob(spec, assets) {
