@@ -51,6 +51,8 @@ const browser = await chromium.launch();
 try {
   console.log('\n== Desktop: plan the week (template) ==');
   const desk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  // Covers a deployment without the official logo file (the "logo missing" attention item).
+  await desk.route('**/assets/brand/brand.json', (r) => r.fulfill({ contentType: 'application/json', body: '{"logo": false}' }));
   const dp = await desk.newPage();
   const errors = [];
   dp.on('pageerror', (e) => errors.push(`desktop: ${e.message}`));
@@ -146,6 +148,8 @@ try {
 
   console.log('\n== Second signed-in browser (iPhone 13 emulation) ==');
   const phone = await browser.newContext({ ...devices['iPhone 13'] });
+  // Covers a deployment without the official logo file (the "logo missing" attention item).
+  await phone.route('**/assets/brand/brand.json', (r) => r.fulfill({ contentType: 'application/json', body: '{"logo": false}' }));
   const pp = await phone.newPage();
   pp.on('pageerror', (e) => errors.push(`phone: ${e.message}`));
   await signIn(pp);

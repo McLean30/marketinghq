@@ -1053,7 +1053,8 @@ function analystBody() {
 /* ---------- Calendar ---------- */
 function calInfo(j) {
   const cs = PB.calendarState(j, S.jobStatus(j));
-  return { ...cs, date: cs.at ? PB.londonParts(cs.at).date : j.targetDate };
+  // A post with no time on the calendar sits on its target day (or, if a record has none, its UK creation day).
+  return { ...cs, date: cs.at ? PB.londonParts(cs.at).date : j.targetDate || PB.londonParts(j.createdAt || Date.now()).date };
 }
 function renderCalendar() {
   const jobs = S.getState().jobs.filter((j) => !j.sample && (j.approval || (j.publications || []).length));
