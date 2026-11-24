@@ -138,7 +138,7 @@ async function handleApi(req, res, urlPath) {
 
   /* --- Sign-in --- */
   // HQ_TEST_DATE (YYYY-MM-DD) fixes "today" for offer and review checks in test workspaces.
-  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, storage: auth.configured() ? backendMod.store().kind : null, setupProblem: auth.misconfigured(), testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null, scheduler: auth.configured() ? { runsOn: 'server', everyMs: schedulerEvery, now: scheduler.now(), testClock: scheduler.testClock() } : { runsOn: 'browser' } });
+  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, storage: auth.configured() ? backendMod.store().kind : null, setupProblem: auth.misconfigured(), settings: { passwordHash: !!(process.env.HQ_OWNER_PASSWORD_HASH || '').trim(), supabase: backendMod.useSupabase(), openai: ai.hasKey() }, testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null, scheduler: auth.configured() ? { runsOn: 'server', everyMs: schedulerEvery, now: scheduler.now(), testClock: scheduler.testClock() } : { runsOn: 'browser' } });
   if (urlPath === '/api/auth/login' && method === 'POST') {
     const body = await readJsonBody(req);
     const r = await auth.login(req, body.password, deviceOf(req));

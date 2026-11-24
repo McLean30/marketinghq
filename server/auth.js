@@ -39,7 +39,15 @@ function verifyPassword(password, stored) {
 const validHash = () => /^scrypt\$/.test(HASH) || /^pbkdf2-sha256\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/.test(HASH);
 /** Sign-in is on when a valid hash is set and somewhere durable can hold the workspace (Supabase on Vercel). */
 const configured = () => validHash() && backend.available();
-const misconfigured = () => (validHash() && !backend.available() ? 'HQ_OWNER_PASSWORD_HASH is set, but on Vercel the shared workspace also needs SUPABASE_URL and SUPABASE_SECRET_KEY. Until then HQ stays in demo mode.' : null);
+/** Why sign-in is off despite settings, in words the owner can act on (never echoes a value). */
+function misconfigured() {
+  if (HASH && !validHash()) {
+    const hint = /^["']/.test(HASH) ? ' It starts with a quote mark: paste the hash without quotes.' : /^pbkdf2|^scrypt/.test(HASH) ? ' It looks cut short or has extra characters: copy it again with the Copy hash button.' : ' It should start with pbkdf2-sha256$ (from the Workspace page) or scrypt$ (from npm run set-password). Paste the hash, never the password itself.';
+    return `HQ_OWNER_PASSWORD_HASH is set but isn’t a valid password hash, so HQ stays in demo mode.${hint}`;
+  }
+  if (validHash() && !backend.available()) return 'HQ_OWNER_PASSWORD_HASH is set, but on Vercel the shared workspace also needs SUPABASE_URL and SUPABASE_SECRET_KEY. Until then HQ stays in demo mode.';
+  return null;
+}
 const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
 function readCookie(req) {
