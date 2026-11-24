@@ -1761,8 +1761,11 @@ function renderWorkspace() {
   let body;
   if (!ws.authConfigured) {
     body = `<section class="panel"><h2>Shared workspace is off</h2>
-      <p>This server has no owner password yet, so everything stays in this browser (the local demo).</p>
-      <p>To use one private workspace on your laptop and phone: stop the server, run <code>npm run set-password</code>, then start it with <code>npm run start:env</code>.</p></section>`;
+      ${ws.setupProblem ? `<p class="error-box" role="alert" data-testid="setup-problem">${esc(ws.setupProblem)}</p>` : ''}
+      <p>This server has no owner password yet, so everything stays in this browser (the local demo) and live AI is off.</p>
+      <p><strong>On your own computer:</strong> stop the server, run <code>npm run set-password</code>, then start it with <code>npm run start:env</code>.</p>
+      <p><strong>On Vercel:</strong> make a password hash below, then add it to the project’s environment variables as <code>HQ_OWNER_PASSWORD_HASH</code> with <code>SUPABASE_URL</code>, <code>SUPABASE_SECRET_KEY</code> and <code>OPENAI_API_KEY</code>, and redeploy.</p></section>
+      ${passwordHashTool()}`;
   } else if (!ws.signedIn) {
     body = `<section class="panel narrow"><h2>Sign in</h2>
       <form id="signin-form" novalidate>
@@ -1792,6 +1795,34 @@ function renderWorkspace() {
     </section>`;
   }
   return `<header class="cal-head"><h1>Workspace</h1><p class="mini">Private. Data and images are only available to the signed-in owner. Nothing is published.</p></header>${body}`;
+}
+
+/** Make an owner password hash in this browser (PBKDF2-SHA256, 600,000 rounds). The password never leaves the page. */
+function passwordHashTool() {
+  const h = ui.pwHash;
+  return `<section class="panel narrow" aria-labelledby="pw-h" data-testid="password-tool">
+    <h2 id="pw-h">Make an owner password hash</h2>
+    <p class="mini">The password is hashed here in your browser and never sent anywhere. Only the hash goes into the server’s settings; HQ checks your password against it when you sign in.</p>
+    <form id="pwhash-form" novalidate>
+      <label for="pw-1">New owner password (at least 12 characters)</label>
+      <input id="pw-1" type="password" autocomplete="new-password" minlength="12" required>
+      <label for="pw-2">Type it again</label>
+      <input id="pw-2" type="password" autocomplete="new-password" minlength="12" required>
+      <p class="form-error" role="alert" ${h?.error ? '' : 'hidden'}>${esc(h?.error || '')}</p>
+      <button class="btn btn-primary" type="submit" ${h?.busy ? 'disabled' : ''}>${h?.busy ? 'Hashing…' : 'Make hash'}</button>
+    </form>
+    ${h?.value ? `<label for="pw-out">HQ_OWNER_PASSWORD_HASH</label><textarea id="pw-out" rows="3" readonly data-testid="password-hash">${esc(h.value)}</textarea>
+      <div class="row-actions"><button class="btn" data-copy-hash>Copy hash</button></div>
+      <p class="mini">Keep your password in a password manager. If you lose it, make a new hash and put it in place of the old one; existing sign-ins stay valid until they expire.</p>` : ''}
+  </section>`;
+}
+async function makePasswordHash(password) {
+  const enc = new TextEncoder();
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 600000 }, key, 256));
+  const b64 = (u) => btoa(String.fromCharCode(...u));
+  return `pbkdf2-sha256$600000$${b64(salt)}$${b64(bits)}`;
 }
 
 function renderImportPlan(plan) {
@@ -2036,6 +2067,17 @@ document.addEventListener('submit', (e) => {
     })();
     return;
   }
+  if (f.id === 'pwhash-form') {
+    e.preventDefault();
+    const a = document.getElementById('pw-1').value;
+    const b = document.getElementById('pw-2').value;
+    if (a.length < 12) { ui.pwHash = { error: 'Use at least 12 characters.' }; render(); return; }
+    if (a !== b) { ui.pwHash = { error: 'The two passwords don’t match.' }; render(); return; }
+    ui.pwHash = { busy: true };
+    render();
+    makePasswordHash(a).then((value) => { ui.pwHash = { value }; render(); }).catch(() => { ui.pwHash = { error: 'This browser couldn’t make the hash. Try a current Chrome, Edge, Safari or Firefox.' }; render(); });
+    return;
+  }
   if (f.id === 'signin-form') {
     e.preventDefault();
     if (ui.signingIn) return;
@@ -2183,6 +2225,11 @@ document.addEventListener('click', (e) => {
       ui.anInterpret = res.ok ? { ...res.data, count: payload.length } : { error: res.error };
       render();
     });
+    return;
+  }
+  if (t.matches('[data-copy-hash]')) {
+    const v = document.getElementById('pw-out')?.value || '';
+    navigator.clipboard?.writeText(v).then(() => toast('Hash copied. Paste it into HQ_OWNER_PASSWORD_HASH.'), () => { document.getElementById('pw-out')?.select(); toast('Select the hash and copy it.'); });
     return;
   }
   if (t.dataset.retry) {

@@ -17,14 +17,19 @@ const now = () => Date.now() + offset;
 const testClock = () => process.env.HQ_TEST_CLOCK === '1';
 function advance(ms) { if (!testClock()) throw new wsStore.WsError(404, 'Not found'); offset += Number(ms) || 0; return now(); }
 
-/* ---------- Simulated publisher storage: one record per publication id ---------- */
-const file = () => path.join(storage.paths().DATA_DIR, 'demo-publisher.json');
-let posts = null;
-const store = {
-  get: (id) => (posts ??= storage.readJson(file(), {}))[id] || null,
-  put: (id, rec) => { (posts ??= storage.readJson(file(), {}))[id] = rec; storage.writeAtomic(file(), JSON.stringify(posts)); },
-  list: () => Object.values((posts ??= storage.readJson(file(), {}))),
-};
+/* ---------- Simulated publisher storage: one record per publication id ----------
+   The publisher's interface is synchronous, so each run loads the receipts from the workspace store first and
+   saves new ones before the job that refers to them is saved. */
+const backend = require('./backend');
+function memoryStore(posts) {
+  const pending = [];
+  return {
+    get: (id) => posts[id] || null,
+    put: (id, rec) => { posts[id] = rec; pending.push([id, rec]); },
+    list: () => Object.values(posts),
+    flush: async () => { const batch = pending.splice(0); await backend.store().postsPut(batch); },
+  };
+}
 let fault = null;
 function setFault(mode) { if (!testClock()) throw new wsStore.WsError(404, 'Not found'); fault = mode === 'lose-next-response' ? 'lose' : null; return fault; }
 const takeFault = () => { const f = fault; fault = null; return f; };
@@ -35,8 +40,9 @@ let chain = Promise.resolve();
 function runDue({ jobId = null, force = false } = {}) {
   const run = chain.then(async () => {
     const PB = await load();
+    const store = memoryStore(await backend.store().postsAll());
     const publisher = PB.makePublisher({ store, now, takeFault });
-    const snap = wsStore.snapshot();
+    const snap = await wsStore.snapshot();
     const profileData = snap.profile.versions.at(-1).data;
     const changed = [];
     for (const e of snap.jobs) {
@@ -44,10 +50,12 @@ function runDue({ jobId = null, force = false } = {}) {
       if (!(e.bundle.job.publications || []).length) continue;
       const bundle = JSON.parse(JSON.stringify(e.bundle));
       if (PB.runDue(bundle, { now: now(), profileData, publisher, by: 'scheduler', force })) {
-        wsStore.putJob(e.id, e.rev, bundle, 'scheduler');
+        await store.flush();
+        await wsStore.putJob(e.id, e.rev, bundle, 'scheduler');
         changed.push(e.id);
       }
     }
+    await store.flush();
     return changed;
   });
   chain = run.catch(() => {});
@@ -56,6 +64,8 @@ function runDue({ jobId = null, force = false } = {}) {
 
 let timer = null;
 function start() {
+  // Vercel runs no long-lived process, so there's no timer there: due posts run when HQ asks (/api/publish/run).
+  if (process.env.VERCEL) return null;
   const every = process.env.HQ_SCHEDULER_MS === undefined ? 15000 : Number(process.env.HQ_SCHEDULER_MS);
   if (!every || timer) return null;
   timer = setInterval(() => { runDue().catch((e) => console.error('[scheduler] run failed:', e.message)); }, every);
@@ -63,4 +73,4 @@ function start() {
   return every;
 }
 
-module.exports = { runDue, start, now, advance, setFault, testClock, posts: () => store.list() };
+module.exports = { runDue, start, now, advance, setFault, testClock, posts: async () => Object.values(await backend.store().postsAll()) };

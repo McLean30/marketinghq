@@ -4,8 +4,6 @@
 //   images POST /v1/images/generations  and  POST /v1/images/edits (JSON, images[].image_url as a data URL)
 // No SDK dependency: plain fetch, so the request shape is explicit and testable against a local stub
 // (OPENAI_BASE_URL). Nothing here decides who may spend: see paidGate() in server.js.
-const fs = require('fs');
-const path = require('path');
 
 const BASE = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
 const TEXT_MODEL = (process.env.OPENAI_TEXT_MODEL || 'gpt-6-luna').trim();
@@ -122,37 +120,21 @@ async function image({ prompt, base = null }) {
 }
 
 /* ---------- One paid call per explicit action ----------
-   Every paid request carries a requestKey made when you tap (and saved with the job). A double tap, a refresh or a
-   retry with the same key gets the first result back instead of a second charge. Failures aren't cached, so an
-   explicit retry after an error makes one new call. */
-const inflight = new Map(); // key -> Promise
-const done = new Map(); // key -> { at, result }
+   Every paid request carries a requestKey made when you tap (and saved with the job). A double tap, a refresh, a
+   second device or a retry with the same key gets the first result back instead of a second charge. Failures aren't
+   cached, so an explicit retry after an error makes one new call. The claim lives in the workspace store, so this
+   holds across server instances (Vercel) as well as on one machine. */
 const KEY = /^[A-Za-z0-9:_.-]{8,160}$/;
 async function once(requestKey, fn) {
   if (!KEY.test(requestKey || '')) throw new AiError('Missing or invalid request key.', { status: 400, retryable: false, code: 'invalid' });
-  const hit = done.get(requestKey);
-  if (hit) return { ...hit.result, duplicate: true };
-  if (inflight.has(requestKey)) return { ...(await inflight.get(requestKey)), duplicate: true };
-  const p = fn();
-  inflight.set(requestKey, p);
-  try {
-    const result = await p;
-    done.set(requestKey, { at: Date.now(), result });
-    for (const [k, v] of done) if (Date.now() - v.at > 6 * 3600 * 1000) done.delete(k);
-    return result;
-  } finally { inflight.delete(requestKey); }
+  const { result, duplicate } = await require('./backend').store().once(requestKey, fn);
+  return duplicate ? { ...result, duplicate: true } : result;
 }
 
-/* ---------- Usage ledger (shared workspace data folder; numbers only) ---------- */
-function ledgerFile() { return path.join(require('./storage').paths().DATA_DIR, 'ai-usage.json'); }
-function record(entry) {
-  try {
-    const f = ledgerFile();
-    const all = require('./storage').readJson(f, []);
-    all.push({ at: Date.now(), ...entry });
-    require('./storage').writeAtomic(f, JSON.stringify(all.slice(-5000)));
-  } catch (e) { console.warn('[ai] usage not recorded:', e.code || e.message); }
+/* ---------- Usage ledger (workspace store; numbers only) ---------- */
+async function record(entry) {
+  try { await require('./backend').store().usageAdd(entry); } catch (e) { console.warn('[ai] usage not recorded:', e.code || e.message); }
 }
-const ledger = (jobId) => { try { return require('./storage').readJson(ledgerFile(), []).filter((x) => !jobId || x.jobId === jobId); } catch { return []; } };
+const ledger = async (jobId) => { try { return await require('./backend').store().usageList(jobId); } catch { return []; } };
 
 module.exports = { textJson, image, once, record, ledger, estimateCost, usageRecord, AiError, hasKey, TEXT_MODEL, IMAGE_MODEL, EFFORT, IMAGE_QUALITY, IMAGE_SIZE, PRICE_SOURCE, PRICES };

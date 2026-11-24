@@ -24,7 +24,9 @@
     "test:m9": "node tests/analyst-m9.mjs",
     "test:m10": "node tests/video-m10.mjs",
     "test:team": "node tests/team-update.mjs",
-    "test:m11a": "node tests/openai-m11a.mjs"
+    "test:m11a": "node tests/openai-m11a.mjs",
+    "test:supabase": "node tests/supabase-store.mjs",
+    "test:password": "node tests/password-setup.mjs"
   },
   "engines": {
     "node": ">=20.6"

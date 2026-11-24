@@ -304,6 +304,8 @@ export async function init() {
   try {
     const r = await api('api/auth/status');
     ws.authConfigured = !!r.data.authConfigured;
+    ws.setupProblem = r.data.setupProblem || null;
+    ws.storage = r.data.storage || null;
     ws.signedIn = !!r.data.signedIn;
     ws.testDate = r.data.testDate || null;
     ws.scheduler = r.data.scheduler || { runsOn: 'browser' };

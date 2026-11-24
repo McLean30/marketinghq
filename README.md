@@ -44,6 +44,10 @@ Each output says what it is: "Live AI · gpt-6-luna", "Live AI image · gpt-imag
 
 **Usage and cost.** Each job's **AI usage** panel lists every paid request: captions, revisions, images and image edits. It shows the model, the tokens OpenAI reported, and an estimated cost from OpenAI's Standard list prices (checked 23 Nov 2026; see `docs/openai-api-notes.md`). The server also keeps a numbers-only ledger in the data folder (`ai-usage.json`; owner-only at `/api/ai/usage`). Your OpenAI invoice is the final figure.
 
+### Live on Vercel (Supabase)
+
+The hosted preview can run live too, once it has somewhere durable to keep the workspace. HQ uses Supabase for that whenever `SUPABASE_URL` and `SUPABASE_SECRET_KEY` are set: jobs and versions, owner sign-in sessions, AI usage, the "one charge per tap" record, and your images and videos (in a private bucket). Set those two, `HQ_OWNER_PASSWORD_HASH` and `OPENAI_API_KEY` in Vercel's environment variables, redeploy, and sign in on the Workspace page. You can make the password hash on that page in your browser; the password never leaves it. Full steps and what each table holds: [docs/supabase-setup.md](docs/supabase-setup.md).
+
 ### Model settings (server-side, in `.env`)
 
 | Setting | Default | Notes |

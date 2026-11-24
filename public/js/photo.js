@@ -68,6 +68,34 @@ export const assetBackend = () => backend;
 
 export async function uploadAsset(rec) {
   let r;
+  // Supabase-backed workspaces take the file directly (Vercel limits requests through HQ to 4.5 MB):
+  // HQ checks the type and size, hands out a signed upload URL, then confirms what arrived.
+  const info = { kind: rec.kind, name: rec.name || '', type: rec.blob.type, size: rec.blob.size };
+  const post = (path, body) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': 'upload' }, body: JSON.stringify(body) });
+  try {
+    r = await post(`api/assets/${rec.id}/upload-url`, info);
+  } catch {
+    throw new AssetError('Can’t reach the HQ server, so the file wasn’t saved. Nothing was changed.');
+  }
+  if (r.ok) {
+    const plan = await r.json();
+    if (plan.existing) return;
+    if (plan.direct) {
+      let up;
+      try { up = await fetch(plan.url, { method: 'PUT', body: rec.blob, headers: { 'Content-Type': rec.blob.type, 'x-upsert': 'true' } }); } catch { up = null; }
+      if (!up?.ok) throw new AssetError('The file didn’t finish uploading. Nothing was saved; check your connection and try again.');
+      const done = await post(`api/assets/${rec.id}/complete`, info).catch(() => null);
+      if (done?.ok) return;
+      let msg = '';
+      try { msg = (await done.json()).error; } catch { /* ignore */ }
+      throw new AssetError(msg || 'The upload couldn’t be confirmed. Nothing was saved; try again.');
+    }
+  } else if (r.status !== 404) {
+    let msg = '';
+    try { msg = (await r.json()).error; } catch { /* ignore */ }
+    if (r.status === 401) throw new AssetError('You’re signed out, so the file wasn’t saved. Sign in, then save again.');
+    throw new AssetError(msg || `The server couldn’t store the file (${r.status}). Nothing was saved.`);
+  }
   try {
     r = await fetch(`api/assets/${rec.id}`, { method: 'POST', body: rec.blob, headers: { 'Content-Type': rec.blob.type, 'X-Asset-Kind': rec.kind, 'X-Asset-Name': encodeURIComponent(rec.name || ''), 'X-HQ-Device': 'upload' } });
   } catch {

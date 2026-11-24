@@ -1,11 +1,14 @@
 // Shared workspace store. Each job is saved as a bundle { job, tasks, log } with its own revision number.
 // A save must name the revision it was based on; if another device saved first, the save is refused (409)
 // and the caller gets the latest bundle. Version histories and approvals are append-only.
+// The data lives in the configured store (server/backend.js): files on your own machine, Supabase on Vercel.
+// Every save is atomic in the store, so the rules hold across several server instances.
 const fs = require('fs');
 const path = require('path');
-const { APP_DIR, paths, writeAtomic, readJson } = require('./storage');
+const crypto = require('crypto');
+const { APP_DIR } = require('./storage');
+const { store } = require('./backend');
 
-const file = () => path.join(paths().DATA_DIR, 'workspace.json');
 const MAX_BUNDLE = 1.5 * 1024 * 1024;
 const ID = /^[a-z]+_[a-z0-9]{4,40}$/;
 const ASSET_ID = /^(photo|logo|clip|video)_[a-z0-9]{4,40}$/;
@@ -15,56 +18,61 @@ const MAX_ASSET = 15 * 1024 * 1024;
 const MAX_VIDEO = 100 * 1024 * 1024;
 const maxFor = (kind) => (kind === 'clip' || kind === 'video' ? MAX_VIDEO : MAX_ASSET);
 
-/* ---------- Business profile: every save is a new, identified version ---------- */
-const crypto = require('crypto');
-const versionId = (n, data) => `pv${n}-${crypto.createHash('sha1').update(JSON.stringify(data)).digest('hex').slice(0, 6)}`;
-
-/**
- * The workspace is loaded (and seeded with the starting business profile) on first use. Only shared-mode API routes
- * call in here, so a demo deployment with no settings never reads or writes the data folder.
- */
-let state = null;
-function W() {
-  if (state) return state;
-  const ws = readJson(file(), { version: 1, rev: 0, jobs: {}, brand: { rev: 0, data: {} } });
-  ws.plans = ws.plans || {};
-  if (!ws.profile) {
-    const seed = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'public', 'data', 'profile-seed.json'), 'utf8'));
-    ws.profile = { rev: 1, versions: [{ id: versionId(1, seed), n: 1, savedAt: Date.now(), savedBy: 'seed', data: seed }] };
-    writeAtomic(file(), JSON.stringify(ws));
-  }
-  // Profiles saved before the editorial voice existed get it as a new version; every other field is kept as the
-  // owner left it. A profile that already has a voice (edited, or deliberately blank) is never changed.
-  const cur = ws.profile.versions.at(-1);
-  if (typeof cur.data?.writing?.voice !== 'string') {
-    const V = require('../public/js/voice.js');
-    const data = JSON.parse(JSON.stringify(cur.data));
-    data.writing = { ...(data.writing || {}), voice: V.DEFAULT_VOICE };
-    const n = ws.profile.versions.length + 1;
-    ws.profile.versions.push({ id: versionId(n, data), n, savedAt: Date.now(), savedBy: 'update: editorial voice added', data });
-    ws.profile.rev += 1;
-    ws.rev += 1;
-    writeAtomic(file(), JSON.stringify(ws));
-  }
-  state = ws;
-  return state;
-}
-const persist = () => writeAtomic(file(), JSON.stringify(W()));
-
 class WsError extends Error {
   constructor(status, message, extra = {}) { super(message); this.status = status; Object.assign(this, extra); }
 }
 
-const entry = (id, e) => ({ id, rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy, bundle: e.bundle });
+/* ---------- Business profile: every save is a new, identified version ---------- */
+const versionId = (n, data) => `pv${n}-${crypto.createHash('sha1').update(JSON.stringify(data)).digest('hex').slice(0, 6)}`;
 
-function snapshot() {
-  const ws = W();
-  const jobs = Object.entries(ws.jobs).map(([id, e]) => entry(id, e)).sort((a, b) => b.bundle.job.createdAt - a.bundle.job.createdAt);
-  const plans = Object.entries(ws.plans).map(([id, e]) => ({ id, rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy, plan: e.plan })).sort((a, b) => b.plan.createdAt - a.plan.createdAt);
-  return { rev: ws.rev, jobs, brand: ws.brand, plans, profile: ws.profile };
+/**
+ * The business profile, seeded with the starting profile on first use. Profiles saved before the editorial voice
+ * existed get it as a new version; every other field is kept as the owner left it. A profile that already has a
+ * voice (edited, or deliberately blank) is never changed. Both steps are atomic saves, so two servers can't race.
+ */
+async function profileRecord() {
+  const S = store();
+  let cur = await S.get('profile', 'main');
+  if (!cur) {
+    const seed = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'public', 'data', 'profile-seed.json'), 'utf8'));
+    await S.put('profile', 'main', 0, { versions: [{ id: versionId(1, seed), n: 1, savedAt: Date.now(), savedBy: 'seed', data: seed }] }, 'seed');
+    cur = await S.get('profile', 'main');
+  }
+  const last = cur.data.versions.at(-1);
+  if (typeof last.data?.writing?.voice !== 'string') {
+    const V = require('../public/js/voice.js');
+    const data = JSON.parse(JSON.stringify(last.data));
+    data.writing = { ...(data.writing || {}), voice: V.DEFAULT_VOICE };
+    const n = cur.data.versions.length + 1;
+    await S.put('profile', 'main', cur.rev, { versions: [...cur.data.versions, { id: versionId(n, data), n, savedAt: Date.now(), savedBy: 'update: editorial voice added', data }] }, 'update');
+    cur = await S.get('profile', 'main');
+  }
+  return cur;
 }
+const profileOut = (r) => ({ rev: r.rev, versions: r.data.versions });
+const brandOut = (r) => (r ? { rev: r.rev, data: r.data, updatedBy: r.updatedBy } : { rev: 0, data: {} });
+const entry = (r) => ({ id: r.id, rev: r.rev, updatedAt: r.updatedAt, updatedBy: r.updatedBy, bundle: r.data });
+const planEntry = (r) => ({ id: r.id, rev: r.rev, updatedAt: r.updatedAt, updatedBy: r.updatedBy, plan: r.data });
 
-const getJob = (id) => (W().jobs[id] ? entry(id, W().jobs[id]) : null);
+async function snapshot() {
+  const S = store();
+  const profile = await profileRecord();
+  const [jobs, plans, brand, rev] = await Promise.all([S.list('job'), S.list('plan'), S.get('brand', 'main'), S.wsRev()]);
+  return {
+    rev,
+    jobs: jobs.map(entry).sort((a, b) => b.bundle.job.createdAt - a.bundle.job.createdAt),
+    brand: brandOut(brand),
+    plans: plans.map(planEntry).sort((a, b) => b.plan.createdAt - a.plan.createdAt),
+    profile: profileOut(profile),
+  };
+}
+const wsRev = () => store().wsRev();
+
+async function getJob(id) {
+  if (!ID.test(id)) return null;
+  const r = await store().get('job', id);
+  return r ? entry(r) : null;
+}
 
 function validateBundle(id, b) {
   const bad = (m) => { throw new WsError(400, `Invalid job data: ${m}.`); };
@@ -138,17 +146,20 @@ function checkAppendOnly(prev, next) {
   });
 }
 
-function putJob(id, baseRev, bundle, device) {
-  const ws = W();
+
+async function putJob(id, baseRev, bundle, device) {
+  const S = store();
   validateBundle(id, bundle);
-  const cur = ws.jobs[id];
+  const cur = await S.get('job', id);
   const curRev = cur ? cur.rev : 0;
-  if (Number(baseRev) !== curRev) throw new WsError(409, 'This job changed on another device.', { current: cur ? entry(id, cur) : null });
-  if (cur) checkAppendOnly(cur.bundle, bundle);
-  ws.jobs[id] = { rev: curRev + 1, updatedAt: Date.now(), updatedBy: device, bundle };
-  ws.rev += 1;
-  persist();
-  return { rev: curRev + 1, wsRev: ws.rev, updatedAt: ws.jobs[id].updatedAt };
+  if (Number(baseRev) !== curRev) throw new WsError(409, 'This job changed on another device.', { current: cur ? entry(cur) : null });
+  if (cur) checkAppendOnly(cur.data, bundle);
+  const out = await S.put('job', id, curRev, bundle, device);
+  if (!out) {
+    const latest = await S.get('job', id);
+    throw new WsError(409, 'This job changed on another device.', { current: latest ? entry(latest) : null });
+  }
+  return { rev: out.rev, wsRev: out.wsRev, updatedAt: out.updatedAt };
 }
 
 /* ---------- Weekly plans ---------- */
@@ -162,23 +173,23 @@ function validatePlan(id, p) {
   for (const d of p.days) if (d.jobId != null && !ID.test(d.jobId)) bad('job link');
   if (Buffer.byteLength(JSON.stringify(p)) > 200 * 1024) bad('too large');
 }
-function putPlan(id, baseRev, plan, device) {
-  const ws = W();
+async function putPlan(id, baseRev, plan, device) {
+  const S = store();
   validatePlan(id, plan);
-  const cur = ws.plans[id];
+  const cur = await S.get('plan', id);
   const curRev = cur ? cur.rev : 0;
-  if (Number(baseRev) !== curRev) throw new WsError(409, 'This plan changed on another device.', { current: cur ? { id, rev: cur.rev, updatedAt: cur.updatedAt, updatedBy: cur.updatedBy, plan: cur.plan } : null });
+  const conflict = (c) => new WsError(409, 'This plan changed on another device.', { current: c ? planEntry(c) : null });
+  if (Number(baseRev) !== curRev) throw conflict(cur);
   if (cur) {
     // Once a day is linked to a job, that link is permanent: no re-pointing, no duplicates.
-    cur.plan.days.forEach((d, i) => {
+    cur.data.days.forEach((d, i) => {
       if (d.jobId && plan.days[i]?.jobId !== d.jobId) throw new WsError(422, 'A planned post is already linked to a job and can’t be changed.');
     });
-    if (cur.plan.status === 'confirmed' && plan.status !== 'confirmed') throw new WsError(422, 'A confirmed plan can’t go back to draft.');
+    if (cur.data.status === 'confirmed' && plan.status !== 'confirmed') throw new WsError(422, 'A confirmed plan can’t go back to draft.');
   }
-  ws.plans[id] = { rev: curRev + 1, updatedAt: Date.now(), updatedBy: device, plan };
-  ws.rev += 1;
-  persist();
-  return { rev: curRev + 1, wsRev: ws.rev, updatedAt: ws.plans[id].updatedAt };
+  const out = await S.put('plan', id, curRev, plan, device);
+  if (!out) throw conflict(await S.get('plan', id));
+  return { rev: out.rev, wsRev: out.wsRev, updatedAt: out.updatedAt };
 }
 
 function validateProfile(d) {
@@ -193,84 +204,104 @@ function validateProfile(d) {
   }
   if (!d.audience || !d.cta || !d.brand || !d.writing) bad('sections');
 }
-function putProfile(baseRev, data, device) {
-  const ws = W();
+async function putProfile(baseRev, data, device) {
+  const S = store();
   validateProfile(data);
-  if (Number(baseRev) !== ws.profile.rev) throw new WsError(409, 'The business profile was changed on another device.', { current: ws.profile });
-  const n = ws.profile.versions.length + 1;
-  ws.profile.versions.push({ id: versionId(n, data), n, savedAt: Date.now(), savedBy: device, data });
-  ws.profile.rev += 1;
-  ws.rev += 1;
-  persist();
-  return { profile: ws.profile, wsRev: ws.rev };
+  const cur = await profileRecord();
+  if (Number(baseRev) !== cur.rev) throw new WsError(409, 'The business profile was changed on another device.', { current: profileOut(cur) });
+  const n = cur.data.versions.length + 1;
+  const out = await S.put('profile', 'main', cur.rev, { versions: [...cur.data.versions, { id: versionId(n, data), n, savedAt: Date.now(), savedBy: device, data }] }, device);
+  if (!out) throw new WsError(409, 'The business profile was changed on another device.', { current: profileOut(await profileRecord()) });
+  return { profile: profileOut(await S.get('profile', 'main')), wsRev: out.wsRev };
 }
 
-function putBrand(baseRev, data, device) {
-  const ws = W();
+async function putBrand(baseRev, data, device) {
+  const S = store();
   if (!data || typeof data !== 'object' || (data.logoId && !ASSET_ID.test(data.logoId))) throw new WsError(400, 'Invalid brand settings.');
-  if (Number(baseRev) !== ws.brand.rev) throw new WsError(409, 'Brand settings changed on another device.', { current: ws.brand });
-  ws.brand = { rev: ws.brand.rev + 1, data: { logoId: data.logoId || null, logoName: String(data.logoName || '').slice(0, 200), logoSavedAt: Date.now() }, updatedBy: device };
-  ws.rev += 1;
-  persist();
-  return ws.brand;
+  const cur = await S.get('brand', 'main');
+  const curRev = cur ? cur.rev : 0;
+  if (Number(baseRev) !== curRev) throw new WsError(409, 'Brand settings changed on another device.', { current: brandOut(cur) });
+  const out = await S.put('brand', 'main', curRev, { logoId: data.logoId || null, logoName: String(data.logoName || '').slice(0, 200), logoSavedAt: Date.now() }, device);
+  if (!out) throw new WsError(409, 'Brand settings changed on another device.', { current: brandOut(await S.get('brand', 'main')) });
+  return brandOut(await S.get('brand', 'main'));
 }
 
 /** Idempotent import: a job id already in the workspace is skipped, never duplicated or overwritten. */
-function importBundles(bundles, brand, device, dryRun) {
-  const ws = W();
+async function importBundles(bundles, brand, device, dryRun) {
+  const S = store();
   if (!Array.isArray(bundles)) throw new WsError(400, 'Nothing to import.');
   const imported = [];
   const skipped = [];
   for (const b of bundles) {
     const id = b?.job?.id;
     validateBundle(id, b);
-    if (ws.jobs[id]) { skipped.push(id); continue; }
+    if (await S.get('job', id)) { skipped.push(id); continue; }
+    if (!dryRun && !(await S.put('job', id, 0, b, device))) { skipped.push(id); continue; } // created meanwhile: never overwritten
     imported.push(id);
-    if (!dryRun) ws.jobs[id] = { rev: 1, updatedAt: Date.now(), updatedBy: device, importedAt: Date.now(), bundle: b };
   }
   let brandSet = false;
-  if (brand?.logoId && ASSET_ID.test(brand.logoId) && !ws.brand.data?.logoId) {
+  const curBrand = await S.get('brand', 'main');
+  if (brand?.logoId && ASSET_ID.test(brand.logoId) && !curBrand?.data?.logoId) {
     brandSet = true;
-    if (!dryRun) ws.brand = { rev: ws.brand.rev + 1, data: { logoId: brand.logoId, logoName: String(brand.logoName || '').slice(0, 200), logoSavedAt: Date.now() }, updatedBy: device };
+    if (!dryRun) await S.put('brand', 'main', curBrand ? curBrand.rev : 0, { logoId: brand.logoId, logoName: String(brand.logoName || '').slice(0, 200), logoSavedAt: Date.now() }, device);
   }
-  if (!dryRun && (imported.length || brandSet)) { ws.rev += 1; persist(); }
   return { imported, skipped, brandSet, dryRun: !!dryRun };
 }
 
-/* ---------- Assets (original photos and logos) ---------- */
-const assetPath = (id) => path.join(paths().ASSET_DIR, `${id}.bin`);
-const metaPath = (id) => path.join(paths().ASSET_DIR, `${id}.json`);
-
-function saveAsset(id, { kind, name, type }, buf) {
+/* ---------- Assets (photos, logos, AI images, clips and rendered videos) ---------- */
+function checkAsset(id, kind, type, size) {
   if (!ASSET_ID.test(id) || !id.startsWith(`${kind}_`)) throw new WsError(400, 'Invalid image id.');
   if (!ASSET_TYPES[type] || !KIND_TYPES[kind]?.includes(type)) throw new WsError(415, kind === 'clip' || kind === 'video' ? 'Only MP4, MOV and WebM video can be stored.' : 'Only JPG and PNG images can be stored.');
-  if (!buf.length || buf.length > maxFor(kind)) throw new WsError(413, kind === 'clip' || kind === 'video' ? 'Video is empty or over 100 MB.' : 'Image is empty or over 15 MB.');
-  const existing = readJson(metaPath(id), null);
+  if (!size || size > maxFor(kind)) throw new WsError(413, kind === 'clip' || kind === 'video' ? 'Video is empty or over 100 MB.' : 'Image is empty or over 15 MB.');
+}
+const metaFor = (id, kind, name, type, size) => ({ id, kind, name: String(name || '').slice(0, 200), type, size, createdAt: Date.now() });
+
+async function saveAsset(id, { kind, name, type }, buf) {
+  checkAsset(id, kind, type, buf.length);
+  const existing = await store().assetMeta(id);
   if (existing) {
     if (existing.size !== buf.length) throw new WsError(409, 'A different image already uses this id.');
     return { id, existing: true };
   }
-  try {
-    writeAtomic(assetPath(id), buf);
-    writeAtomic(metaPath(id), JSON.stringify({ id, kind, name: String(name || '').slice(0, 200), type, size: buf.length, createdAt: Date.now() }));
-  } catch (e) {
-    if (e.code === 'ENOSPC') throw new WsError(507, 'The server’s disk is full. The image wasn’t saved.');
-    throw e;
-  }
+  await store().assetSave(id, metaFor(id, kind, name, type, buf.length), buf);
   return { id, existing: false };
 }
 
-function readAsset(id) {
+/** Direct upload (Supabase): a signed URL for the browser, or { direct: false } to post the file to HQ instead. */
+async function assetUploadUrl(id, { kind, name, type, size }) {
+  checkAsset(id, kind, type, Number(size));
+  const existing = await store().assetMeta(id);
+  if (existing) {
+    if (existing.size !== Number(size)) throw new WsError(409, 'A different file already uses this id.');
+    return { existing: true };
+  }
+  const url = await store().assetUploadUrl(id);
+  return url ? { direct: true, url } : { direct: false };
+}
+/** After a direct upload: check the stored object matches what was announced, then record it. */
+async function assetUploadComplete(id, { kind, name, type, size }) {
+  checkAsset(id, kind, type, Number(size));
+  const got = await store().assetUploaded(id);
+  if (!got) throw new WsError(409, 'The upload didn’t arrive. Nothing was saved; try again.');
+  if (got.size !== Number(size)) throw new WsError(409, 'The uploaded file is incomplete. Nothing was saved; try again.');
+  await store().assetRecord(id, metaFor(id, kind, name, type, got.size));
+  return { id, existing: false };
+}
+
+/** For streaming (file store) or a signed redirect (Supabase). */
+async function readAsset(id) {
   if (!ASSET_ID.test(id)) return null;
-  const meta = readJson(metaPath(id), null);
+  const meta = await store().assetMeta(id);
   if (!meta) return null;
-  return { meta, stream: (opts) => fs.createReadStream(assetPath(id), opts) };
+  const S = store();
+  return { meta, stream: S.assetStream ? (opts) => S.assetStream(id, opts) : null, signedUrl: S.assetStream ? null : () => S.assetSignedUrl(id) };
 }
-
-function readAssetBuffer(id) {
-  const meta = ASSET_ID.test(id) ? readJson(metaPath(id), null) : null;
-  return meta ? { meta, buffer: fs.readFileSync(assetPath(id)) } : null;
+async function readAssetBuffer(id) {
+  if (!ASSET_ID.test(id)) return null;
+  const meta = await store().assetMeta(id);
+  const buffer = meta ? await store().assetBuffer(id) : null;
+  return buffer ? { meta, buffer } : null;
 }
-const hasAsset = (id) => ASSET_ID.test(id) && fs.existsSync(metaPath(id));
+async function hasAsset(id) { return ASSET_ID.test(id) && !!(await store().assetMeta(id)); }
 
-module.exports = { snapshot, getJob, putJob, putPlan, putProfile, putBrand, importBundles, saveAsset, readAsset, readAssetBuffer, hasAsset, WsError, MAX_ASSET, MAX_VIDEO };
+module.exports = { snapshot, wsRev, getJob, putJob, putPlan, putProfile, putBrand, importBundles, saveAsset, assetUploadUrl, assetUploadComplete, readAsset, readAssetBuffer, hasAsset, WsError, MAX_ASSET, MAX_VIDEO };

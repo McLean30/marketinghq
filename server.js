@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { BRAND } = require('./public/js/brand.js'); // shared brand palette and logo rules (ES module via require)
+const backendMod = require('./server/backend');
 const quill = require('./server/quill');
 const auth = require('./server/auth');
 const wsStore = require('./server/workspace');
@@ -58,7 +59,15 @@ async function readJsonBody(req) {
   try { return JSON.parse(buf.toString('utf8') || '{}'); } catch { throw new wsStore.WsError(400, 'Request body must be JSON.'); }
 }
 
-const sameOrigin = (req) => !req.headers.origin || req.headers.origin === `http://${req.headers.host}`;
+// Same-origin check for writes. Behind Vercel's HTTPS front end the request arrives as plain HTTP, so the scheme comes
+// from X-Forwarded-Proto there.
+const sameOrigin = (req) => {
+  const o = req.headers.origin;
+  if (!o) return true;
+  const proto = process.env.VERCEL ? (req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim() : 'http';
+  const host = (process.env.VERCEL && req.headers['x-forwarded-host']) || req.headers.host;
+  return o === `${proto}://${host}`;
+};
 const deviceOf = (req) => (/^(phone|computer)$/.test(req.headers['x-hq-device'] || '') ? req.headers['x-hq-device'] : 'device');
 
 /* ---------- Paid AI: who may spend, once per explicit action, and what it cost ---------- */
@@ -84,7 +93,7 @@ async function paid(req, res, signedIn, kind, fn, describe) {
   try {
     const run = async () => {
       const out = await fn(body);
-      if (out.usage) ai.record({ jobId: typeof body.jobId === 'string' ? body.jobId.slice(0, 60) : null, requestKey: body.requestKey || null, kind: kind === 'caption' ? (body.kind === 'revision' ? 'caption-revision' : 'caption') : kind === 'image' ? `image-${body.op}` : kind, ...out.usage });
+      if (out.usage) await ai.record({ jobId: typeof body.jobId === 'string' ? body.jobId.slice(0, 60) : null, requestKey: body.requestKey || null, kind: kind === 'caption' ? (body.kind === 'revision' ? 'caption-revision' : 'caption') : kind === 'image' ? `image-${body.op}` : kind, ...out.usage });
       return out;
     };
     const out = live || body.requestKey ? await ai.once(body.requestKey, run) : await run();
@@ -92,7 +101,7 @@ async function paid(req, res, signedIn, kind, fn, describe) {
     return sendJson(res, 200, out);
   } catch (e) {
     const status = e.status || 500;
-    if (e.usage) ai.record({ jobId: typeof body.jobId === 'string' ? body.jobId.slice(0, 60) : null, requestKey: typeof body.requestKey === 'string' ? body.requestKey.slice(0, 160) : null, kind: `${kind}-failed`, ...e.usage });
+    if (e.usage) await ai.record({ jobId: typeof body.jobId === 'string' ? body.jobId.slice(0, 60) : null, requestKey: typeof body.requestKey === 'string' ? body.requestKey.slice(0, 160) : null, kind: `${kind}-failed`, ...e.usage });
     console.warn(`[ai] ${kind} failed: ${e.code || 'error'} (${status})`);
     return sendJson(res, status, { error: e.message || 'Generation failed.', code: e.code || 'error', retryable: e.retryable !== false, usage: e.usage || null });
   }
@@ -104,7 +113,7 @@ async function prismImage(body) {
   if (!auth.configured()) throw Object.assign(new Error('Image generation needs the shared workspace (owner sign-in) to store the image.'), { status: 503, retryable: false });
   let base = null;
   if (body.op === 'edit') {
-    const a = wsStore.readAssetBuffer(String(body.baseAssetId || ''));
+    const a = await wsStore.readAssetBuffer(String(body.baseAssetId || ''));
     if (!a) throw Object.assign(new Error('The image to edit isn’t in the shared workspace.'), { status: 404, retryable: false });
     base = { mime: a.meta.type, buffer: a.buffer };
   }
@@ -118,26 +127,26 @@ async function prismImage(body) {
   }
   const id = `photo_${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`;
   const name = `${body.op === 'edit' ? 'edited' : 'generated'}-${id.slice(6)}.${out.mime === 'image/png' ? 'png' : 'jpg'}`;
-  wsStore.saveAsset(id, { kind: 'photo', name, type: out.mime }, out.buffer);
+  await wsStore.saveAsset(id, { kind: 'photo', name, type: out.mime }, out.buffer);
   return { assetId: id, name, mime: out.mime, size: out.size, op: body.op, provider: quill.providerInfo().provider, model: out.model, usage: out.usage };
 }
 
 async function handleApi(req, res, urlPath) {
   const method = req.method;
   if (method !== 'GET' && !sameOrigin(req)) return sendJson(res, 403, { error: 'Cross-origin requests are not allowed.' });
-  const signedIn = !!auth.session(req);
+  const signedIn = !!(await auth.session(req));
 
   /* --- Sign-in --- */
   // HQ_TEST_DATE (YYYY-MM-DD) fixes "today" for offer and review checks in test workspaces.
-  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null, scheduler: auth.configured() ? { runsOn: 'server', everyMs: schedulerEvery, now: scheduler.now(), testClock: scheduler.testClock() } : { runsOn: 'browser' } });
+  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, storage: auth.configured() ? backendMod.store().kind : null, setupProblem: auth.misconfigured(), testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null, scheduler: auth.configured() ? { runsOn: 'server', everyMs: schedulerEvery, now: scheduler.now(), testClock: scheduler.testClock() } : { runsOn: 'browser' } });
   if (urlPath === '/api/auth/login' && method === 'POST') {
     const body = await readJsonBody(req);
-    const r = auth.login(req, body.password, deviceOf(req));
+    const r = await auth.login(req, body.password, deviceOf(req));
     if (r.status !== 200) return sendJson(res, r.status, { error: r.error });
     console.log(`[auth] owner signed in from a ${deviceOf(req)}`);
     return sendJson(res, 200, { signedIn: true }, { 'Set-Cookie': r.cookie });
   }
-  if (urlPath === '/api/auth/logout' && method === 'POST') return sendJson(res, 200, { signedIn: false }, { 'Set-Cookie': auth.logout(req) });
+  if (urlPath === '/api/auth/logout' && method === 'POST') return sendJson(res, 200, { signedIn: false }, { 'Set-Cookie': await auth.logout(req) });
 
   /* --- Live AI (OpenAI). Spending needs a signed-in owner; a server key alone never opens it to visitors. --- */
   if (urlPath === '/api/quill/status' && method === 'GET') {
@@ -154,7 +163,7 @@ async function handleApi(req, res, urlPath) {
   if (urlPath === '/api/ai/usage' && method === 'GET') {
     if (!auth.configured() || !signedIn) return sendJson(res, 401, { error: 'Sign in to see AI usage.', code: 'signed_out' });
     const jobId = new URL(req.url, 'http://x').searchParams.get('jobId');
-    return sendJson(res, 200, { entries: ai.ledger(jobId), priceSource: ai.PRICE_SOURCE });
+    return sendJson(res, 200, { entries: await ai.ledger(jobId), priceSource: ai.PRICE_SOURCE });
   }
   if (urlPath === '/api/quill/mock-calls' && method === 'GET' && quill.providerInfo().provider === 'mock') return sendJson(res, 200, require('./server/quill-mock').calls);
   if (urlPath === '/api/vektor/mock-plan-calls' && method === 'GET' && quill.providerInfo().provider === 'mock') return sendJson(res, 200, require('./server/quill-mock').planCalls);
@@ -174,7 +183,7 @@ async function handleApi(req, res, urlPath) {
     const changed = await scheduler.runDue({ jobId: typeof body.jobId === 'string' ? body.jobId : null, force: !!body.jobId });
     return sendJson(res, 200, { changed, now: scheduler.now() });
   }
-  if (urlPath === '/api/publish/receipts' && method === 'GET') return sendJson(res, 200, { posts: scheduler.posts().map((p) => p.receipt), now: scheduler.now() });
+  if (urlPath === '/api/publish/receipts' && method === 'GET') return sendJson(res, 200, { posts: (await scheduler.posts()).map((p) => p.receipt), now: scheduler.now() });
   if (urlPath === '/api/test/clock' && method === 'POST') {
     const body = await readJsonBody(req);
     const t = scheduler.advance(body.advanceMs);
@@ -186,53 +195,68 @@ async function handleApi(req, res, urlPath) {
     const body = await readJsonBody(req);
     return sendJson(res, 200, { fault: scheduler.setFault(body.mode) });
   }
-  if (urlPath === '/api/workspace' && method === 'GET') return sendJson(res, 200, wsStore.snapshot());
-  if (urlPath === '/api/workspace/rev' && method === 'GET') return sendJson(res, 200, { rev: wsStore.snapshot().rev, now: scheduler.now() });
+  if (urlPath === '/api/workspace' && method === 'GET') return sendJson(res, 200, await wsStore.snapshot());
+  if (urlPath === '/api/workspace/rev' && method === 'GET') return sendJson(res, 200, { rev: await wsStore.wsRev(), now: scheduler.now() });
   let m = /^\/api\/workspace\/jobs\/([a-z0-9_]+)$/.exec(urlPath);
   if (m && method === 'GET') {
-    const job = wsStore.getJob(m[1]);
+    const job = await wsStore.getJob(m[1]);
     return job ? sendJson(res, 200, job) : sendJson(res, 404, { error: 'Job not found.' });
   }
   if (m && method === 'PUT') {
     const body = await readJsonBody(req);
-    const out = wsStore.putJob(m[1], body.baseRev, body.bundle, deviceOf(req));
+    const out = await wsStore.putJob(m[1], body.baseRev, body.bundle, deviceOf(req));
     return sendJson(res, 200, out);
   }
   m = /^\/api\/workspace\/plans\/([a-z0-9_]+)$/.exec(urlPath);
   if (m && method === 'PUT') {
     const body = await readJsonBody(req);
-    return sendJson(res, 200, wsStore.putPlan(m[1], body.baseRev, body.plan, deviceOf(req)));
+    return sendJson(res, 200, await wsStore.putPlan(m[1], body.baseRev, body.plan, deviceOf(req)));
   }
   if (urlPath === '/api/workspace/profile' && method === 'PUT') {
     const body = await readJsonBody(req);
-    return sendJson(res, 200, wsStore.putProfile(body.baseRev, body.data, deviceOf(req)));
+    return sendJson(res, 200, await wsStore.putProfile(body.baseRev, body.data, deviceOf(req)));
   }
   if (urlPath === '/api/workspace/brand' && method === 'PUT') {
     const body = await readJsonBody(req);
-    return sendJson(res, 200, wsStore.putBrand(body.baseRev, body.data, deviceOf(req)));
+    return sendJson(res, 200, await wsStore.putBrand(body.baseRev, body.data, deviceOf(req)));
   }
   if (urlPath === '/api/workspace/import' && method === 'POST') {
     const body = await readJsonBody(req);
-    const out = wsStore.importBundles(body.bundles, body.brand, deviceOf(req), !!body.dryRun);
+    const out = await wsStore.importBundles(body.bundles, body.brand, deviceOf(req), !!body.dryRun);
     if (!body.dryRun) console.log(`[workspace] import: ${out.imported.length} imported, ${out.skipped.length} already present`);
     return sendJson(res, 200, out);
   }
   if (urlPath === '/api/assets/check' && method === 'POST') {
     const body = await readJsonBody(req);
     const ids = Array.isArray(body.ids) ? body.ids.slice(0, 2000) : [];
-    return sendJson(res, 200, { present: ids.filter((id) => wsStore.hasAsset(id)) });
+    const present = [];
+    for (const id of ids) if (await wsStore.hasAsset(id)) present.push(id);
+    return sendJson(res, 200, { present });
+  }
+  // Direct uploads (Supabase): HQ checks the file, hands out a signed URL, then verifies what arrived.
+  m = /^\/api\/assets\/([a-z0-9_]+)\/(upload-url|complete)$/.exec(urlPath);
+  if (m && method === 'POST') {
+    const body = await readJsonBody(req);
+    const info = { kind: body.kind, name: body.name, type: body.type, size: body.size };
+    return sendJson(res, 200, m[2] === 'upload-url' ? await wsStore.assetUploadUrl(m[1], info) : await wsStore.assetUploadComplete(m[1], info));
   }
   m = /^\/api\/assets\/([a-z0-9_]+)$/.exec(urlPath);
   if (m && method === 'POST') {
     const buf = await readBody(req, (/^(clip|video)_/.test(m[1]) ? wsStore.MAX_VIDEO : wsStore.MAX_ASSET) + 1024);
     let name = '';
     try { name = decodeURIComponent(req.headers['x-asset-name'] || ''); } catch { /* keep empty */ }
-    const out = wsStore.saveAsset(m[1], { kind: req.headers['x-asset-kind'], name, type: (req.headers['content-type'] || '').split(';')[0] }, buf);
+    const out = await wsStore.saveAsset(m[1], { kind: req.headers['x-asset-kind'], name, type: (req.headers['content-type'] || '').split(';')[0] }, buf);
     return sendJson(res, 200, out);
   }
   if (m && method === 'GET') {
-    const a = wsStore.readAsset(m[1]);
+    const a = await wsStore.readAsset(m[1]);
     if (!a) return sendJson(res, 404, { error: 'Image not found.' });
+    if (a.signedUrl) {
+      // Supabase: a short-lived signed link (supports byte ranges for video), so large files never pass through HQ.
+      res.writeHead(302, { Location: await a.signedUrl(), 'Cache-Control': 'private, no-store', ...SECURITY_HEADERS });
+      res.end();
+      return undefined;
+    }
     // Byte ranges let phones (Safari in particular) stream and seek videos.
     const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
     if (range && (range[1] || range[2])) {
@@ -282,7 +306,7 @@ http
     const info = quill.providerInfo();
     console.log(`Nexai AI Marketing HQ running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
     console.log(`Quill caption provider: ${info.label}${info.model ? ` (${info.model}${info.effort ? `, effort ${info.effort}` : ''})` : ''}`);
-    console.log(auth.configured() ? `Shared workspace: on (owner sign-in required). Data folder: ${storage.dataDir()}` : 'Shared workspace: off (run npm run set-password to turn it on). Local demo mode only.');
+    console.log(auth.configured() ? `Shared workspace: on (owner sign-in required). ${backendMod.useSupabase() ? `Storage: Supabase (${(process.env.SUPABASE_URL || '').replace(/^https?:\/\//, '').split('/')[0]}, workspace ${backendMod.WORKSPACE()})` : `Data folder: ${storage.dataDir()}`}` : auth.misconfigured() ? `Shared workspace: off. ${auth.misconfigured()}` : 'Shared workspace: off (run npm run set-password to turn it on). Local demo mode only.');
     if (auth.configured()) {
       schedulerEvery = scheduler.start();
       console.log(schedulerEvery ? `Demo scheduler: on, every ${schedulerEvery / 1000} s while this server runs (simulated accounts only).` : 'Demo scheduler: timer off (HQ_SCHEDULER_MS=0); due posts run when HQ asks.');
