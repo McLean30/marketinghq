@@ -94,13 +94,14 @@ const task = (b, type) => b.tasks.find((t) => t.type === type);
 const browser = await chromium.launch();
 const errors = [];
 try {
-  console.log('\n== 1. Signed-out visitor: demo mode, no paid calls ==');
+  console.log('\n== 1. Signed-out visitor: sign-in screen only, no paid calls ==');
   const anon = await browser.newContext({ viewport: { width: 1280, height: 860 } });
   const ap = await anon.newPage();
   ap.on('pageerror', (e) => errors.push(`anon: ${e.message}`));
   await ap.goto(BASE);
-  await ap.waitForSelector('[data-testid="quill-mode"]');
-  assert(/Sign in as the owner/.test(await ap.textContent('[data-testid="quill-mode"]')), 'HQ tells a signed-out visitor that live AI needs owner sign-in');
+  // Milestone 14: the private workspace shows only the owner sign-in screen until someone signs in.
+  await ap.waitForSelector('[data-testid="gate-signin"]');
+  assert(!(await ap.locator('[data-testid="quill-mode"], .agent-card').count()), 'A signed-out visitor sees only the owner sign-in screen');
   const r = await ap.evaluate(async () => (await fetch('api/quill/caption', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestKey: 'anon:probe:0001', kind: 'draft', brief: 'A brief long enough to pass validation.', platform: 'LinkedIn' }) })).status);
   assert(r === 401 && calls.length === 0, 'A signed-out caption request is refused (401); OpenAI was never called');
   await anon.close();

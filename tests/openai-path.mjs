@@ -89,8 +89,10 @@ try {
   assert((await app.ready) === 'ready', 'Server starts');
   assert(/gpt-6-luna/.test(app.output()) && !app.output().includes(KEY), 'Start-up log names gpt-6-luna and never prints the key');
   const BASE = `http://127.0.0.1:${APP_PORT}/`;
-  st = await (await fetch(`${BASE}api/quill/status`)).json();
-  assert(st.provider === 'demo' && st.signInRequired === true, 'Signed-out visitor sees demo mode with a sign-in prompt');
+  // Milestone 14: a private workspace tells a signed-out visitor nothing about its AI set-up.
+  const qs = await fetch(`${BASE}api/quill/status`);
+  st = await qs.json();
+  assert(qs.status === 401 && !st.provider && !st.model, 'Signed-out visitor is refused (401) and learns nothing about the AI set-up');
   r = await fetch(`${BASE}api/quill/caption`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestKey: 'anon-test-0003', kind: 'draft', brief: 'A brief long enough to pass validation.', platform: 'LinkedIn' }) });
   assert(r.status === 401 && seen.length === before, 'Signed-out caption request refused (401) with no OpenAI call');
   r = await fetch(`${BASE}api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }) });
