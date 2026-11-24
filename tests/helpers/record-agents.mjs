@@ -12,7 +12,8 @@ import crypto from 'crypto';
 
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
-const [root, portArg, outFile, flag] = process.argv.slice(2);
+const [rootArg, portArg, outFile, flag] = process.argv.slice(2);
+const root = path.resolve(rootArg);
 const CHECK = flag === '--check';
 const PORT = Number(portArg);
 const BASE = `http://127.0.0.1:${PORT}/`;

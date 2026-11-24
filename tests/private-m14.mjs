@@ -136,8 +136,9 @@ try {
   const revBefore = jobRec(jobId).rev;
   await page.click('[data-testid="generate-image"]');
   const prefill = await page.inputValue(`#aip-${g0.id}`);
-  assert(prefill.includes(BRIEF.slice(0, 40)) && await page.locator('[data-testid="visual-brief-source"]').isVisible(), 'Generate opens with this job’s visual brief filled in, and says nothing is generated yet');
-  await page.click(`[data-ai-image-form="${g0.id}|generate"] button[type=button]`);
+  // Milestone 15: the scene idea is chosen for this post's audience and point (with the caption shown alongside).
+  assert(prefill.length > 20 && await page.locator('[data-testid="concept-form"]').isVisible() && await page.locator('[data-testid="visual-brief-source"]').isVisible(), 'Generate opens with a scene idea for this job (and its headline), and says nothing is generated yet');
+  await page.click(`[data-ai-image-form="${g0.id}|generate"] [data-ai-image-open]`);
   await page.waitForTimeout(800);
   assert(imageCalls.length === 0 && jobRec(jobId).rev === revBefore, 'Cancelling Generate sends no request and saves nothing');
 
@@ -198,7 +199,7 @@ try {
       log: [],
     };
   };
-  const realPhoto = { mode: 'photo', photoId: gv1.content.photoId, photoName: 'site-photo.png', logoId: 'brand:nexai-logo.png', logoName: 'Official Nexai Digital logo', headline: 'Compliance you can see', headlinePos: 'bottom', crop: { zoom: 1, fx: 0.5, fy: 0.5 }, logoScale: 1 };
+  const realPhoto = { mode: 'photo', photoId: gv1.content.photoId, photoName: 'site-photo.png', logoId: 'brand:nexai-logo.png', logoName: 'Official Nexai Digital logo', headline: 'Written before the private workspace.', headlinePos: 'bottom', crop: { zoom: 1, fx: 0.5, fy: 0.5 }, logoScale: 1 };
   const simV = (sim) => ({ n: 1, content: sim, notes: ['Simulated'], feedback: null, by: 'Prism', simulated: true, source: 'demo', createdAt: t0 });
   const OLD = 'job_legacyv1v2';
   const ONLYSIM = 'job_legacysimonly';
@@ -224,7 +225,7 @@ try {
   const oldG = old.tasks[1].id;
   const callsBefore = imageCalls.length;
   await page.click('[data-testid="generate-image"]');
-  await page.click(`[data-ai-image-form="${oldG}|generate"] button[type=button]`);
+  await page.click(`[data-ai-image-form="${oldG}|generate"] [data-ai-image-open]`);
   await page.waitForTimeout(500);
   assert(imageCalls.length === callsBefore, 'Older job: opening and cancelling Generate sends nothing');
   await page.click(`[data-run-review="${OLD}"]`);
@@ -232,14 +233,15 @@ try {
   await page.click(`[data-approve="${OLD}"]`);
   await page.waitForSelector('[data-testid="destination-panel"]');
   await page.click(`[data-run-review="${OLD}"]`);
-  assert(await until(page, (id) => (document.querySelectorAll('[data-testid="review-history"] li, .review-hist li').length >= 0) && !document.querySelector(`[data-run-review="${id}"][disabled]`), OLD), 'Older job: a second review after approval saves too');
+  assert(await until(page, (id) => (document.querySelectorAll('[data-testid="review-history"] li, .review-hist li').length >= 0) && !document.querySelector(`[data-run-review="${id}"][disabled]`), OLD), 'Older job: reviewing again after approval (same versions) completes');
   await page.waitForTimeout(800);
   await page.reload();
   await page.waitForSelector('[data-testid="destination-panel"]');
   await page.goto(`${BASE}#/`);
   await page.goto(`${BASE}#/job/${OLD}`);
   await page.waitForSelector('[data-testid="destination-panel"]');
-  assert((jobRec(OLD).data.job.reviews || []).length === 2, 'Older job: both reviews are saved after refresh and reopening');
+  // Milestone 15: the same caption and graphic aren't reviewed twice; the first review is reused.
+  assert((jobRec(OLD).data.job.reviews || []).length === 1, 'Older job: the review is kept after refresh and reopening (a repeat on the same versions is reused, not duplicated)');
   const oj = jobRec(OLD).data;
   assert(oj.job.approvals.length === 2 && oj.job.approvals[0].graphicVersion === 1 && oj.job.approval.graphicVersion === 2, 'The historical approval is preserved and the fresh approval names real graphic v2');
   assert(oj.tasks.find((t) => t.type === 'graphic').versions.length === 2 && oj.tasks.find((t) => t.type === 'graphic').versions[0].source === 'demo', 'Both graphic versions are kept unchanged (v1 still recorded as simulated)');
