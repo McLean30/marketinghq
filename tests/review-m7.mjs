@@ -114,12 +114,11 @@ try {
   const pp = await phone.newPage();
   pp.on('pageerror', (e) => errors.push(`phone: ${e.message}`));
   await pp.goto(BASE);
-  await pp.waitForSelector('.agent-card.char-manager');
-  await pp.tap('[data-testid="ws-inline"]');
+  // Milestone 14: the server's sign-in screen comes first, then HQ opens on the page asked for.
+  await pp.waitForSelector('[data-testid="gate-signin"]');
   await pp.fill('#ws-password', PASSWORD);
   await pp.tap('#signin-form button[type=submit]');
-  await pp.waitForSelector('text=You’re signed in');
-  await pp.tap('[data-nav="hq"]');
+  await pp.waitForSelector('.agent-card.char-manager');
   await pp.waitForSelector('[data-testid="profile-link"]');
   await pp.tap('[data-testid="profile-link"]');
   await pp.waitForSelector('#pf-offers-0-end');
