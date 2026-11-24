@@ -46,6 +46,8 @@ const browser = await chromium.launch();
 try {
   console.log('\n== Desktop, then phone-sized screen (same browser profile) ==');
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
+  // This milestone's checks cover a deployment without the official logo file (the owner supplies one).
+  await ctx.route('**/assets/brand/brand.json', (r) => r.fulfill({ contentType: 'application/json', body: '{"logo": false}' }));
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -204,6 +206,8 @@ try {
 
   console.log('\n== Phone device (iPhone 13, touch) upload and save ==');
   const pctx = await browser.newContext({ ...devices['iPhone 13'], acceptDownloads: true });
+  // This milestone's checks cover a deployment without the official logo file (the owner supplies one).
+  await pctx.route('**/assets/brand/brand.json', (r) => r.fulfill({ contentType: 'application/json', body: '{"logo": false}' }));
   const pp = await pctx.newPage();
   await createJob(pp, BRIEF);
   await pp.click('[data-testid="panel-graphic"] a:has-text("Open Photo layout")');
