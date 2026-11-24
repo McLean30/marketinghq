@@ -39,7 +39,7 @@ const stub = http.createServer((req, res) => {
 });
 await new Promise((r) => stub.listen(STUB, '127.0.0.1', r));
 
-const env = { ...process.env, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), SUPABASE_URL: URL_, SUPABASE_SECRET_KEY: KEY, HQ_WORKSPACE_ID: WS, HQ_SCHEDULER_MS: '0', QUILL_PROVIDER: '', AI_PROVIDER: '', OPENAI_API_KEY: 'sk-dummy-not-real', OPENAI_BASE_URL: `http://127.0.0.1:${STUB}/v1`, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: process.env.NODE_USE_ENV_PROXY || (process.env.HTTPS_PROXY ? '1' : '') };
+const env = { ...process.env, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_FIXTURES: '1', SUPABASE_URL: URL_, SUPABASE_SECRET_KEY: KEY, HQ_WORKSPACE_ID: WS, HQ_SCHEDULER_MS: '0', QUILL_PROVIDER: '', AI_PROVIDER: '', OPENAI_API_KEY: 'sk-dummy-not-real', OPENAI_BASE_URL: `http://127.0.0.1:${STUB}/v1`, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: process.env.NODE_USE_ENV_PROXY || (process.env.HTTPS_PROXY ? '1' : '') };
 function start(port) {
   const child = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';

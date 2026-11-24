@@ -19,7 +19,8 @@ const onVercel = () => !!process.env.VERCEL;
 const available = () => useSupabase() || !onVercel();
 
 class StoreError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  // 502/503: the workspace database couldn't be reached or answered badly. The browser shows a connection error.
+  constructor(status, message) { super(message); this.status = status; if (status >= 502) this.code = 'workspace_unavailable'; }
 }
 
 /* =====================================================================================================

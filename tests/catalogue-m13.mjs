@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
 const { hashPassword } = require('../server/auth');
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const CAT = await import('../public/js/catalogue.js');
+const CAT = await import('../app/js/catalogue.js');
 const assert = (c, m) => { if (!c) throw new Error(`FAIL: ${m}`); console.log(`  ok  ${m}`); };
 const PRIVATE = /Revenue Recovery|Database Reactivation|Quote Recovery|Enquiry Capture|commission|upfront|running costs/i;
 const BRIEF = 'LinkedIn post about what Nexai is building for businesses with past customers';
@@ -91,7 +91,7 @@ try {
   const gA = st.tasks.find((t) => t.id === jobA.taskIds.graphic).versions[0].content;
   assert(gA.headline.join(' ') === 'Past customers, back in touch.' && gA.chip === 'In development' && !PRIVATE.test(JSON.stringify(gA)), 'Prism’s graphic uses the approved headline and an “In development” chip');
 
-  const V = await import('../public/js/video.js');
+  const V = await import('../app/js/video.js');
   const sb = V.templateStoryboard({ brief: BRIEF, catalogue: jobA.catalogue }, { duration: 20 });
   assert(sb.scenes[1].title === 'What we’re building' && /reconnect with past customers/.test(sb.scenes[1].caption) && /Work in progress/.test(sb.scenes.at(-1).caption) && !PRIVATE.test(JSON.stringify(sb)), 'Cue’s script uses the approved wording, ends on work in progress, names nothing internal');
 
@@ -173,7 +173,7 @@ try {
   console.log('\n== B. Shared workspace, mock AI provider: what the model is sent ==');
   const PW = `pw-${crypto.randomBytes(6).toString('hex')}`;
   const sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hq-m13-'));
-  const shared = await start(4252, { HQ_DATA_DIR: sharedDir, HQ_OWNER_PASSWORD_HASH: hashPassword(PW), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '200', HQ_SCHEDULER_MS: '0' });
+  const shared = await start(4252, { HQ_DATA_DIR: sharedDir, HQ_OWNER_PASSWORD_HASH: hashPassword(PW), HQ_TEST_FIXTURES: '1', QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '200', HQ_SCHEDULER_MS: '0' });
   servers.push(shared);
   const S = 'http://127.0.0.1:4252/';
   const sc = await browser.newContext({ viewport: { width: 1280, height: 860 } });
@@ -208,7 +208,7 @@ try {
 
   console.log('\n== C. An existing, edited profile gains the catalogue with every edit kept ==');
   const oldDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hq-m13-old-'));
-  const seed = JSON.parse(fs.readFileSync(path.join(ROOT, 'public/data/profile-seed.json'), 'utf8'));
+  const seed = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/data/profile-seed.json'), 'utf8'));
   delete seed.catalogue;
   const edited = JSON.parse(JSON.stringify(seed));
   edited.services[0].name = 'Websites for Maintenance Firms';
@@ -217,7 +217,7 @@ try {
   edited.writing.voice = 'Owner-edited voice.';
   edited.brand.linkedinHashtags.required = ['#NexaiDigital'];
   fs.writeFileSync(path.join(oldDir, 'workspace.json'), JSON.stringify({ version: 1, rev: 2, jobs: {}, plans: {}, brand: { rev: 0, data: {} }, profile: { rev: 2, versions: [{ id: 'pv1-aaaaaa', n: 1, savedAt: 1, savedBy: 'seed', data: seed }, { id: 'pv2-bbbbbb', n: 2, savedAt: 2, savedBy: 'computer', data: edited }] } }));
-  const up = await start(4253, { HQ_DATA_DIR: oldDir, HQ_OWNER_PASSWORD_HASH: hashPassword(PW), HQ_SCHEDULER_MS: '0' });
+  const up = await start(4253, { HQ_DATA_DIR: oldDir, HQ_OWNER_PASSWORD_HASH: hashPassword(PW), HQ_TEST_FIXTURES: '1', HQ_SCHEDULER_MS: '0' });
   servers.push(up);
   const login = await fetch('http://127.0.0.1:4253/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW }) });
   const cookie = (login.headers.get('set-cookie') || '').split(';')[0];

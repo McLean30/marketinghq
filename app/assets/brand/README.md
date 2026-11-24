@@ -7,4 +7,4 @@ Then set `"logo": true` in `brand.json` in this folder. Once both are done, HQ u
 - as the default logo in Prism's Photo layout and on every AI image (placed whole, aspect kept, never cropped or redrawn by AI);
 - as the official logo Calibre checks graphics against, until the owner sets a different one.
 
-Brand colours and the image direction sent to the image model live in `public/js/brand.js`.
+Brand colours and the image direction sent to the image model live in `app/js/brand.js`.

@@ -4,12 +4,24 @@
 import http from 'http';
 import crypto from 'crypto';
 
+/**
+ * What Postgres jsonb does to a stored object: keys come back sorted (shorter keys first, then byte order), not in
+ * the order they were sent. Real Supabase does this, so the fake does too (it is what broke saves on phones, M14).
+ */
+export function jsonb(x) {
+  if (Array.isArray(x)) return x.map(jsonb);
+  if (!x || typeof x !== 'object') return x;
+  const keys = Object.keys(x).sort((a, b) => Buffer.byteLength(a) - Buffer.byteLength(b) || Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  return Object.fromEntries(keys.filter((k) => x[k] !== undefined).map((k) => [k, jsonb(x[k])]));
+}
+
 export function startFakeSupabase(port, { secretKey = 'test-secret-key', workerSecret = 'w'.repeat(64) } = {}) {
   const T = { hq_meta: [], hq_records: [], hq_sessions: [], hq_login_failures: [], hq_ai_requests: [], hq_ai_usage: [], hq_scheduler_workspaces: [], hq_worker_runs: [] };
   const KEYS = { hq_meta: ['workspace'], hq_records: ['workspace', 'kind', 'id'], hq_sessions: ['workspace', 'token_hash'], hq_login_failures: ['workspace', 'ip'], hq_ai_requests: ['workspace', 'request_key'], hq_scheduler_workspaces: ['workspace'] };
   const objects = new Map(); // path -> { buf, type }
   let ids = 0;
   const stats = { requests: 0 };
+  let down = false; // simulate an outage: every request fails as if Supabase were unreachable
 
   const now = () => new Date().toISOString();
   const cmp = (v, op, x) => {
@@ -36,9 +48,9 @@ export function startFakeSupabase(port, { secretKey = 'test-secret-key', workerS
       let newRev = null;
       const i = T.hq_records.findIndex((r) => r.workspace === a.p_workspace && r.kind === a.p_kind && r.id === a.p_id);
       if (a.p_base_rev === 0) {
-        if (i < 0) { T.hq_records.push({ workspace: a.p_workspace, kind: a.p_kind, id: a.p_id, rev: 1, data: a.p_data, updated_by: a.p_by, updated_at: now() }); newRev = 1; }
+        if (i < 0) { T.hq_records.push({ workspace: a.p_workspace, kind: a.p_kind, id: a.p_id, rev: 1, data: jsonb(a.p_data), updated_by: a.p_by, updated_at: now() }); newRev = 1; }
       } else if (i >= 0 && T.hq_records[i].rev === a.p_base_rev) {
-        Object.assign(T.hq_records[i], { rev: a.p_base_rev + 1, data: a.p_data, updated_by: a.p_by, updated_at: now() });
+        Object.assign(T.hq_records[i], { rev: a.p_base_rev + 1, data: jsonb(a.p_data), updated_by: a.p_by, updated_at: now() });
         newRev = a.p_base_rev + 1;
       }
       if (newRev == null) return [];
@@ -67,6 +79,7 @@ export function startFakeSupabase(port, { secretKey = 'test-secret-key', workerS
       const send = (status, obj, headers = {}) => { res.writeHead(status, { 'content-type': 'application/json', 'access-control-allow-origin': '*', ...headers }); res.end(obj === undefined ? '' : JSON.stringify(obj)); };
       // Signed storage URLs work without the key (as on Supabase); everything else needs it.
       const signed = u.searchParams.has('token');
+      if (down) { res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ message: 'Service unavailable (simulated outage)' })); }
       if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,PUT,POST', 'access-control-allow-headers': '*' }); return res.end(); }
       if (!signed && req.headers.apikey !== secretKey) return send(401, { message: 'Invalid API key' });
       try {
@@ -85,6 +98,7 @@ export function startFakeSupabase(port, { secretKey = 'test-secret-key', workerS
             const created = [];
             for (const row of rows) {
               const r = { ...row };
+              if (r.data && typeof r.data === 'object') r.data = jsonb(r.data);
               if (table === 'hq_ai_usage' || table === 'hq_worker_runs') { r.id = ++ids; r.started_at ||= now(); r.at ||= now(); }
               if (table === 'hq_ai_requests') { r.created_at ||= now(); r.updated_at ||= now(); }
               if (table === 'hq_records') r.updated_at ||= now();
@@ -125,6 +139,7 @@ export function startFakeSupabase(port, { secretKey = 'test-secret-key', workerS
   });
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({
     url: `http://127.0.0.1:${port}`, secretKey, workerSecret, tables: T, objects, stats,
+    setDown: (v) => { down = !!v; },
     close: () => new Promise((r) => server.close(r)),
   })));
 }

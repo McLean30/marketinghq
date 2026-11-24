@@ -118,7 +118,7 @@ async function fetchServerAsset(id) {
 }
 
 export const putAsset = (rec) => (backend === 'server' ? uploadAsset(rec) : putLocalAsset(rec));
-// "brand:<file>" is an official brand file deployed with the app (public/assets/brand/), the same in every workspace.
+// "brand:<file>" is an official brand file deployed with the app (app/assets/brand/), the same in every workspace.
 async function fetchBrandAsset(id) {
   try {
     const r = await fetch(`assets/brand/${encodeURIComponent(id.slice(6))}`, { cache: 'force-cache' });

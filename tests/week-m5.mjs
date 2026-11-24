@@ -34,7 +34,7 @@ const EXPECT = [['Monday', 'LinkedIn'], ['Tuesday', 'Facebook'], ['Wednesday', '
   return { day, platform, date: iso(d), label: d.toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'long' }) };
 });
 
-const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '500', OPENAI_API_KEY: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
+const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_FIXTURES: '1', QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '500', OPENAI_API_KEY: '' }, stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise((res) => { let o = ''; server.stdout.on('data', (d) => { o += d; if (/Shared workspace: on/.test(o)) res(); }); });
 
 async function signIn(page) {

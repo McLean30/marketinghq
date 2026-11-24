@@ -29,7 +29,7 @@ fs.mkdirSync(OUT, { recursive: true });
 const assert = (c, m) => { if (!c) throw new Error(`FAIL: ${m}`); console.log(`  ok  ${m}`); };
 const DAY = 86400000;
 
-const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(PORT), HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '300', HQ_TEST_CLOCK: '1', HQ_SCHEDULER_MS: '1000' }, stdio: ['ignore', 'pipe', 'inherit'] });
+const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(PORT), HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_FIXTURES: '1', QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '300', HQ_TEST_CLOCK: '1', HQ_SCHEDULER_MS: '1000' }, stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise((res) => { let o = ''; server.stdout.on('data', (d) => { o += d; if (/Shared workspace: on/.test(o)) res(); }); });
 
 async function signIn(page) {

@@ -56,12 +56,21 @@ function readCookie(req) {
 }
 const secure = (req) => (req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https' || !!req.socket?.encrypted;
 
+// A page load asks for a dozen files at once; each must be signed in. Valid sessions are remembered for a few
+// seconds per server instance so that doesn't mean a dozen database lookups. Signing out forgets at once.
+const CACHE_MS = 10000;
+const recent = new Map(); // token hash -> { s, until }
 async function session(req) {
   if (!configured()) return null;
   const token = readCookie(req);
   if (!token) return null;
-  const s = await backend.store().sessionGet(sha(token));
-  if (!s || s.expiresAt < Date.now()) return null;
+  const h = sha(token);
+  const hit = recent.get(h);
+  if (hit && hit.until > Date.now() && hit.s.expiresAt > Date.now()) return hit.s;
+  const s = await backend.store().sessionGet(h);
+  if (!s || s.expiresAt < Date.now()) { recent.delete(h); return null; }
+  if (recent.size > 200) recent.clear();
+  recent.set(h, { s, until: Date.now() + CACHE_MS });
   return s;
 }
 
@@ -98,6 +107,7 @@ async function login(req, password, device) {
 
 async function logout(req) {
   const token = readCookie(req);
+  if (token) recent.delete(sha(token));
   if (configured() && token) await backend.store().sessionDelete(sha(token));
   return `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure(req) ? '; Secure' : ''}`;
 }

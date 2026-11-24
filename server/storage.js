@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * The app folder (the one holding public/index.html). Found by looking, not by assuming this file's location,
+ * The app folder (the one holding app/index.html). Found by looking, not by assuming this file's location,
  * because bundlers may flatten files into one (shared __dirname) or not provide __dirname at all. Read-only.
  */
 function findAppDir() {
@@ -16,7 +16,7 @@ function findAppDir() {
   for (const start of starts) {
     let dir = start;
     for (let i = 0; i < 4; i++) {
-      if (fs.existsSync(path.join(dir, 'public', 'index.html'))) return dir;
+      if (fs.existsSync(path.join(dir, 'app', 'index.html'))) return dir;
       dir = path.dirname(dir);
     }
   }

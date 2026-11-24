@@ -27,7 +27,7 @@ import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 const require = createRequire(import.meta.url);
-const { chromium } = require('playwright');
+const { chromium, devices } = require('playwright');
 
 const URL_IN = (process.env.PREVIEW_URL || '').trim();
 const BYPASS = (process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '').trim();
@@ -91,6 +91,51 @@ try {
   if (status >= 500) throw new Failed(`Homepage returned HTTP ${status}${/FUNCTION_INVOCATION_FAILED|server error/i.test(html) ? ' (serverless function crashed)' : ''}.`);
   if (status !== 200) throw new Failed(`Homepage returned HTTP ${status}.`);
   step(true, `GET / returned 200 (${new URL(page.url()).host})`);
+
+  // 1a. A private workspace (owner sign-in set up on this deployment, Milestone 14): it must show the owner sign-in
+  // screen first, everywhere, and serve nothing of HQ until someone signs in. The check never signs in.
+  if (/data-testid="gate-signin"/.test(html)) {
+    const http = page.context().request;
+    const base = new URL('/', page.url()).toString();
+    const get = async (p) => { const r = await http.get(base + p, { maxRedirects: 0 }); return { status: r.status(), type: r.headers()['content-type'] || '', body: await r.text() }; };
+    if (EXPECT_SHA) {
+      const v = await get('api/version');
+      let served = null;
+      try { served = JSON.parse(v.body).commit; } catch { /* older build */ }
+      if (served && served !== EXPECT_SHA) throw new Failed(`This deployment runs commit ${served.slice(0, 7)}, not ${EXPECT_SHA.slice(0, 7)}: it is an older or different deployment.`);
+      if (!served && REQUIRE_SHA_MATCH) throw new Blocked('This deployment doesn’t report which commit it runs, so it can’t be proved to be the commit under test.');
+      step(true, served ? `Deployment reports commit ${served.slice(0, 7)} (the commit under test)` : 'Deployment doesn’t report its commit; the workflow matched it to the commit');
+    }
+    for (const sel of ['#ws-password', '#signin-form button[type=submit]', 'img[alt="Nexai Digital"]']) if (!(await page.locator(sel).first().isVisible())) throw new Failed(`The sign-in screen is missing ${sel}.`);
+    if (pageErrors.length) throw new Failed(`Uncaught error on the sign-in screen: ${pageErrors[0]}`);
+    step(true, 'Private workspace: the owner sign-in screen shows first (password field, sign-in button, logo)');
+    for (const hash of ['#/job/job_smoketest1', '#/agent/designer', '#/calendar', '#/profile']) {
+      await page.goto(base + hash, { waitUntil: 'domcontentloaded' });
+      if (!(await page.locator('[data-testid="gate-signin"]').count()) || (await page.locator('.agent-card, #brief-form').count())) throw new Failed(`Signed out, ${hash} showed something other than the sign-in screen.`);
+    }
+    step(true, 'Direct links to a job, an agent’s workspace, the calendar and the profile all show sign-in first');
+    for (const p of ['js/app.js', 'js/store.js', 'css/app.css', 'data/profile-seed.json', 'assets/agents/vektor.webp', 'api/workspace', 'api/assets/photo_smoketest1', 'api/quill/status']) {
+      const r = await get(p);
+      if (r.status !== 401) throw new Failed(`Signed out, GET /${p} returned ${r.status} instead of 401: workspace files must not be served before sign-in.`);
+    }
+    step(true, 'Signed out, app scripts, styles, data, images, media and the workspace API are all refused (401)');
+    const st = JSON.parse((await get('api/auth/status')).body || '{}');
+    if (!st.private || st.signedIn || st.modes) throw new Failed('The status endpoint says more than “sign in” to a signed-out visitor.');
+    const logo = await get('assets/brand/nexai-logo.png');
+    if (logo.status !== 200) throw new Failed(`The sign-in screen’s logo returned ${logo.status}.`);
+    step(true, 'Only the sign-in screen, its logo and the sign-in status are public');
+    const phone = await browser.newContext({ ...devices['iPhone 13'], extraHTTPHeaders: BYPASS ? { 'x-vercel-protection-bypass': BYPASS, 'x-vercel-set-bypass-cookie': 'true' } : {} });
+    const pp = await phone.newPage();
+    await pp.goto(base, { waitUntil: 'domcontentloaded' });
+    await pp.waitForSelector('[data-testid="gate-signin"]');
+    const fits = await pp.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
+    if (!fits || !(await pp.locator('#ws-password').isVisible())) throw new Failed('The sign-in screen doesn’t fit a phone screen.');
+    if (SHOTS) await pp.screenshot({ path: path.join(SHOTS, 'private-signin-phone.png') });
+    await phone.close();
+    step(true, 'The sign-in screen fits a phone (iPhone 13 size), with no sideways scrolling');
+    if (serverErrors.length) throw new Failed(`Server errors: ${serverErrors.join(', ')}`);
+    finish('pass', 'Private workspace on the preview: the owner sign-in screen shows first on every page and direct link, nothing of HQ is served before sign-in, and it works on a phone. (The check never signs in.)');
+  }
 
   // 2. HQ renders (not blank, no uncaught startup error)
   try {

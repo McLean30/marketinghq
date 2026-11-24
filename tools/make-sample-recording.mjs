@@ -1,4 +1,4 @@
-// Makes public/samples/sample-receipt-recording.{webm,mp4}: a clearly labelled SAMPLE screen recording for trying
+// Makes app/samples/sample-receipt-recording.{webm,mp4}: a clearly labelled SAMPLE screen recording for trying
 // the Video Creator when no real JobTrack Pro footage has been supplied. It's an illustrative mock-up drawn here,
 // NOT the real product, and every frame says so. Never present it as evidence of how JobTrack Pro works.
 //
@@ -83,7 +83,7 @@ const raw = await page.video().path();
 await ctx.close();
 await browser.close();
 const lead = Math.max(0, (Date.now() - t0) / 1000 - SECONDS - 0.2).toFixed(2); // trim the blank page load at the start
-const out = path.join(ROOT, 'public', 'samples');
+const out = path.join(ROOT, 'app', 'samples');
 fs.mkdirSync(out, { recursive: true });
 const ff = (args) => execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-ss', lead, '-i', raw, '-t', String(SECONDS - 1), '-an', ...args], { stdio: 'inherit' });
 ff(['-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', '38', '-row-mt', '1', '-deadline', 'good', '-cpu-used', '4', '-r', '30', path.join(out, 'sample-receipt-recording.webm')]);

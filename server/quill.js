@@ -10,8 +10,8 @@
 
 const mock = require('./quill-mock');
 const ai = require('./openai');
-const V = require('../public/js/voice.js'); // the same tone rules the browser uses
-const CAT = require('../public/js/catalogue.js'); // the service catalogue's public-context rules
+const V = require('../app/js/voice.js'); // the same tone rules the browser uses
+const CAT = require('../app/js/catalogue.js'); // the service catalogue's public-context rules
 
 /**
  * The catalogue context for a prompt: only the public fields of items that may be named or described, whatever the

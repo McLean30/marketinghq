@@ -5,7 +5,7 @@
 // device last saw; if another device saved first, the server refuses it and we never overwrite silently.
 import { draftCaption, reviseCaption, draftGraphic, reviseGraphic } from './generators.js';
 import { setAssetBackend } from './photo.js';
-import { loadSeed, profileImpact } from './profile.js';
+import { loadSeed, profileImpact, canon } from './profile.js';
 import { runChecks, reviewFreshness } from './review.js';
 import { londonToday } from './plan.js';
 import * as PB from './publishing.js';
@@ -69,7 +69,38 @@ export const ws = {
   focusJob: null,
   clockOffset: 0, // shared mode: server time minus this device's time (the server decides when posts are due)
   scheduler: { runsOn: 'browser' },
+  private: false, // owner sign-in is set up: HQ is a private workspace and never uses browser demo data (M14)
+  fixtures: false, // isolated automated tests only: simulated outputs and the demo publisher (HQ_TEST_FIXTURES)
+  destinations: {}, // platform -> { connected, label }
+  modes: null, // how sign-in, storage, captions, images and publishing run here (server/modes.js)
+  unreachable: null, // { message } when HQ couldn't reach its server or workspace store at start-up
 };
+/** The owner's private workspace: real outputs only (no simulated graphics, template captions or demo publishing). */
+export const realOnly = () => ws.private && !ws.fixtures;
+/** A destination posts can actually be sent to (none can be connected yet in the owner's workspace). */
+export const destination = (platform) => ws.destinations?.[platform] || { connected: false, label: `${platform} isn’t connected` };
+
+/**
+ * Simulated output from before the private workspace (or from demo mode): an illustrated graphic, a template
+ * caption or sample content. Kept in history, clearly labelled, but never used, approved for sending or offered as a
+ * fallback in the owner's workspace.
+ */
+export function isSimulatedVersion(task, v) {
+  if (!task || !v) return false;
+  if (task.type === 'graphic') return v.content?.mode !== 'photo';
+  if (task.type === 'copy') return v.source === 'demo' || v.by === 'Sample';
+  return false;
+}
+/** The approved versions that are simulated (each needs a real replacement and fresh approval before sending). */
+export function approvalProblems(job) {
+  const a = job?.approval;
+  if (!a) return [];
+  const { copy, graphic } = jobTasks(job);
+  const out = [];
+  if (isSimulatedVersion(copy, copy?.versions[a.copyVersion - 1])) out.push({ type: 'copy', n: a.copyVersion, text: `caption v${a.copyVersion} is a simulated template` });
+  if (isSimulatedVersion(graphic, graphic?.versions[a.graphicVersion - 1])) out.push({ type: 'graphic', n: a.graphicVersion, text: `graphic v${a.graphicVersion} is simulated demo artwork` });
+  return out;
+}
 /** "Now" for publishing decisions: the server's clock in the shared workspace, this browser's otherwise. */
 export const now = () => Date.now() + (ws.mode === 'shared' ? ws.clockOffset : 0);
 
@@ -88,7 +119,8 @@ export async function loadQuillProvider() {
   notify();
   return quill;
 }
-const copyEngine = () => (quill.provider === 'demo' ? 'demo' : 'ai');
+// The owner's workspace always asks the real provider: a missing key shows as the real failure, never template text.
+const copyEngine = () => (realOnly() || quill.provider !== 'demo' ? 'ai' : 'demo');
 const inFlight = new Set(); // task ids with a caption request awaiting the server (this tab)
 // A request cut off because this page is being refreshed or closed isn't a failure: the next load offers Retry.
 let unloading = false;
@@ -171,7 +203,7 @@ export function describeChanges(mine, theirs) {
   }
   const a0 = mine?.job.approval;
   const a1 = theirs.job.approval;
-  if (a1 && JSON.stringify(a0) !== JSON.stringify(a1)) out.push(`Approved caption v${a1.copyVersion} with ${visualLabel(theirs.job).toLowerCase()} v${a1.graphicVersion}`);
+  if (a1 && canon(a0) !== canon(a1)) out.push(`Approved caption v${a1.copyVersion} with ${visualLabel(theirs.job).toLowerCase()} v${a1.graphicVersion}`);
   for (const m of (theirs.job.measurements || []).slice((mine?.job.measurements || []).length)) out.push(`Results measured ${AN.fmtDay(m.measuredOn)} recorded`);
   for (const p of theirs.job.publications || []) {
     const old = (mine?.job.publications || []).find((x) => x.id === p.id);
@@ -197,7 +229,10 @@ async function api(path, opts = {}) {
     ws.signedIn = false;
     ws.status = 'signed_out';
     notify();
-  } else if (ws.status === 'offline') ws.status = 'ok';
+  } else if (r.status === 503 && data.code === 'workspace_unavailable') {
+    ws.status = 'unavailable';
+    notify();
+  } else if (ws.status === 'offline' || ws.status === 'unavailable') ws.status = 'ok';
   return { status: r.status, ok: r.ok, data };
 }
 
@@ -302,8 +337,26 @@ export const setFocusJob = (jobId) => { ws.focusJob = jobId || null; };
 
 /* ---------- Boot, sign-in and polling ---------- */
 export async function init() {
+  let r;
   try {
-    const r = await api('api/auth/status');
+    r = await api('api/auth/status');
+  } catch {
+    r = null;
+  }
+  if (!r || !r.ok) {
+    // Never fall back to this browser's demo data: the owner's workspace may be private. Say what's wrong instead.
+    ws.unreachable = { message: r?.data?.error || 'HQ can’t reach its server. Check your connection, then try again.' };
+    ws.ready = true;
+    notify();
+    return;
+  }
+  if (r.data.private && !r.data.signedIn) { location.reload(); return; } // the session ended: the server shows sign-in
+  ws.unreachable = null;
+  ws.private = !!r.data.private;
+  ws.fixtures = !!r.data.fixtures;
+  ws.destinations = r.data.destinations || {};
+  ws.modes = r.data.modes || null;
+  try {
     ws.authConfigured = !!r.data.authConfigured;
     ws.setupProblem = r.data.setupProblem || null;
     ws.storage = r.data.storage || null;
@@ -316,12 +369,13 @@ export async function init() {
     ws.authConfigured = false;
   }
   const pref = lsGet(MODE_KEY);
-  await setMode(ws.signedIn && pref !== 'local' ? 'shared' : 'local');
+  await setMode(ws.private || (ws.signedIn && pref !== 'local') ? 'shared' : 'local');
   ws.ready = true;
   notify();
 }
 
 export async function setMode(mode) {
+  if (ws.private) mode = 'shared'; // the private workspace never swaps in this browser's demo data
   if (mode === 'shared' && !ws.signedIn) mode = 'local';
   ws.mode = mode;
   setAssetBackend(mode === 'shared' ? 'server' : 'local');
@@ -367,6 +421,7 @@ export async function signIn(password) {
 
 export async function signOut() {
   await api('api/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
+  if (ws.private) { location.reload(); return; } // back to the sign-in screen; nothing of the workspace stays open
   ws.signedIn = false;
   await setMode('local');
   await loadQuillProvider();
@@ -406,7 +461,7 @@ async function pullWorkspace(initial = false, applyId = null) {
 /** Changes made by the demo scheduler (publication status, receipts, log) are safe to show at once on an open job. */
 function onlyPublishingChanged(mine, theirs) {
   if (!mine) return false;
-  const strip = (b) => JSON.stringify({ job: { ...b.job, publications: undefined }, tasks: b.tasks });
+  const strip = (b) => canon({ job: { ...b.job, publications: undefined }, tasks: b.tasks });
   return strip(mine) === strip(theirs);
 }
 
@@ -450,6 +505,8 @@ export async function createJob({ id, brief, platform, targetDate, title, planId
         versions: [],
         pending: { kind: 'initial', engine: agentId === 'copywriter' || agentId === 'video' ? copyEngine() : 'demo', startAt: job.delegatedAt, readyAt: job.delegatedAt + (agentId === 'copywriter' ? COPY_MS : GRAPHIC_MS) },
       };
+      // The owner's workspace: the graphic starts as "Graphic needed" until you generate an image or upload a photo.
+      if (agentId === 'designer' && realOnly()) task.pending = null;
       if (agentId === 'video') { if (id) task.id = `task_${job.id.slice(4)}v`; task.clip = clip || null; task.draft = null; }
       job.taskIds[task.type] = task.id;
       return task;
@@ -457,7 +514,7 @@ export async function createJob({ id, brief, platform, targetDate, title, planId
     state.jobs.unshift(job);
     state.tasks.push(...tasks);
     log(job.id, 'manager', `New brief received for ${platform}, due ${targetDate}.`);
-    log(job.id, 'manager', job.kind === 'video' ? 'Delegated the post caption to Quill and the video to Cue.' : 'Delegated the caption to Quill and the graphic to Prism.');
+    log(job.id, 'manager', job.kind === 'video' ? 'Delegated the post caption to Quill and the video to Cue.' : realOnly() ? 'Delegated the caption to Quill. The graphic is needed: generate an image or upload a photo.' : 'Delegated the caption to Quill and the graphic to Prism.');
     return job;
   }, { action: 'create' });
   return res.ok ? { ok: true, job: getJob(job.id) || job, existed: !!res.existed || !!res.noop } : res;
@@ -471,6 +528,8 @@ export function taskStatus(task, now = Date.now()) {
   }
   if (task.type === 'video' && rendering.has(task.id)) return 'rendering';
   if (task.type === 'video' && !task.versions.length) return 'needs_render';
+  if (task.type === 'graphic' && realOnly() && (!task.versions.length || isSimulatedVersion(task, currentVersion(task)))) return 'graphic_needed';
+  if (task.type === 'copy' && realOnly() && isSimulatedVersion(task, currentVersion(task))) return 'caption_needed';
   const st = jobStatus(getJob(task.jobId), now);
   if (st === 'approved') return 'approved';
   return 'awaiting_review';
@@ -480,8 +539,10 @@ export function jobStatus(job, now = Date.now()) {
   const { copy, graphic } = jobTasks(job);
   if (now < job.delegatedAt) return 'delegating';
   if (copy.pending?.error || graphic.pending?.error) return 'needs_retry';
+  if (realOnly() && graphic.type === 'graphic' && (!graphic.versions.length || isSimulatedVersion(graphic, currentVersion(graphic))) && !graphic.pending) return 'graphic_needed';
   if (copy.pending || graphic.pending) return 'in_production';
   if (!graphic.versions.length) return graphic.type === 'video' ? 'needs_render' : 'in_production';
+  if (realOnly() && isSimulatedVersion(copy, currentVersion(copy))) return 'caption_needed';
   if (job.approval) {
     const fresh = job.approval.copyVersion === copy.versions.length && job.approval.graphicVersion === graphic.versions.length;
     return fresh ? 'approved' : 'needs_reapproval';
@@ -504,6 +565,8 @@ export const STATUS_LABEL = {
   needs_retry: 'Needs your retry',
   needs_render: 'Storyboard ready: render the video',
   rendering: 'Rendering',
+  graphic_needed: 'Graphic needed',
+  caption_needed: 'Caption needs a real draft',
 };
 
 /** Resolve agent work whose time has come (simulated outputs, AI requests). */
@@ -512,6 +575,7 @@ export function tick(now = Date.now()) {
   for (const task of state.tasks.slice()) {
     if (!task.pending) continue;
     if (task.pending.engine === 'ai') { dispatchAi(task.id, now); continue; }
+    if (realOnly() && !task.pending.error) { retireDemoWork(task.id); continue; }
     if (now < task.pending.readyAt) continue;
     const taskId = task.id;
     commit(task.jobId, () => {
@@ -545,9 +609,34 @@ export function tick(now = Date.now()) {
   }
 }
 
+/**
+ * An older job still waiting on a demo template (from before the private workspace): Quill's caption becomes a
+ * failed request you can retry with live AI (no request is sent by opening the job); Prism's simulated graphic is
+ * dropped, so the post shows "Graphic needed". Nothing simulated is created.
+ */
+const retiring = new Set();
+function retireDemoWork(taskId) {
+  if (retiring.has(taskId)) return;
+  retiring.add(taskId);
+  const task = getTask(taskId);
+  commit(task.jobId, () => {
+    const t = getTask(taskId);
+    if (!t?.pending || t.pending.engine === 'ai' || t.pending.error) return false;
+    if (t.type === 'graphic') {
+      t.pending = null;
+      log(t.jobId, 'designer', 'A simulated graphic was waiting to be drawn. The private workspace doesn’t use simulated artwork: generate an image or upload a photo.');
+    } else {
+      t.pending.error = { message: `This ${t.type === 'video' ? 'storyboard' : 'caption'} was waiting for a demo template, which the private workspace doesn’t use. Retry to have ${AGENTS[t.agent].name} write it with live AI (one request).`, retryable: true, at: Date.now() };
+    }
+    return true;
+  }, { background: true }).finally(() => retiring.delete(taskId));
+}
+
 export async function requestRevision(taskId, feedback) {
   const task = getTask(taskId);
   if (!task || task.pending) return { ok: false, noop: true };
+  // Graphics change through Generate image, Edit image or Photo layout: there's no simulated revision here.
+  if (task.type === 'graphic' && realOnly()) return { ok: false, error: 'Use Generate image, Edit image or Photo layout to change the graphic.' };
   const res = await commit(task.jobId, () => {
     const t = getTask(taskId);
     if (!t || t.pending) return false;
@@ -794,7 +883,7 @@ export async function setBrandLogo(id, name) {
     throw new Error(r.data.error || 'The logo couldn’t be remembered.');
   }
 }
-// The workspace logo; until the owner sets one, the official logo deployed with HQ (public/assets/brand/).
+// The workspace logo; until the owner sets one, the official logo deployed with HQ (app/assets/brand/).
 export const brand = () => (state.brand?.logoId || !officialLogoKnown() ? state.brand || {} : { ...(state.brand || {}), logoId: BRAND.logo.id, logoName: BRAND.logo.name, official: true });
 
 /* ---------- Import this browser's work into the shared workspace ---------- */
@@ -1221,6 +1310,7 @@ export async function recordMeasurement(jobId, values) {
 
 /** Add the two labelled sample LinkedIn posts (made-up figures, measured 7 days after publishing). Safe to repeat. */
 export async function addSampleData() {
+  if (realOnly()) return { ok: false, error: 'Sample data is for demo mode and automated tests only.' };
   const base = AN.addDays(AN.mondayOf(today()), -14);
   const results = [];
   for (const sp of AN.SAMPLE_POSTS) {
@@ -1291,7 +1381,7 @@ export function saveVideoDraft(taskId, draft) {
     const { savedAt, ...prev } = t.draft || {};
     const { savedAt: _ignored, ...next } = draft;
     void savedAt; void _ignored;
-    if (JSON.stringify(prev) === JSON.stringify(next)) return false;
+    if (canon(prev) === canon(next)) return false;
     t.draft = { ...clone(next), savedAt: Date.now() };
     return true;
   }, { action: 'save-draft' });
@@ -1417,6 +1507,7 @@ async function dispatchScript(taskId, task, job, claimedAt) {
 }
 /** After a failed script request: use the labelled template storyboard instead (no charge). */
 export function useTemplateStoryboard(taskId) {
+  if (realOnly()) return Promise.resolve({ ok: false, error: 'The private workspace doesn’t use template storyboards. Retry the script request.' });
   const task = getTask(taskId);
   if (!task || task.type !== 'video' || !task.pending?.error) return Promise.resolve({ ok: false, noop: true });
   return commit(task.jobId, () => {
@@ -1466,7 +1557,7 @@ export async function prismImage(taskId, { op, prompt, scene }) {
         content: {
           mode: 'photo', photoId: d.assetId, photoName: d.name, photoOrigin: d.provider === 'openai' ? 'ai' : 'mock', generated: { op, prompt: prompt.trim(), scene: scene || null, model: d.model, provider: d.provider, requestKey },
           logoId: state.brand?.logoId || (officialLogoKnown() ? BRAND.logo.id : null) || last?.content.logoId || null, logoName: state.brand?.logoName || (officialLogoKnown() ? BRAND.logo.name : null) || last?.content.logoName || null,
-          headline: last?.content.headline || (lastSim?.content.headline || []).join(' ') || '', headlinePos: last?.content.headlinePos || 'bottom', crop: { zoom: 1, fx: 0.5, fy: 0.5 }, logoScale: last?.content.logoScale || 1,
+          headline: last?.content.headline || (realOnly() ? (getJob(t.jobId)?.catalogue?.items?.[0]?.headline || []).join(' ') : (lastSim?.content.headline || []).join(' ')) || '', headlinePos: last?.content.headlinePos || 'bottom', crop: { zoom: 1, fx: 0.5, fy: 0.5 }, logoScale: last?.content.logoScale || 1,
         },
         notes: [op === 'edit' ? `v${n}: Image edited with ${d.model}: “${prompt.trim()}”. Logo, headline and crop are added locally.` : `v${n}: Image generated with ${d.model}${scene ? ` for “${scene}”` : ''}. Logo, headline and crop are added locally.`],
       };

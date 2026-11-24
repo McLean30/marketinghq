@@ -1,6 +1,6 @@
 // Nexai Digital brand: one source for the HQ header, Prism's Photo layout and every AI image prompt.
 // Colours sampled from the official Nexai Digital banner (glowing circuit scorpion + NEXAI DIGITAL wordmark).
-// The official logo files live in public/assets/brand/ and are never redrawn by AI: the image model is told to leave
+// The official logo files live in app/assets/brand/ and are never redrawn by AI: the image model is told to leave
 // the logo out, and Photo layout places the real file whole (aspect kept, nothing cropped).
 export const BRAND = {
   name: 'Nexai Digital',

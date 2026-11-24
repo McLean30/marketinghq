@@ -34,13 +34,13 @@ async function profileRecord() {
   const S = store();
   let cur = await S.get('profile', 'main');
   if (!cur) {
-    const seed = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'public', 'data', 'profile-seed.json'), 'utf8'));
+    const seed = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'app', 'data', 'profile-seed.json'), 'utf8'));
     await S.put('profile', 'main', 0, { versions: [{ id: versionId(1, seed), n: 1, savedAt: Date.now(), savedBy: 'seed', data: seed }] }, 'seed');
     cur = await S.get('profile', 'main');
   }
   const last = cur.data.versions.at(-1);
   if (typeof last.data?.writing?.voice !== 'string') {
-    const V = require('../public/js/voice.js');
+    const V = require('../app/js/voice.js');
     const data = JSON.parse(JSON.stringify(last.data));
     data.writing = { ...(data.writing || {}), voice: V.DEFAULT_VOICE };
     const n = cur.data.versions.length + 1;
@@ -49,7 +49,7 @@ async function profileRecord() {
   }
   // Profiles saved before the service catalogue existed get it as a new version: the owner's services carried over
   // exactly, every other field untouched. A profile that already has a catalogue is never changed here.
-  const upgraded = require('../public/js/catalogue.js').upgradeProfile(cur.data.versions.at(-1).data);
+  const upgraded = require('../app/js/catalogue.js').upgradeProfile(cur.data.versions.at(-1).data);
   if (upgraded) {
     const n = cur.data.versions.length + 1;
     await S.put('profile', 'main', cur.rev, { versions: [...cur.data.versions, { id: versionId(n, upgraded), n, savedAt: Date.now(), savedBy: 'update: service catalogue added', data: upgraded }] }, 'update');
@@ -121,21 +121,29 @@ function validateBundle(id, b) {
 const PUB_STATUS = ['scheduled', 'publishing', 'published', 'cancelled', 'held', 'attention', 'replaced'];
 const FINAL = ['published', 'cancelled', 'replaced'];
 
+/**
+ * The same JSON value, whatever order its keys are in. Supabase stores records as jsonb, which hands keys back in
+ * its own order (shorter names first), so a phone's own copy of a version it just saved never matches key for key.
+ * Comparing text exactly made HQ refuse a device's next save of that job ("would change saved copy v1", M14).
+ */
+const canon = (x) => JSON.stringify(x, (k, v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v));
+const same = (a, b) => canon(a) === canon(b);
+
 /** Earlier versions and approvals may never be changed or removed. */
 function checkAppendOnly(prev, next) {
   for (const pt of prev.tasks) {
     const nt = next.tasks.find((t) => t.id === pt.id);
     if (!nt || nt.versions.length < pt.versions.length) throw new WsError(422, 'This save would remove saved versions, so it was refused.');
     pt.versions.forEach((v, i) => {
-      if (JSON.stringify(v) !== JSON.stringify(nt.versions[i])) throw new WsError(422, `This save would change saved ${pt.type} v${i + 1}, so it was refused.`);
+      if (!same(v, nt.versions[i])) throw new WsError(422, `This save would change saved ${pt.type} v${i + 1}, so it was refused.`);
     });
   }
   const pa = prev.job.approvals || [];
   const na = next.job.approvals || [];
-  if (na.length < pa.length || pa.some((x, i) => JSON.stringify(x) !== JSON.stringify(na[i]))) throw new WsError(422, 'This save would rewrite the approval history, so it was refused.');
+  if (na.length < pa.length || pa.some((x, i) => !same(x, na[i]))) throw new WsError(422, 'This save would rewrite the approval history, so it was refused.');
   const pr = prev.job.reviews || [];
   const nr = next.job.reviews || [];
-  if (nr.length < pr.length || pr.some((x, i) => JSON.stringify(x) !== JSON.stringify(nr[i]))) throw new WsError(422, 'This save would rewrite the review history, so it was refused.');
+  if (nr.length < pr.length || pr.some((x, i) => !same(x, nr[i]))) throw new WsError(422, 'This save would rewrite the review history, so it was refused.');
   // Publications: never removed; their history only grows; published, cancelled and replaced are final; receipts are kept.
   const pp = prev.job.publications || [];
   const np = next.job.publications || [];
@@ -143,25 +151,36 @@ function checkAppendOnly(prev, next) {
   // Results: snapshots are only ever added; recorded figures can't be edited or removed.
   const pm = prev.job.measurements || [];
   const nm = next.job.measurements || [];
-  if (nm.length < pm.length || pm.some((x, i) => JSON.stringify(x) !== JSON.stringify(nm[i]))) throw new WsError(422, 'This save would change recorded results, so it was refused.');
+  if (nm.length < pm.length || pm.some((x, i) => !same(x, nm[i]))) throw new WsError(422, 'This save would change recorded results, so it was refused.');
   pp.forEach((p, i) => {
     const q = np[i];
     const refuse = () => { throw new WsError(422, `This save would rewrite publication #${p.n}’s history, so it was refused.`); };
     if (q.id !== p.id || q.copyVersion !== p.copyVersion || q.graphicVersion !== p.graphicVersion || q.platform !== p.platform) refuse();
-    if (q.events.length < p.events.length || p.events.some((ev, k) => JSON.stringify(ev) !== JSON.stringify(q.events[k]))) refuse();
-    if (FINAL.includes(p.status) && JSON.stringify(p) !== JSON.stringify(q)) refuse();
-    if (p.receipt && JSON.stringify(p.receipt) !== JSON.stringify(q.receipt)) refuse();
+    if (q.events.length < p.events.length || p.events.some((ev, k) => !same(ev, q.events[k]))) refuse();
+    if (FINAL.includes(p.status) && !same(p, q)) refuse();
+    if (p.receipt && !same(p.receipt, q.receipt)) refuse();
   });
 }
 
 
-async function putJob(id, baseRev, bundle, device) {
+async function putJob(id, baseRev, bundle, device, { connected = () => false } = {}) {
   const S = store();
   validateBundle(id, bundle);
   const cur = await S.get('job', id);
   const curRev = cur ? cur.rev : 0;
   if (Number(baseRev) !== curRev) throw new WsError(409, 'This job changed on another device.', { current: cur ? entry(cur) : null });
   if (cur) checkAppendOnly(cur.data, bundle);
+  // Nothing can be queued for a destination that isn't connected (the owner's workspace has none yet).
+  const before = (cur?.data.job.publications || []).length;
+  const added = (bundle.job.publications || []).slice(before);
+  for (const p of added) if (!connected(p.platform)) throw new WsError(422, `${p.platform} isn’t connected, so nothing can be scheduled or sent there yet. Approval keeps the post in your private calendar.`, { code: 'not_connected' });
+  // Simulated content is never sent: a caption template or demo artwork needs a real replacement and fresh approval.
+  for (const p of added) {
+    const copyV = bundle.tasks.find((t) => t.type === 'copy').versions[p.copyVersion - 1];
+    const vis = bundle.tasks.find((t) => t.type === 'graphic' || t.type === 'video');
+    const visV = vis.versions[p.graphicVersion - 1];
+    if (!connected.fixtures && (copyV.source === 'demo' || (vis.type === 'graphic' && visV.content?.mode !== 'photo'))) throw new WsError(422, 'This pair contains simulated content, so it can’t be sent. Replace it with a real caption or graphic and approve again.', { code: 'simulated_content' });
+  }
   const out = await S.put('job', id, curRev, bundle, device);
   if (!out) {
     const latest = await S.get('job', id);
@@ -211,7 +230,7 @@ function validateProfile(d) {
     for (const k of ['start', 'end']) if (o[k] && !/^\d{4}-\d{2}-\d{2}$/.test(o[k])) bad('offer dates');
   }
   if (!d.audience || !d.cta || !d.brand || !d.writing) bad('sections');
-  const c = require('../public/js/catalogue.js').validateCatalogue(d.catalogue);
+  const c = require('../app/js/catalogue.js').validateCatalogue(d.catalogue);
   if (c) bad(c);
 }
 async function putProfile(baseRev, data, device) {

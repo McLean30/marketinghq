@@ -17,12 +17,12 @@ const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
 const { hashPassword } = require('../server/auth');
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const PB = await import('../public/js/publishing.js');
+const PB = await import('../app/js/publishing.js');
 const { runScheduler } = await import('../supabase/functions/hq-scheduler/worker.js');
 const assert = (c, m) => { if (!c) throw new Error(`FAIL: ${m}`); console.log(`  ok  ${m}`); };
 
 execFileSync(process.execPath, [`${ROOT}/scripts/sync-worker.cjs`, '--check'], { stdio: 'inherit' });
-assert(true, 'The worker’s copies of the publishing rules match public/js');
+assert(true, 'The worker’s copies of the publishing rules match app/js');
 
 const FAKE_PORT = 4231;
 const PORT = 4232;
@@ -36,7 +36,7 @@ const receipts = (ws = 'main') => fake.tables.hq_records.filter((r) => r.workspa
 
 let server = null;
 async function startServer() {
-  const child = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(PORT), HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), SUPABASE_URL: fake.url, SUPABASE_SECRET_KEY: fake.secretKey, HQ_SCHEDULER_MS: '15000', NO_PROXY: '127.0.0.1,localhost' }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(PORT), HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_FIXTURES: '1', SUPABASE_URL: fake.url, SUPABASE_SECRET_KEY: fake.secretKey, HQ_SCHEDULER_MS: '15000', NO_PROXY: '127.0.0.1,localhost' }, stdio: ['ignore', 'pipe', 'inherit'] });
   let out = '';
   await new Promise((res) => child.stdout.on('data', (d) => { out += d; if (/Shared workspace:/.test(out)) res(); }));
   server = { child, log: () => out };

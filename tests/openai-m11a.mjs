@@ -64,7 +64,7 @@ await new Promise((r) => stub.listen(STUB, '127.0.0.1', r));
 
 const server = spawn(process.execPath, ['server.js'], {
   cwd: ROOT,
-  env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(PORT), HQ_DATA_DIR: path.join(TMP, 'data'), HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_SCHEDULER_MS: '0', OPENAI_API_KEY: KEY, OPENAI_BASE_URL: `http://127.0.0.1:${STUB}/v1`, NO_PROXY: '127.0.0.1,localhost' },
+  env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(PORT), HQ_DATA_DIR: path.join(TMP, 'data'), HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_FIXTURES: '1', HQ_SCHEDULER_MS: '0', OPENAI_API_KEY: KEY, OPENAI_BASE_URL: `http://127.0.0.1:${STUB}/v1`, NO_PROXY: '127.0.0.1,localhost' },
   stdio: ['ignore', 'pipe', 'inherit'],
 });
 let serverLog = '';

@@ -4,7 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { BRAND } = require('./public/js/brand.js'); // shared brand palette and logo rules (ES module via require)
+const { BRAND } = require('./app/js/brand.js'); // shared brand palette and logo rules (ES module via require)
 const backendMod = require('./server/backend');
 const quill = require('./server/quill');
 const auth = require('./server/auth');
@@ -13,8 +13,10 @@ const storage = require('./server/storage');
 const scheduler = require('./server/scheduler');
 const ai = require('./server/openai');
 const { mockPng } = require('./server/mock-image');
+const gate = require('./server/gate');
+const modes = require('./server/modes');
 
-const ROOT = path.join(storage.APP_DIR, 'public');
+const ROOT = path.join(storage.APP_DIR, 'app');
 const PORT = Number(process.env.PORT) || 4173;
 const HOST = process.env.HOST || '127.0.0.1';
 const MAX_JSON = 4 * 1024 * 1024;
@@ -35,6 +37,12 @@ const TYPES = {
   '.mp4': 'video/mp4',
 };
 const SECURITY_HEADERS = { 'X-Robots-Tag': 'noindex, nofollow', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' };
+
+function sendHtml(res, status, html) {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...SECURITY_HEADERS });
+  res.end(html);
+}
+const UNAVAILABLE = { error: 'HQ can’t reach the workspace database (Supabase) right now. Nothing was changed: try again in a moment.', code: 'workspace_unavailable', retryable: true };
 
 function sendJson(res, status, obj, headers = {}) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...SECURITY_HEADERS, ...headers });
@@ -74,7 +82,9 @@ const deviceOf = (req) => (/^(phone|computer)$/.test(req.headers['x-hq-device'] 
 /** null if this request may run the configured AI provider; otherwise why not. */
 function paidGate(signedIn) {
   const p = quill.providerInfo().provider;
-  if (p === 'demo') return { status: 503, code: 'not_configured', error: 'Live AI isn’t set up on this server (no OPENAI_API_KEY). HQ uses its local demo templates.' };
+  if (p === 'demo') return auth.configured()
+    ? { status: 503, code: 'not_configured', retryable: true, error: 'Live AI isn’t set up on this server (no OPENAI_API_KEY in its settings), so nothing was generated. Add the key, then retry.' }
+    : { status: 503, code: 'not_configured', error: 'Live AI isn’t set up on this server (no OPENAI_API_KEY). HQ uses its local demo templates.' };
   if (p === 'openai' && !auth.configured()) return { status: 403, code: 'owner_signin_required', error: 'Live AI is switched off here: this server has no owner sign-in, so paid generation couldn’t be protected. Run HQ with HQ_OWNER_PASSWORD_HASH set and sign in, or use demo mode.' };
   if (auth.configured() && !signedIn) return { status: 401, code: 'signed_out', error: 'Sign in to the shared workspace to use live AI.' };
   return null;
@@ -85,7 +95,7 @@ function paidGate(signedIn) {
  */
 async function paid(req, res, signedIn, kind, fn, describe) {
   const gate = paidGate(signedIn);
-  if (gate) return sendJson(res, gate.status, { error: gate.error, code: gate.code, retryable: false });
+  if (gate) return sendJson(res, gate.status, { error: gate.error, code: gate.code, retryable: !!gate.retryable });
   let body;
   try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
   const live = quill.providerInfo().provider === 'openai';
@@ -134,11 +144,16 @@ async function prismImage(body) {
 async function handleApi(req, res, urlPath) {
   const method = req.method;
   if (method !== 'GET' && !sameOrigin(req)) return sendJson(res, 403, { error: 'Cross-origin requests are not allowed.' });
-  const signedIn = !!(await auth.session(req));
+  let signedIn;
+  try { signedIn = !!(req.hqSession || await auth.session(req)); } catch (e) {
+    console.error('[api] workspace store unreachable:', e.message);
+    return sendJson(res, 503, UNAVAILABLE);
+  }
 
   /* --- Sign-in --- */
   // HQ_TEST_DATE (YYYY-MM-DD) fixes "today" for offer and review checks in test workspaces.
-  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { authConfigured: auth.configured(), signedIn, storage: auth.configured() ? backendMod.store().kind : null, setupProblem: auth.misconfigured(), settings: { passwordHash: !!(process.env.HQ_OWNER_PASSWORD_HASH || '').trim(), supabase: backendMod.useSupabase(), openai: ai.hasKey() }, testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null, scheduler: !auth.configured() ? { runsOn: 'browser' } : backendMod.useSupabase() ? { runsOn: 'hosted', cron: 'nexai-hq-demo-scheduler', everyMs: 60000, now: Date.now() } : { runsOn: 'server', everyMs: schedulerEvery, now: scheduler.now(), testClock: scheduler.testClock() } });
+  if (urlPath === '/api/auth/status' && method === 'GET' && auth.configured() && !signedIn) return sendJson(res, 200, { authConfigured: true, private: true, signedIn: false });
+  if (urlPath === '/api/auth/status' && method === 'GET') return sendJson(res, 200, { ...modes.describe(signedIn), authConfigured: auth.configured(), signedIn, storage: auth.configured() ? backendMod.store().kind : null, setupProblem: auth.misconfigured(), settings: { passwordHash: !!(process.env.HQ_OWNER_PASSWORD_HASH || '').trim(), supabase: backendMod.useSupabase(), openai: ai.hasKey() }, testDate: /^\d{4}-\d{2}-\d{2}$/.test(process.env.HQ_TEST_DATE || '') ? process.env.HQ_TEST_DATE : null, scheduler: !auth.configured() ? { runsOn: 'browser' } : backendMod.useSupabase() ? { runsOn: 'hosted', cron: 'nexai-hq-demo-scheduler', everyMs: 60000, now: Date.now() } : { runsOn: 'server', everyMs: schedulerEvery, now: scheduler.now(), testClock: scheduler.testClock() } });
   if (urlPath === '/api/auth/login' && method === 'POST') {
     const body = await readJsonBody(req);
     const r = await auth.login(req, body.password, deviceOf(req));
@@ -177,7 +192,9 @@ async function handleApi(req, res, urlPath) {
     if (!auth.configured()) return sendJson(res, 503, { error: 'The shared workspace isn’t set up on this server.' });
     if (!signedIn) return sendJson(res, 401, { error: 'Sign in to the shared workspace.', code: 'signed_out' });
   }
-  /* --- Demo publishing (simulated accounts; the server runs due posts on its own timer too) --- */
+  /* --- Demo publishing (simulated accounts): isolated automated tests only (HQ_TEST_FIXTURES), never the owner's
+     hosted workspace, where nothing is sent until a real destination is connected (Milestone 14). --- */
+  if ((urlPath.startsWith('/api/publish') || urlPath.startsWith('/api/test/')) && !modes.fixtures()) return sendJson(res, 404, { error: 'Demo publishing and test controls aren’t available in this workspace.', code: 'not_available' });
   if (urlPath === '/api/publish/run' && method === 'POST') {
     const body = await readJsonBody(req);
     // Supabase workspaces: the hosted worker (Supabase Cron → hq-scheduler) is the only thing that sends posts.
@@ -210,7 +227,7 @@ async function handleApi(req, res, urlPath) {
   }
   if (m && method === 'PUT') {
     const body = await readJsonBody(req);
-    const out = await wsStore.putJob(m[1], body.baseRev, body.bundle, deviceOf(req));
+    const out = await wsStore.putJob(m[1], body.baseRev, body.bundle, deviceOf(req), { connected: Object.assign((platform) => !!modes.destinations()[platform]?.connected, { fixtures: modes.fixtures() }) });
     return sendJson(res, 200, out);
   }
   m = /^\/api\/workspace\/plans\/([a-z0-9_]+)$/.exec(urlPath);
@@ -282,14 +299,39 @@ async function handleApi(req, res, urlPath) {
   return sendJson(res, 404, { error: 'Not found' });
 }
 
+/**
+ * The private workspace's gate (Milestone 14). With owner sign-in set up, every request except the sign-in screen,
+ * its logo and the sign-in API needs a valid session: pages get the sign-in screen (at the same address, so the
+ * owner returns to it), files and API calls get 401. If the workspace store can't be reached the owner gets a clear
+ * connection error, never demo data. Without sign-in set up (a public preview) HQ runs its browser demo as before.
+ */
+async function gateRequest(req, res, urlPath) {
+  if (!auth.configured() || gate.isPublic(urlPath)) return true;
+  let s;
+  try { s = await auth.session(req); } catch (e) {
+    console.error('[gate] workspace store unreachable:', e.message);
+    if (urlPath.startsWith('/api/')) sendJson(res, 503, UNAVAILABLE);
+    else if (gate.wantsPage(req, urlPath)) sendHtml(res, 503, gate.unavailablePage());
+    else { res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...SECURITY_HEADERS }); res.end('Workspace unavailable'); }
+    return false;
+  }
+  if (s) { req.hqSession = s; return true; }
+  if (urlPath.startsWith('/api/')) sendJson(res, 401, { error: 'Sign in to the shared workspace.', code: 'signed_out' });
+  else if (gate.wantsPage(req, urlPath)) sendHtml(res, 200, gate.signInPage());
+  else { res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...SECURITY_HEADERS }); res.end('Sign in required'); }
+  return false;
+}
+
 http
-  .createServer((req, res) => {
-    const urlPath = decodeURIComponent(req.url.split('?')[0]);
+  .createServer(async (req, res) => {
+    let urlPath;
+    try { urlPath = decodeURIComponent(req.url.split('?')[0]); } catch { res.writeHead(400).end('Bad request'); return; }
+    if (!(await gateRequest(req, res, urlPath).catch((e) => { console.error('[gate] error:', e.message); sendJson(res, 500, { error: 'Server error' }); return false; }))) return;
     if (urlPath.startsWith('/api/')) {
       handleApi(req, res, urlPath).catch((e) => {
         const status = e.status || 500;
         if (status >= 500) console.error('[api] error:', e.message);
-        sendJson(res, status, { error: e.message || 'Server error', ...(e.current !== undefined ? { current: e.current } : {}) });
+        sendJson(res, status, { error: e.message || 'Server error', ...(e.code ? { code: e.code } : {}), ...(e.current !== undefined ? { current: e.current } : {}) });
       });
       return;
     }

@@ -45,7 +45,7 @@ function start(port, env) {
   const child = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(port), ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
   return new Promise((res) => { let o = ''; child.stdout.on('data', (d) => { o += d; if (/Shared workspace: (on|off)/.test(o)) res(child); }); });
 }
-const server = await start(PORT, { HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '300', HQ_TEST_CLOCK: '1', HQ_SCHEDULER_MS: '1000' });
+const server = await start(PORT, { HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_FIXTURES: '1', QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '300', HQ_TEST_CLOCK: '1', HQ_SCHEDULER_MS: '1000' });
 const demo = await start(4183, {});
 
 async function signIn(page) {

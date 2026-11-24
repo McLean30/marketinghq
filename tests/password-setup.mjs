@@ -50,7 +50,7 @@ try {
 
   console.log('\n== Sign in with it ==');
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'hq-pw-'));
-  const shared = await start(4217, { HQ_OWNER_PASSWORD_HASH: hash, HQ_DATA_DIR: data, HQ_SCHEDULER_MS: '0' });
+  const shared = await start(4217, { HQ_OWNER_PASSWORD_HASH: hash, HQ_TEST_FIXTURES: '1', HQ_DATA_DIR: data, HQ_SCHEDULER_MS: '0' });
   servers.push(shared);
   assert(/Shared workspace: on/.test(shared.log()), 'Server accepts the hash and turns the shared workspace on');
   const p2 = await browser.newPage();
@@ -58,15 +58,16 @@ try {
   await p2.waitForSelector('#ws-password');
   await p2.fill('#ws-password', 'wrong password here');
   await p2.click('#signin-form button[type=submit]');
-  await p2.waitForSelector('#signin-error:not([hidden])');
-  assert(/isn’t right/.test(await p2.textContent('#signin-error')), 'A wrong password is refused');
+  // Milestone 14: the server's sign-in screen (shown before anything else) reports the refusal.
+  await p2.waitForFunction(() => /isn’t right/.test(document.getElementById('gate-msg')?.textContent || ''));
+  assert(true, 'A wrong password is refused');
   await p2.fill('#ws-password', PASSWORD);
   await p2.click('#signin-form button[type=submit]');
   await p2.waitForFunction(() => document.getElementById('ws-pill')?.textContent === 'Shared workspace', null, { timeout: 15000 });
   assert(true, 'The owner signs in with the password behind the browser-made hash');
 
   console.log('\n== Vercel without Supabase stays in demo mode ==');
-  const vercel = await start(4218, { HQ_OWNER_PASSWORD_HASH: hash, VERCEL: '1', HQ_SCHEDULER_MS: '0' });
+  const vercel = await start(4218, { HQ_OWNER_PASSWORD_HASH: hash, HQ_TEST_FIXTURES: '1', VERCEL: '1', HQ_SCHEDULER_MS: '0' });
   servers.push(vercel);
   const st = await (await fetch('http://127.0.0.1:4218/api/auth/status')).json();
   assert(!st.authConfigured && /SUPABASE_URL/.test(st.setupProblem || ''), 'A hash alone on Vercel (read-only disk) keeps HQ in demo mode and says Supabase is needed');

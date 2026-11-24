@@ -1,6 +1,6 @@
 // Milestone 10 acceptance: Cue, the Video Creator. Real browser rendering, no paid services, simulated publishing.
 // No real JobTrack Pro footage is in the repository, so this uses the clearly labelled SAMPLE recording
-// (public/samples/, an illustrative mock-up with a red banner on every frame) through the normal upload control.
+// (app/samples/, an illustrative mock-up with a red banner on every frame) through the normal upload control.
 //
 // Shared workspace on :4185 (mock captions, test clock) and browser demo mode on :4186:
 //   1. HQ shows six agents; Cue's card and workspace open
@@ -31,7 +31,7 @@ const BASE = `http://127.0.0.1:${PORT}/`;
 const DEMO = 'http://127.0.0.1:4186/';
 const OUT = path.join(ROOT, 'tests', 'screenshots');
 const PREVIEWS = path.join(ROOT, 'design', 'previews');
-const SAMPLE = path.join(ROOT, 'public', 'samples', 'sample-receipt-recording.mp4');
+const SAMPLE = path.join(ROOT, 'app', 'samples', 'sample-receipt-recording.mp4');
 const PASSWORD = `test-owner-${crypto.randomBytes(6).toString('hex')}`;
 const BRIEF = 'Create a 20-second LinkedIn walkthrough for a UK maintenance director showing how an engineer records a receipt in JobTrack Pro. Show the step on screen, explain why it helps the office, and finish with one practical takeaway.';
 fs.mkdirSync(OUT, { recursive: true });
@@ -41,7 +41,7 @@ function start(port, env) {
   const child = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(port), ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
   return new Promise((res) => { let o = ''; child.stdout.on('data', (d) => { o += d; if (/Shared workspace: (on|off)/.test(o)) res(child); }); });
 }
-const server = await start(PORT, { HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '300', HQ_TEST_CLOCK: '1', HQ_SCHEDULER_MS: '1000' });
+const server = await start(PORT, { HQ_DATA_DIR: DATA, HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_FIXTURES: '1', QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '300', HQ_TEST_CLOCK: '1', HQ_SCHEDULER_MS: '1000' });
 const demo = await start(4186, {});
 
 async function signIn(page) {

@@ -1,6 +1,6 @@
 // Nexai HQ hosted demo scheduler: one run checks for due posts and sends a bounded batch through the demo publisher.
 // Runs in the Supabase Edge Function (index.ts, called every minute by Supabase Cron) and in Node tests. Uses only
-// fetch and the shared publishing rules (shared/*.js are exact copies of public/js, kept in sync by
+// fetch and the shared publishing rules (shared/*.js are exact copies of app/js, kept in sync by
 // `npm run worker:sync` and checked by the tests), so the browser, the HQ server and this worker apply one set of rules.
 import * as PB from './shared/publishing.js';
 

@@ -166,8 +166,9 @@ textarea:focus, input:focus, select:focus { border-color: var(--cyan); outline: 
 .hist-item { border: 1px solid var(--line); border-radius: 10px; padding: 0 12px 6px; background: var(--navy); }
 .hist-v { font-family: var(--display); color: var(--cyan); }
 .notes { margin: 6px 0 10px; padding-left: 20px; color: var(--muted); }
+/* In the page flow, not pinned over it: a pinned bar covered Generate image and Upload photo on phones (M14). */
 .approve-bar {
-  position: sticky; bottom: 12px; z-index: 10; margin-top: 18px;
+  position: relative; z-index: 1; margin-top: 18px;
   display: flex; gap: 16px; align-items: center; justify-content: space-between;
   padding: 14px 18px; border-radius: 18px; border: 1px solid var(--cyan);
   background: rgba(4, 10, 22, .95); backdrop-filter: blur(8px);
@@ -892,3 +893,12 @@ html[data-motion="off"] .handoff path.pulse { stroke-dasharray: none; stroke-wid
 .cat-chip blockquote { margin: .4rem 0; padding-left: .75rem; border-left: 3px solid var(--cyan); }
 @media (max-width: 480px) { .cat-modules { margin-left: .25rem; padding-left: .5rem; } }
 @media (max-width: 560px) { .cat-fields .pf-inline { display: grid; grid-template-columns: 1fr; gap: .35rem; } .cat-fields .pf-inline > * { width: 100%; } }
+
+/* ---------- Private workspace (Milestone 14) ---------- */
+.needed-box { border: 1px dashed var(--cyan); border-radius: 14px; padding: 12px 14px; margin: 4px 0 10px; background: rgba(63, 169, 255, .06); }
+.needed-box p { margin: 0; }
+.demo-tag.legacy { border-color: var(--warn); color: var(--warn); }
+.tag-legacy { border-color: var(--warn); color: var(--warn); }
+.status-banner { margin: 0 0 16px; }
+.dest-state { margin: 8px 0; }
+.quill-mode.warn { border-color: var(--warn); }

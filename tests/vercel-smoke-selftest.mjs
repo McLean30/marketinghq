@@ -7,8 +7,11 @@ import { spawn, execFileSync } from 'child_process';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+import { createRequire } from 'module';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const require = createRequire(import.meta.url);
 const assert = (c, m) => { if (!c) throw new Error(`FAIL: ${m}`); console.log(`  ok  ${m}`); };
 
 function run(url, extra = {}) {
@@ -26,21 +29,21 @@ function stub(port, handler) {
 // The real app under preview conditions (no settings, read-only filesystem).
 const app = spawn(process.execPath, ['-r', path.join(ROOT, 'tests', 'helpers', 'readonly-fs.cjs'), path.join(ROOT, 'server.js')], { env: { PATH: process.env.PATH, PORT: '4197' }, stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise((res) => app.stdout.on('data', (d) => /running at/.test(d) && res()));
-const indexHtml = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+const indexHtml = fs.readFileSync(path.join(ROOT, 'app', 'index.html'), 'utf8');
 const stubs = [
   await stub(4198, (req, res) => { res.writeHead(500, { 'content-type': 'text/plain' }); res.end('A server error has occurred\n\nFUNCTION_INVOCATION_FAILED\n'); }), // crashed function
   await stub(4199, (req, res) => { res.writeHead(401, { 'content-type': 'text/html' }); res.end('<title>Login – Vercel</title><h1>Vercel Authentication</h1><p>Log in to Vercel to continue.</p>'); }), // protection
   await stub(4201, (req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html><title>Nexai Marketing HQ</title><main id="main"></main>'); }), // blank app
-  // Vercel's 404 for "/": static files exist, but the function can't find public/index.html.
+  // Vercel's 404 for "/": static files exist, but the function can't find app/index.html.
   await stub(4203, (req, res) => {
-    const file = path.join(ROOT, 'public', req.url === '/' ? '__none__' : req.url.split('?')[0]);
+    const file = path.join(ROOT, 'app', req.url === '/' ? '__none__' : req.url.split('?')[0]);
     if (req.url !== '/' && fs.existsSync(file) && fs.statSync(file).isFile()) { res.writeHead(200); res.end(fs.readFileSync(file)); return; }
     res.writeHead(404, { 'content-type': 'text/plain' }); res.end('Not found');
   }),
   // A catch-all that answers every path (including /api/*) with the homepage.
   await stub(4204, (req, res) => {
     const p = req.url.split('?')[0];
-    const file = path.join(ROOT, 'public', p === '/' ? 'index.html' : p);
+    const file = path.join(ROOT, 'app', p === '/' ? 'index.html' : p);
     const types = { '.js': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.json': 'application/json', '.html': 'text/html' };
     if (fs.existsSync(file) && fs.statSync(file).isFile()) { res.writeHead(200, { 'content-type': types[path.extname(file)] || 'application/octet-stream' }); res.end(fs.readFileSync(file)); return; }
     if (p.startsWith('/api/auth/status')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"authConfigured":false,"signedIn":false}'); return; }
@@ -71,8 +74,16 @@ const stubs = [
     if (req.url.startsWith('/api/quill/status')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"provider":"openai","model":"gpt-6-luna"}'); return; }
     fetch(`http://127.0.0.1:4197${req.url}`).then(async (r) => { res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || '' }); res.end(Buffer.from(await r.arrayBuffer())); });
   }),
+  await stub(4220, (req, res) => { // a private workspace that leaks the app's script before sign-in
+    const src = req.url.startsWith('/js/app.js') ? 4197 : 4219;
+    fetch(`http://127.0.0.1:${src}${req.url}`, { headers: { accept: req.headers.accept || '*/*' } }).then(async (r) => { res.writeHead(r.status, { 'content-type': r.headers.get('content-type') || '' }); res.end(Buffer.from(await r.arrayBuffer())); });
+  }),
   await stub(4202, (req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(indexHtml.replace('<script type="module" src="js/app.js"></script>', '<script>throw new Error("Startup exploded")</script>')); }), // startup error
 ];
+// A private workspace: owner sign-in set up (file store in a temporary folder), as a Preview with the owner's settings.
+const PRIV_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hq-smoke-priv-'));
+const priv = spawn(process.execPath, [path.join(ROOT, 'server.js')], { env: { PATH: process.env.PATH, PORT: '4219', HQ_DATA_DIR: PRIV_DIR, HQ_OWNER_PASSWORD_HASH: require('../server/auth').hashPassword('smoke-test-password-1'), HQ_SCHEDULER_MS: '0', VERCEL_GIT_COMMIT_SHA: 'a'.repeat(40) }, stdio: ['ignore', 'pipe', 'inherit'] });
+await new Promise((res) => priv.stdout.on('data', (d) => { if (/running at/.test(d)) res(); }));
 try {
   console.log('\n== Smoke test verdicts against local stand-ins ==');
   let r = await run('http://127.0.0.1:4197/', { EXPECT_REVIEWER: '1', EXPECT_PUBLISHING: '1', EXPECT_ANALYST: '1', EXPECT_VIDEO: '1', EXPECT_OPENAI: '1', EXPECT_SCHEDULING: '1', EXPECT_CATALOGUE: '1', EXPECT_SHA: 'a'.repeat(40) });
@@ -101,8 +112,15 @@ try {
   assert(r.code === 1 && /data\/profile-seed\.json returned 404/.test(r.out), 'Starting business profile missing from the deployment → fail');
   r = await run('');
   assert(r.code === 2, 'No preview URL → blocked, not pass');
+  // Milestone 14: a private workspace (owner sign-in set up) passes only if sign-in comes first and nothing leaks.
+  r = await run('http://127.0.0.1:4219/', { EXPECT_SHA: 'a'.repeat(40), EXPECT_REVIEWER: '1', EXPECT_PUBLISHING: '1', EXPECT_CATALOGUE: '1' });
+  assert(r.code === 0 && /Private workspace on the preview/.test(r.out) && /all refused \(401\)/.test(r.out), 'Private workspace: sign-in first everywhere, nothing served before sign-in → pass');
+  r = await run('http://127.0.0.1:4220/');
+  assert(r.code === 1 && /GET \/js\/app\.js returned 200 instead of 401/.test(r.out), 'Private workspace that serves the app’s scripts before sign-in → fail');
   console.log('\nSmoke test self-check passed.');
 } finally {
+  priv.kill();
+  fs.rmSync(PRIV_DIR, { recursive: true, force: true });
   app.kill();
   for (const s of stubs) s.close();
 }

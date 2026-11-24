@@ -1,6 +1,6 @@
 // Builds the app with the Vercel CLI (framework preset "node", the same zero-config build Vercel runs for this
 // repository) from a copy of the Git-tracked files only, then checks the build output:
-//   - the server function carries public/index.html, the app scripts, styles, character art and the profile seed
+//   - the server function carries app/index.html, the app scripts, styles, character art and the profile seed
 //     (Vercel sends "/" and every unmatched path to the function, so without them GET / is a 404);
 //   - the built function boots on a read-only filesystem with no settings and answers
 //     GET / and GET /index.html with HQ, serves an asset, and keeps unknown /api routes as JSON errors.
@@ -28,7 +28,7 @@ try {
     fs.mkdirSync(path.dirname(path.join(src, f)), { recursive: true });
     fs.copyFileSync(path.join(ROOT, f), path.join(src, f));
   }
-  assert(files.includes('public/data/profile-seed.json'), 'The starting business profile is tracked in Git (not hidden by .gitignore)');
+  assert(files.includes('app/data/profile-seed.json'), 'The starting business profile is tracked in Git (not hidden by .gitignore)');
   fs.cpSync(path.join(ROOT, 'node_modules'), path.join(src, 'node_modules'), { recursive: true, verbatimSymlinks: true });
   fs.mkdirSync(path.join(src, '.vercel'));
   fs.writeFileSync(path.join(src, '.vercel', 'project.json'), JSON.stringify({ projectId: 'prj_local', orgId: 'team_local', settings: { framework: 'node', buildCommand: null, outputDirectory: null, installCommand: null, rootDirectory: null, nodeVersion: '22.x' } }));
@@ -38,10 +38,12 @@ try {
   const routes = JSON.parse(fs.readFileSync(path.join(out, 'config.json'), 'utf8')).routes || [];
   assert(routes.some((r) => r.dest === '/' || r.dest === '/index'), 'Unmatched paths, including "/", are routed to the server function');
   const map = cfg.filePathMap || {};
-  const need = ['public/index.html', 'public/js/app.js', 'public/js/store.js', 'public/css/app.css', 'public/assets/agents/vektor.webp', 'public/assets/agents/calibre.webp', 'public/assets/agents/vantage.webp', 'public/assets/agents/cue.webp', 'public/data/profile-seed.json'];
+  const need = ['app/index.html', 'app/js/app.js', 'app/js/store.js', 'app/css/app.css', 'app/assets/agents/vektor.webp', 'app/assets/agents/calibre.webp', 'app/assets/agents/vantage.webp', 'app/assets/agents/cue.webp', 'app/data/profile-seed.json'];
   const missing = need.filter((f) => !map[f] && !fs.existsSync(path.join(out, 'functions', 'index.func', f)));
   assert(!missing.length, `The server function includes HQ's page and files${missing.length ? ` (missing: ${missing.join(', ')})` : ''}`);
-  assert(fs.existsSync(path.join(out, 'static', 'index.html')), 'Static copy of public/ is present too');
+  // HQ is private: nothing is published as a static file Vercel would serve without asking the server (sign-in).
+  const staticFiles = fs.existsSync(path.join(out, 'static')) ? fs.readdirSync(path.join(out, 'static'), { recursive: true }).filter((f) => fs.statSync(path.join(out, 'static', f)).isFile()) : [];
+  assert(!staticFiles.length, `No static copy of HQ's pages or files (every request goes through the server)${staticFiles.length ? `: ${staticFiles.slice(0, 5).join(', ')}` : ''}`);
 
   // Lay the function out as it runs on Vercel: its own files plus every file in filePathMap.
   fs.cpSync(path.join(out, 'functions', 'index.func'), fn, { recursive: true });

@@ -25,7 +25,7 @@ You (phone)   ── Calendar ─►  one entry on the right UK day: Published (
 | Piece | Location |
 | --- | --- |
 | Migrations (versioned) | `supabase/migrations/20261124000000_hq_shared_workspace.sql`, `supabase/migrations/20261124130000_hq_hosted_scheduler.sql` |
-| Worker | `supabase/functions/hq-scheduler/` (`index.ts` checks the credential; `worker.js` does the run; `shared/` are copies of `public/js` rules made by `npm run worker:sync`) |
+| Worker | `supabase/functions/hq-scheduler/` (`index.ts` checks the credential; `worker.js` does the run; `shared/` are copies of `app/js` rules made by `npm run worker:sync`) |
 | Cron job | `nexai-hq-demo-scheduler`, `* * * * *`, created by `select * from public.hq_scheduler_setup('https://<ref>.supabase.co');` |
 | Worker credential | Supabase Vault secret `hq_worker_secret` (random, made inside the database; nobody sees it). The cron job reads it; the function asks the database (`hq_worker_secret_ok`) whether a caller's value matches. |
 | Which workspaces it schedules | `public.hq_scheduler_workspaces` (opt-in) |

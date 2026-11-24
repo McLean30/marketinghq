@@ -1,7 +1,7 @@
 """Build clean character artwork from the approved HQ mockup (design/approved-hq-mockup.png).
 
 Crops each character card inside its border, removes the baked-in UI text (names, roles, status, chevrons)
-by inpainting, and writes optimised WebP files to public/assets/agents/. Live UI text is drawn over the
+by inpainting, and writes optimised WebP files to app/assets/agents/. Live UI text is drawn over the
 cleared areas by the app. Requires: pip install pillow opencv-python-headless (build-time only).
 Usage: python3 tools/make-agent-art.py [path/to/mockup.png]
 """

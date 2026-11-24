@@ -11,6 +11,8 @@ export async function loadSeed() {
   return JSON.parse(JSON.stringify(SEED));
 }
 
+/** The same JSON whatever its key order (Supabase's jsonb returns keys in its own order). */
+export const canon = (x) => JSON.stringify(x, (k, v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v));
 export const norm = (s) => String(s || '').toLowerCase().replace(/[’']/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
 
 /** An offer counts as live on `date` only if it's marked active and the date is inside its window. */
@@ -31,7 +33,7 @@ export const FIELD_LABEL = {
 
 export function changedFields(a, b) {
   const out = [];
-  const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  const same = (x, y) => canon(x) === canon(y);
   for (const k of ['services', 'audience', 'proof', 'cta', 'offers', 'writing']) if (!same(a?.[k], b?.[k])) out.push(k);
   for (const k of ['language', 'linkedinHashtags', 'imagery', 'logoRule']) if (!same(a?.brand?.[k], b?.brand?.[k])) out.push(`brand.${k}`);
   return out;
@@ -52,7 +54,7 @@ export function profileImpact({ caption, platform, refData, curData, refId, curI
       if (!o.wording || !text.includes(norm(o.wording)) || out.some((x) => x.offerId === o.id)) continue;
       const before = (refData.offers || []).find((x) => x.id === o.id);
       const after = (curData.offers || []).find((x) => x.id === o.id);
-      if (JSON.stringify(before) === JSON.stringify(after)) continue;
+      if (canon(before) === canon(after)) continue;
       const st = after ? offerState(after, date) : { live: false, why: 'it was removed from the profile' };
       out.push({ field: 'Offers', offerId: o.id, text: `The offer “${o.wording}” changed in ${curId}${st.live ? '' : `: ${st.why}`}. This post quotes it.` });
     }
@@ -63,7 +65,7 @@ export function profileImpact({ caption, platform, refData, curData, refId, curI
   if (fields.includes('proof')) {
     for (const p of curData.proof || []) {
       const old = (refData.proof || []).find((x) => x.id === p.id);
-      if (text.includes(norm(p.name)) && JSON.stringify(old) !== JSON.stringify(p)) out.push({ field: 'Proof', text: `${p.name}’s approved claims or link changed in ${curId}. This post mentions ${p.name}.` });
+      if (text.includes(norm(p.name)) && canon(old) !== canon(p)) out.push({ field: 'Proof', text: `${p.name}’s approved claims or link changed in ${curId}. This post mentions ${p.name}.` });
     }
   }
   if (fields.includes('services')) {

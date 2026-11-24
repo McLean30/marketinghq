@@ -23,7 +23,7 @@ fs.mkdirSync(TMP, { recursive: true });
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
 const { hashPassword } = require('../server/auth');
-const { DEFAULT_VOICE } = await import('../public/js/voice.js');
+const { DEFAULT_VOICE } = await import('../app/js/voice.js');
 
 const BASE = 'http://127.0.0.1:4187/';
 const DEMO = 'http://127.0.0.1:4188/';
@@ -39,7 +39,7 @@ function start(port, env) {
   const child = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(port), ...env }, stdio: ['ignore', 'pipe', 'inherit'] });
   return new Promise((res) => { let o = ''; child.stdout.on('data', (d) => { o += d; if (/Shared workspace: (on|off)/.test(o)) res(child); }); });
 }
-const shared = await start(4187, { HQ_DATA_DIR: path.join(TMP, 'shared'), HQ_OWNER_PASSWORD_HASH: HASH, QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '300', HQ_SCHEDULER_MS: '0' });
+const shared = await start(4187, { HQ_DATA_DIR: path.join(TMP, 'shared'), HQ_OWNER_PASSWORD_HASH: HASH, HQ_TEST_FIXTURES: '1', QUILL_PROVIDER: 'mock', QUILL_MOCK_DELAY_MS: '300', HQ_SCHEDULER_MS: '0' });
 const demo = await start(4188, {});
 const servers = [shared, demo];
 
@@ -272,7 +272,7 @@ try {
 
   console.log('\n== 4. Existing customised profiles survive the update ==');
   // Shared workspace saved before the update: a customised profile without the voice field.
-  const seed = JSON.parse(fs.readFileSync(path.join(ROOT, 'public', 'data', 'profile-seed.json'), 'utf8'));
+  const seed = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'data', 'profile-seed.json'), 'utf8'));
   delete seed.writing.voice;
   const custom = JSON.parse(JSON.stringify(seed));
   custom.audience.summary = 'Custom: FM directors across the North West';
@@ -283,7 +283,7 @@ try {
   const oldDir = path.join(TMP, 'old');
   fs.mkdirSync(oldDir, { recursive: true });
   fs.writeFileSync(path.join(oldDir, 'workspace.json'), JSON.stringify(old));
-  let mig = await start(4189, { HQ_DATA_DIR: oldDir, HQ_OWNER_PASSWORD_HASH: HASH, QUILL_PROVIDER: 'mock', HQ_SCHEDULER_MS: '0' });
+  let mig = await start(4189, { HQ_DATA_DIR: oldDir, HQ_OWNER_PASSWORD_HASH: HASH, HQ_TEST_FIXTURES: '1', QUILL_PROVIDER: 'mock', HQ_SCHEDULER_MS: '0' });
   servers.push(mig);
   const mctx = await browser.newContext();
   const mp = await mctx.newPage();
@@ -303,7 +303,7 @@ try {
   edited.profile.versions.push({ id: 'pv4-cccccc', n: 4, savedAt: 4, savedBy: 'computer', data: ev });
   edited.profile.rev += 1;
   fs.writeFileSync(path.join(oldDir, 'workspace.json'), JSON.stringify(edited));
-  mig = await start(4189, { HQ_DATA_DIR: oldDir, HQ_OWNER_PASSWORD_HASH: HASH, QUILL_PROVIDER: 'mock', HQ_SCHEDULER_MS: '0' });
+  mig = await start(4189, { HQ_DATA_DIR: oldDir, HQ_OWNER_PASSWORD_HASH: HASH, HQ_TEST_FIXTURES: '1', QUILL_PROVIDER: 'mock', HQ_SCHEDULER_MS: '0' });
   servers.push(mig);
   await signIn(mp, 'http://127.0.0.1:4189/');
   await mp.reload(); // the file was edited by hand while the server was stopped (no revision bump), so load afresh

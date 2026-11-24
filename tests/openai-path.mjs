@@ -84,7 +84,7 @@ try {
   open.child.kill();
 
   console.log('\n== Owner sign-in configured ==');
-  const app = startApp({ HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD) }, APP_PORT);
+  const app = startApp({ HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_FIXTURES: '1' }, APP_PORT);
   results.push(app);
   assert((await app.ready) === 'ready', 'Server starts');
   assert(/gpt-6-luna/.test(app.output()) && !app.output().includes(KEY), 'Start-up log names gpt-6-luna and never prints the key');
@@ -196,7 +196,7 @@ try {
   app.child.kill();
 
   console.log('\n== Model settings ==');
-  const alt = startApp({ HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), OPENAI_TEXT_MODEL: 'gpt-6-luna-mini', OPENAI_IMAGE_MODEL: 'gpt-image-2.6-sunburst', OPENAI_REASONING_EFFORT: 'medium' }, APP_PORT + 1);
+  const alt = startApp({ HQ_OWNER_PASSWORD_HASH: hashPassword(PASSWORD), HQ_TEST_FIXTURES: '1', OPENAI_TEXT_MODEL: 'gpt-6-luna-mini', OPENAI_IMAGE_MODEL: 'gpt-image-2.6-sunburst', OPENAI_REASONING_EFFORT: 'medium' }, APP_PORT + 1);
   assert((await alt.ready) === 'ready' && /gpt-6-luna-mini/.test(alt.output()), 'OPENAI_TEXT_MODEL / OPENAI_IMAGE_MODEL / OPENAI_REASONING_EFFORT override the defaults');
   alt.child.kill();
   const bad = startApp({ OPENAI_REASONING_EFFORT: 'extreme' }, APP_PORT + 2);

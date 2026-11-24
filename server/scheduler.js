@@ -1,7 +1,7 @@
 // Shared workspace only: the HQ server's demo scheduler and simulated publisher.
 // While this server process runs, it checks the workspace every HQ_SCHEDULER_MS (default 15 s) and sends due demo
 // posts to the simulated publisher, with or without any device open. Nothing reaches a real platform.
-// The publishing rules are the same module the browser uses (public/js/publishing.js), loaded on first use so a demo
+// The publishing rules are the same module the browser uses (app/js/publishing.js), loaded on first use so a demo
 // deployment with no shared workspace never touches it or the data folder.
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -9,7 +9,7 @@ const storage = require('./storage');
 const wsStore = require('./workspace');
 
 let lib = null;
-const load = async () => (lib ??= await import(pathToFileURL(path.join(storage.APP_DIR, 'public', 'js', 'publishing.js')).href));
+const load = async () => (lib ??= await import(pathToFileURL(path.join(storage.APP_DIR, 'app', 'js', 'publishing.js')).href));
 
 /* ---------- Clock (HQ_TEST_CLOCK=1 lets tests move it forward) ---------- */
 let offset = 0;

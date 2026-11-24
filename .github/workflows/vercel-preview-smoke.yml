@@ -154,13 +154,13 @@ jobs:
         env:
           SHA: ${{ steps.dep.outputs.sha }}
         run: |
-          if git cat-file -e "${SHA}:public/js/review.js" 2>/dev/null; then echo "reviewer=1" >> "$GITHUB_OUTPUT"; else echo "reviewer=0" >> "$GITHUB_OUTPUT"; fi
-          if git cat-file -e "${SHA}:public/js/publishing.js" 2>/dev/null; then echo "publishing=1" >> "$GITHUB_OUTPUT"; else echo "publishing=0" >> "$GITHUB_OUTPUT"; fi
-          if git cat-file -e "${SHA}:public/js/analytics.js" 2>/dev/null; then echo "analyst=1" >> "$GITHUB_OUTPUT"; else echo "analyst=0" >> "$GITHUB_OUTPUT"; fi
-          if git cat-file -e "${SHA}:public/js/video.js" 2>/dev/null; then echo "video=1" >> "$GITHUB_OUTPUT"; else echo "video=0" >> "$GITHUB_OUTPUT"; fi
+          if git cat-file -e "${SHA}:app/js/review.js" 2>/dev/null; then echo "reviewer=1" >> "$GITHUB_OUTPUT"; else echo "reviewer=0" >> "$GITHUB_OUTPUT"; fi
+          if git cat-file -e "${SHA}:app/js/publishing.js" 2>/dev/null; then echo "publishing=1" >> "$GITHUB_OUTPUT"; else echo "publishing=0" >> "$GITHUB_OUTPUT"; fi
+          if git cat-file -e "${SHA}:app/js/analytics.js" 2>/dev/null; then echo "analyst=1" >> "$GITHUB_OUTPUT"; else echo "analyst=0" >> "$GITHUB_OUTPUT"; fi
+          if git cat-file -e "${SHA}:app/js/video.js" 2>/dev/null; then echo "video=1" >> "$GITHUB_OUTPUT"; else echo "video=0" >> "$GITHUB_OUTPUT"; fi
           if git cat-file -e "${SHA}:server/openai.js" 2>/dev/null; then echo "openai=1" >> "$GITHUB_OUTPUT"; else echo "openai=0" >> "$GITHUB_OUTPUT"; fi
           if git cat-file -e "${SHA}:supabase/functions/hq-scheduler/worker.js" 2>/dev/null; then echo "scheduling=1" >> "$GITHUB_OUTPUT"; else echo "scheduling=0" >> "$GITHUB_OUTPUT"; fi
-          if git cat-file -e "${SHA}:public/js/catalogue.js" 2>/dev/null; then echo "catalogue=1" >> "$GITHUB_OUTPUT"; else echo "catalogue=0" >> "$GITHUB_OUTPUT"; fi
+          if git cat-file -e "${SHA}:app/js/catalogue.js" 2>/dev/null; then echo "catalogue=1" >> "$GITHUB_OUTPUT"; else echo "catalogue=0" >> "$GITHUB_OUTPUT"; fi
 
       - uses: actions/setup-node@v4
         if: steps.dep.outputs.state == 'success'

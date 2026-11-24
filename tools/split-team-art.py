@@ -11,5 +11,5 @@ W, H = 446, 695
 for name, (x0, x1) in {'calibre': (0, 510), 'vantage': (514, 1022), 'cue': (1026, 1536)}.items():
     h = round((x1 - x0) * H / W)
     out = src.crop((x0, 0, x1, h)).resize((W, H), Image.LANCZOS)
-    out.save(os.path.join(ROOT, 'public', 'assets', 'agents', f'{name}.webp'), 'WEBP', quality=84, method=6)
-    print(name, os.path.getsize(os.path.join(ROOT, 'public', 'assets', 'agents', f'{name}.webp')) // 1024, 'KB')
+    out.save(os.path.join(ROOT, 'app', 'assets', 'agents', f'{name}.webp'), 'WEBP', quality=84, method=6)
+    print(name, os.path.getsize(os.path.join(ROOT, 'app', 'assets', 'agents', f'{name}.webp')) // 1024, 'KB')

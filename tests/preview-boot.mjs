@@ -78,7 +78,7 @@ try {
   fs.mkdirSync(outDir, { recursive: true });
   execFileSync('npx', ['--yes', 'esbuild@0.24.2', path.join(APP, 'server.js'), '--bundle', '--platform=node', '--format=cjs', '--target=node18', `--outfile=${path.join(outDir, 'server.cjs')}`, '--log-level=warning'], { cwd: ROOT, stdio: 'pipe', timeout: 120000 });
   // Mirror a deployment: the bundle plus the static files next to it.
-  fs.cpSync(path.join(APP, 'public'), path.join(outDir, 'public'), { recursive: true });
+  fs.cpSync(path.join(APP, 'app'), path.join(outDir, 'app'), { recursive: true });
   bundled = path.join(outDir, 'server.cjs');
 } catch (e) {
   console.log(`\n(skipped bundled build: esbuild unavailable: ${String(e.message).split('\n')[0]})`);
