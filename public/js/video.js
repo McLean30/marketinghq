@@ -94,7 +94,14 @@ export function templateStoryboard(job, clip) {
   const d = clip?.duration || 20;
   const receipt = /\breceipt/i.test(brief);
   const product = /jobtrack/i.test(brief) ? 'JobTrack Pro' : 'the job app';
-  const scenes = receipt ? [
+  const it = job.catalogue?.items?.[0] || null;
+  const short = (x, n = 90) => { const m = String(x || '').split(/(?<=[.!?])\s/)[0]; return m.length > n ? `${m.slice(0, n - 1)}…` : m; };
+  const scenes = it ? [
+    { title: 'Hook', duration: 4, footage: true, from: 0, caption: short(it.problem || it.wording), script: 'Open on the everyday problem, in the founder’s own words.' },
+    { title: 'What we’re building', duration: 7, footage: true, from: d * 0.15, caption: short(it.wording), script: `${it.name ? `Name it as ${it.name}.` : 'Describe it without naming it.'} Approved public wording only.` },
+    { title: 'Where we’re heading', duration: 6, footage: true, from: d * 0.5, caption: short(it.outcome), script: it.status === 'available' ? 'Show what it does in practice.' : 'Work in progress: the outcome we’re aiming for, no results claimed.' },
+    { title: 'Takeaway', duration: 3, footage: true, from: d * 0.8, caption: it.status === 'available' ? 'Message us if this sounds familiar.' : 'Work in progress. Tell us how you handle it.', script: 'A soft invitation to comment or message. No hard sell.' },
+  ] : receipt ? [
     { title: 'Hook', duration: 4, footage: true, from: 0, caption: 'Receipts get lost between site and office.', script: 'Open on the job screen. Set up the problem the director recognises.' },
     { title: 'The step on screen', duration: 7, footage: true, from: 2.4, caption: `On site, the engineer snaps the receipt in ${product}.`, script: 'Show the tap on Add receipt and the photo being taken. Keep the screen action fully in view.' },
     { title: 'Why it helps the office', duration: 6, footage: true, from: 9, caption: 'Amount and job filled in, saved to the job.', script: 'Show the receipt details and the save. Then the office view with the cost already on the job.' },

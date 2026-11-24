@@ -115,7 +115,7 @@ function revisionFor(req) {
 }
 
 async function generate(req) {
-  calls.push({ kind: req.kind, platform: req.platform, brief: req.brief, feedback: req.feedback || null, currentCaption: req.currentCaption || null, tone: req.tone?.mode || null, voice: req.voice || null });
+  calls.push({ kind: req.kind, platform: req.platform, brief: req.brief, feedback: req.feedback || null, currentCaption: req.currentCaption || null, tone: req.tone?.mode || null, voice: req.voice || null, catalogue: req.catalogue || null, profileHasCatalogue: !!req.profile?.data?.catalogue, prompt: require('./quill').buildUserMessage(req) });
   await sleep(DELAY_MS);
   return req.kind === 'revision' ? revisionFor(req) : draftFor(req);
 }

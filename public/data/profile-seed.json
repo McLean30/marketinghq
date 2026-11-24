@@ -54,5 +54,168 @@
     "voice": "Write like we’re giving someone an honest update from inside Nexai. Use natural British English and first-person plural where it fits. Explain what we’re building, what prompted it, the everyday problem and the outcome we’re working towards. Give the reader something useful. Distinguish work in progress from products, results or client work we can genuinely point to. When a CTA fits, invite a comment or message in our own voice. Vary the wording. Some posts can end on the useful point.",
     "process": "",
     "checklist": ""
+  },
+  "catalogue": {
+    "items": [
+      {
+        "id": "svc_web",
+        "kind": "service",
+        "name": "Professional Websites",
+        "status": "available",
+        "disclosure": "name",
+        "audience": "UK commercial building maintenance and building services firms, particularly owners, MDs and operations directors",
+        "publicWording": "Fast, clear websites for commercial maintenance and building services firms that explain what you do and make it easy for facilities and property managers to get in touch.",
+        "internalNotes": "",
+        "problem": "Facilities and property managers judge a maintenance firm by its website, and many sites don’t explain what the firm does or make it easy to get in touch.",
+        "outcome": "A clear website that explains what you do and makes it easy for the right clients to get in touch.",
+        "topics": [
+          "website",
+          "web site",
+          "web design"
+        ],
+        "headline": [
+          "Clear websites",
+          "for maintenance firms."
+        ],
+        "visual": "A maintenance firm’s website open on a laptop in a site office, engineer’s van visible through the window."
+      },
+      {
+        "id": "svc_software",
+        "kind": "service",
+        "name": "Custom Business Software",
+        "status": "available",
+        "disclosure": "name",
+        "audience": "UK commercial building maintenance and building services firms, particularly owners, MDs and operations directors",
+        "publicWording": "Software built around how your engineers and office actually work: job management, job sheets, photos, sign-off and invoicing in one place.",
+        "internalNotes": "",
+        "problem": "Jobs, job sheets, photos, sign-off and invoicing live in different places, so the office chases engineers for information they’ve already captured.",
+        "outcome": "One system built around how your engineers and office actually work.",
+        "topics": [
+          "custom software",
+          "business software",
+          "bespoke software",
+          "job management software",
+          "software we build"
+        ],
+        "headline": [
+          "One job.",
+          "One version of the truth."
+        ],
+        "visual": "Engineer closing a job on a tablet beside completed plant in a UK plant room."
+      },
+      {
+        "id": "svc_ai",
+        "kind": "service",
+        "name": "Bespoke AI Agents & Automation",
+        "status": "available",
+        "disclosure": "name",
+        "audience": "UK commercial building maintenance and building services firms, particularly owners, MDs and operations directors",
+        "publicWording": "AI agents and automations that take repetitive admin off your office team, such as chasing paperwork, preparing reports and keeping clients updated.",
+        "internalNotes": "",
+        "problem": "Office teams spend hours on repetitive admin: chasing paperwork, preparing reports and keeping clients updated.",
+        "outcome": "Agents and automations that take that admin off the team, so people spend their time on the work only they can do.",
+        "topics": [
+          "ai agent",
+          "ai agents",
+          "automation",
+          "automations",
+          "automate"
+        ],
+        "headline": [
+          "Less admin.",
+          "More of the work that matters."
+        ],
+        "visual": "Maintenance office coordinator at a desk with reports and job updates on screen, calm and organised."
+      },
+      {
+        "id": "fam_revenue",
+        "kind": "family",
+        "name": "Nexai Revenue Recovery",
+        "status": "in_development",
+        "disclosure": "internal",
+        "audience": "Local SMEs that already hold customer data",
+        "problem": "Revenue left behind in past customers, open quotes and missed enquiries.",
+        "outcome": "Recover revenue from contacts a business already has.",
+        "publicWording": "",
+        "internalNotes": "Product family name. Keep internal until approved for public use.",
+        "topics": [
+          "revenue recovery"
+        ],
+        "headline": [],
+        "visual": ""
+      },
+      {
+        "id": "mod_reactivation",
+        "kind": "module",
+        "family": "fam_revenue",
+        "name": "Database Reactivation",
+        "status": "in_development",
+        "disclosure": "describe",
+        "audience": "Local SMEs across sectors with an existing customer database",
+        "problem": "Customers who were happy with the work often never hear from the business again, so repeat work and referrals go to whoever got in touch last.",
+        "outcome": "A simple, respectful way to reconnect with past customers and turn some of those relationships into repeat work.",
+        "publicWording": "We’re building a way for businesses to reconnect with past customers they already have on their books, so good relationships don’t quietly go cold.",
+        "internalNotes": "First build, in development. Proposed commercial model (not approved for public use): no upfront development fee; the client covers running costs plus a commission on sales it generates. Client contact lists stay in the client’s own systems, never in Marketing HQ.",
+        "topics": [
+          "past customer",
+          "previous customer",
+          "former customer",
+          "lapsed customer",
+          "customer database",
+          "customer list",
+          "reactivat",
+          "win back"
+        ],
+        "headline": [
+          "Past customers,",
+          "back in touch."
+        ],
+        "visual": "Owner of a small UK business at their desk, looking back through past jobs and customer notes on a laptop; warm, natural light."
+      },
+      {
+        "id": "mod_quotes",
+        "kind": "module",
+        "family": "fam_revenue",
+        "name": "Quote Recovery",
+        "status": "planned",
+        "disclosure": "internal",
+        "audience": "Local SMEs that send quotes",
+        "problem": "Quotes go out and are never followed up, so work the business could have won goes quiet.",
+        "outcome": "Follow up outstanding quotes so fewer go cold.",
+        "publicWording": "",
+        "internalNotes": "Planned. Keep internal until approved.",
+        "topics": [
+          "outstanding quote",
+          "open quote",
+          "quote follow",
+          "unanswered quote",
+          "quotes that go cold"
+        ],
+        "headline": [],
+        "visual": ""
+      },
+      {
+        "id": "mod_enquiries",
+        "kind": "module",
+        "family": "fam_revenue",
+        "name": "Enquiry Capture",
+        "status": "planned",
+        "disclosure": "internal",
+        "audience": "Local SMEs that receive enquiries",
+        "problem": "New enquiries slip through when the team is busy on site.",
+        "outcome": "Capture and follow up every new enquiry promptly.",
+        "publicWording": "",
+        "internalNotes": "Planned. Keep internal until approved.",
+        "topics": [
+          "new enquir",
+          "missed enquir",
+          "missed call",
+          "enquiry capture",
+          "enquiries go"
+        ],
+        "headline": [],
+        "visual": ""
+      }
+    ]
   }
 }

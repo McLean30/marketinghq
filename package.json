@@ -28,7 +28,8 @@
     "test:supabase": "node tests/supabase-store.mjs",
     "test:password": "node tests/password-setup.mjs",
     "worker:sync": "node scripts/sync-worker.cjs",
-    "test:scheduler": "node tests/hosted-scheduler.mjs"
+    "test:scheduler": "node tests/hosted-scheduler.mjs",
+    "test:m13": "node tests/catalogue-m13.mjs"
   },
   "engines": {
     "node": ">=20.6"

@@ -1,3 +1,4 @@
+import { contextFor } from './catalogue.js';
 // Vektor's weekly planning: Europe/London dates, Nexai's posting schedule and the template planner.
 // Dates are calendar dates (YYYY-MM-DD); arithmetic is done on whole days in UTC so clock changes
 // (BST <-> GMT) can never shift a post to the wrong day.
@@ -70,6 +71,10 @@ const GENERIC_TOPICS = [
  */
 export function templatePlan(brief, weekStart, profile = null) {
   const audience = audienceFrom(brief, profile);
+  // A week about a catalogue item uses only its approved public information (catalogue.js contextFor).
+  const ctxItems = contextFor(profile, brief).items;
+  const it = ctxItems[0] || null;
+  const it2 = ctxItems[1] || it;
   // Visual briefs follow the profile's imagery and logo rules.
   const visualRule = profile?.brand ? ' Realistic UK commercial setting, no stock-photo clichés; official Nexai logo.' : '';
   const topics = topicsFrom(brief);
@@ -80,7 +85,10 @@ export function templatePlan(brief, weekStart, profile = null) {
   };
   const days = weekDays(weekStart).map((d, i) => {
     let item;
-    if (i === 0) item = { audience, angle: 'Finished jobs that can’t be invoiced yet are cash you’ve already earned, stuck in admin', takeaway: 'Pull a “complete but not invoiced” list every Monday and set a 48-hour target to clear it', visual: 'Engineer finishing a job on a UK commercial site at the end of the day, van in the background.' };
+    if (it && (i === 0 || i === 4)) item = i === 0
+      ? { audience: it.audience || audience, angle: `What we’re ${it.status === 'available' ? 'doing' : 'building'} and why: ${it.problem || it.wording}`, takeaway: it.outcome || it.wording, visual: it.visual || 'Founder at a desk, talking through what we’re building; natural light.' }
+      : { audience: it2.audience || audience, angle: it2.status === 'available' ? `How it works in practice: ${it2.wording}` : `Where we’re heading (work in progress): ${it2.outcome || it2.wording}`, takeaway: it2.status === 'available' ? (it2.outcome || '') : 'A useful question to ask about your own business this week; no results claimed', visual: it2.visual || 'Founder at a desk, talking through what we’re building; natural light.' };
+    else if (i === 0) item = { audience, angle: 'Finished jobs that can’t be invoiced yet are cash you’ve already earned, stuck in admin', takeaway: 'Pull a “complete but not invoiced” list every Monday and set a 48-hour target to clear it', visual: 'Engineer finishing a job on a UK commercial site at the end of the day, van in the background.' };
     else if (i === 4) item = { audience, angle: 'Three checks that turn “job done” into “ready to invoice”', takeaway: `Before a job is marked complete, check: ${topics.slice(0, 3).map((t) => (TOPIC_LIBRARY.find((x) => x.match.test(t))?.check || t)).join(', ')}`, visual: 'Engineer closing a job on a tablet beside completed plant, natural light.' };
     else {
       const t = topicDay(topics[i - 1]);

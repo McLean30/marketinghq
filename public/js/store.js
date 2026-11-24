@@ -13,6 +13,7 @@ import * as AN from './analytics.js';
 import { templateStoryboard } from './video.js';
 import { BRAND, officialLogoKnown } from './brand.js';
 import { toneFor, voiceOf, hasVoiceField, DEFAULT_VOICE } from './voice.js';
+import * as CAT from './catalogue.js';
 
 const KEY = 'nexai-hq:v1';
 const MODE_KEY = 'nexai-hq:mode';
@@ -344,6 +345,7 @@ export async function setMode(mode) {
       }
     }
     seedVoice();
+    seedCatalogue();
   }
   notify();
 }
@@ -432,6 +434,8 @@ export async function createJob({ id, brief, platform, targetDate, title, planId
   job.tone = { ...toneFor(job.brief), voiceSource: hasVoiceField(pd) && pd.writing.voice.trim() ? 'profile' : 'default', profileVersion: profileRef() };
   if (title) job.title = title;
   job.profileVersion = profileRef();
+  // Only the public catalogue context this brief needs, kept with the post: an approved post keeps its wording.
+  job.catalogue = CAT.contextFor(pd, job.brief, { profileVersion: profileRef() });
   if (planId) { job.planId = planId; job.planDay = planDay; }
   const res = await commit(job.id, () => {
     if (getJob(job.id)) return false;
@@ -680,7 +684,8 @@ async function dispatchAi(taskId, now) {
     currentVersion: prev?.n,
     feedback: live.pending.kind === 'revision' ? live.pending.feedback : undefined,
     targetDate: job.targetDate,
-    profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null,
+    profile: genProfile(),
+    catalogue: job.catalogue || null,
     tone: job.tone || toneFor(job.brief),
     voice: voiceOf(currentProfile()?.data),
   };
@@ -876,7 +881,7 @@ export async function createPlan({ weekStart, brief, method, days, model, usage 
 export async function requestAiPlan(brief, weekStart, days, requestKey) {
   let r;
   try {
-    r = await fetch('api/vektor/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify({ requestKey, brief, weekStart, days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName })), profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null, tone: toneFor(brief), voice: voiceOf(currentProfile()?.data) }) });
+    r = await fetch('api/vektor/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-HQ-Device': deviceKind() }, body: JSON.stringify({ requestKey, brief, weekStart, catalogue: catalogueContext(brief), days: days.map((d) => ({ date: d.date, platform: d.platform, dayName: d.dayName })), profile: genProfile(), tone: toneFor(brief), voice: voiceOf(currentProfile()?.data) }) });
   } catch {
     return { ok: false, error: 'Can’t reach the HQ server. Your brief is kept here; try again when connected (a retry won’t be charged twice).' };
   }
@@ -980,7 +985,7 @@ export function jobProfileImpact(job) {
   const cur = currentProfile();
   if (!ref || !cur || ref.id === cur.id) return [];
   const copy = currentVersion(jobTasks(job).copy);
-  return profileImpact({ caption: copy?.content?.text || '', platform: job.platform, refData: ref.data, curData: cur.data, refId: ref.id, curId: cur.id, date: reviewDate(job) });
+  return [...profileImpact({ caption: copy?.content?.text || '', platform: job.platform, refData: ref.data, curData: cur.data, refId: ref.id, curId: cur.id, date: reviewDate(job) }).filter((x) => x.field !== 'Services'), ...CAT.catalogueImpact(job, cur.data)];
 }
 
 /* ---------- Brand & Quality Reviewer ---------- */
@@ -1030,6 +1035,7 @@ export async function runReview(jobId) {
     const profile = currentProfile();
     const date = reviewDate(job);
     const result = runChecks({ job, copyVersion: cv, graphicVersion: gv, profile, brand: brand(), date, present });
+    addDisclosureCheck(result, cv, gv, profile, date);
     return await commit(jobId, () => {
       const j = getJob(jobId);
       const t = jobTasks(j);
@@ -1331,6 +1337,32 @@ function seedVoice() {
 }
 export const activeVoice = () => voiceOf(currentProfile()?.data);
 
+/**
+ * Calibre's service-catalogue check: internal names, prices or commercial terms, unlaunched work presented as
+ * available, and results claims, in the caption and any words on the graphic. Calibre sees the whole catalogue.
+ */
+function addDisclosureCheck(result, cv, gv, profile, date) {
+  const onImage = gv?.content ? [].concat(gv.content.headline || []).join(' ') + ' ' + (gv.content.sub || '') : '';
+  const found = CAT.disclosureFindings(`${cv.content.text}\n${onImage}`, profile.data, { offers: (profile.data.offers || []).filter((o) => o.active) });
+  result.checks.push({ id: 'catalogue', label: 'Service and product rules (internal names, prices, availability, results)', kind: 'rule', result: found.length ? 'fail' : 'pass', detail: found.length ? `${found.length} problem${found.length === 1 ? '' : 's'}` : `Checked against ${(profile.data.catalogue?.items || []).length} catalogue records in ${profile.id}` });
+  found.forEach((f, i) => result.findings.push({ id: `catalogue-${result.findings.length + 1}`, check: 'catalogue', status: 'fail', title: f.title, quote: f.quote, where: `Caption v${cv.n}${onImage.trim() ? ` or graphic v${gv.n}` : ''}`, why: f.why, fixer: 'copywriter', fix: f.fix }));
+}
+
+/** This browser's demo profile: add the service catalogue as a new version, keeping every existing edit. */
+function seedCatalogue() {
+  const cur = currentProfile();
+  const data = cur && CAT.upgradeProfile(cur.data);
+  if (!data) return;
+  const n = state.profile.versions.length + 1;
+  state.profile.versions.push({ id: localVersionId(n, data), n, savedAt: Date.now(), savedBy: 'update: service catalogue added', data });
+  state.profile.rev = (state.profile.rev || 0) + 1;
+  saveLocal(false);
+}
+/** The profile as generation may see it (no catalogue, no internal notes), with the version id. */
+export const genProfile = () => (currentProfile() ? { versionId: currentProfile().id, data: CAT.forGeneration(currentProfile().data) } : null);
+/** The public context a brief needs from the catalogue (recorded on the job when it's created). */
+export const catalogueContext = (brief) => CAT.contextFor(currentProfile()?.data, brief, { profileVersion: profileRef() });
+
 
 /* ---------- Live AI (OpenAI): usage per job, Cue's script, Prism's images, Calibre and Vantage extras ---------- */
 export const liveAi = () => quill.provider === 'openai' || quill.provider === 'mock';
@@ -1362,7 +1394,7 @@ async function postJson(path, body) {
 async function dispatchScript(taskId, task, job, claimedAt) {
   const res = await postJson('api/video/script', {
     requestKey: task.pending.requestKey, jobId: job.id, brief: job.brief, platform: job.platform, clipDuration: task.clip?.duration || 20,
-    profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null, tone: job.tone || toneFor(job.brief), voice: voiceOf(currentProfile()?.data),
+    profile: genProfile(), catalogue: job.catalogue || null, tone: job.tone || toneFor(job.brief), voice: voiceOf(currentProfile()?.data),
   });
   if (unloading) { inFlight.delete(taskId); return; }
   await commit(job.id, () => {
@@ -1465,7 +1497,7 @@ export async function aiWordingReview(jobId) {
   notify();
   try {
     const requestKey = `${jobId}:wr:${cv.n}:${(job.wordingReviews || []).length + 1}`;
-    const res = await postJson('api/review/wording', { requestKey, jobId, caption: cv.content.text, platform: job.platform, brief: job.brief, tone: job.tone || toneFor(job.brief), voice: voiceOf(currentProfile()?.data), profile: currentProfile() ? { versionId: currentProfile().id, data: currentProfile().data } : null });
+    const res = await postJson('api/review/wording', { requestKey, jobId, catalogue: job.catalogue || null, caption: cv.content.text, platform: job.platform, brief: job.brief, tone: job.tone || toneFor(job.brief), voice: voiceOf(currentProfile()?.data), profile: genProfile() });
     if (!res.ok) return res;
     const d = res.data;
     return await commit(jobId, () => {

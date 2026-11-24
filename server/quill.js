@@ -11,6 +11,21 @@
 const mock = require('./quill-mock');
 const ai = require('./openai');
 const V = require('../public/js/voice.js'); // the same tone rules the browser uses
+const CAT = require('../public/js/catalogue.js'); // the service catalogue's public-context rules
+
+/**
+ * The catalogue context for a prompt: only the public fields of items that may be named or described, whatever the
+ * request carries. Internal notes, internal items and names marked "describe" never reach a model.
+ */
+function cleanCatalogue(c) {
+  const s = (x, n = 600) => (typeof x === 'string' ? x.slice(0, n) : '');
+  const items = Array.isArray(c?.items) ? c.items.filter((i) => i && i.disclosure !== 'internal' && typeof i.wording === 'string' && i.wording.trim()).slice(0, 3).map((i) => ({
+    id: s(i.id, 60), kind: s(i.kind, 20), status: ['available', 'in_development', 'planned'].includes(i.status) ? i.status : 'planned', disclosure: i.disclosure === 'name' ? 'name' : 'describe',
+    name: i.disclosure === 'name' ? s(i.name, 120) : null, wording: s(i.wording, 1200), audience: s(i.audience), problem: s(i.problem), outcome: s(i.outcome),
+  })) : [];
+  return { items };
+}
+const catalogueBlock = (c) => CAT.contextText(cleanCatalogue(c));
 const PLATFORMS = ['LinkedIn', 'Instagram', 'Facebook', 'X', 'Google Business Profile'];
 
 function resolveProvider() {
@@ -83,7 +98,7 @@ const OUTPUT_SCHEMA = {
 /** Plain-text summary of the business profile fields that matter for writing. */
 function profileBlock(p, date) {
   if (!p || typeof p !== 'object') return '';
-  const d = p.data || {};
+  const d = CAT.forGeneration(p.data || {});
   const s = (x) => String(x ?? '').slice(0, 1200);
   const on = (o) => o.active && (!o.start || o.start <= date) && (!o.end || o.end >= date);
   const active = (d.offers || []).filter(on);
@@ -104,6 +119,7 @@ function profileBlock(p, date) {
 function buildUserMessage(req) {
   const lines = [`Platform: ${req.platform}`, `Post date: ${req.targetDate || 'not set'}`, `Job brief (from the Nexai team):\n"""\n${req.brief}\n"""`];
   if (req.profile) lines.push(profileBlock(req.profile, req.targetDate || ''));
+  lines.push(catalogueBlock(req.catalogue));
   lines.push(V.promptBlock(req.tone || V.toneFor(req.brief), req.voice || V.voiceOf(req.profile?.data), req.profile?.data?.cta?.main));
   if (req.kind === 'revision') {
     lines.push(`Current caption (version ${req.currentVersion}):\n"""\n${req.currentCaption}\n"""`);
@@ -141,6 +157,7 @@ function validate(body) {
       feedback: kind === 'revision' ? feedback.trim() : undefined,
       targetDate: /^\d{4}-\d{2}-\d{2}$/.test(body.targetDate || '') ? body.targetDate : null,
       profile: body.profile && typeof body.profile === 'object' && JSON.stringify(body.profile).length < 80000 ? body.profile : null,
+      catalogue: cleanCatalogue(body.catalogue),
       ...toneAndVoice(body),
     },
   };
@@ -228,7 +245,7 @@ async function planWeek(body) {
   const tv = toneAndVoice(body);
   if (PROVIDER === 'mock') return { days: await mock.planWeek({ ...value, ...tv, profile: body.profile || null }), provider: 'mock', model: 'mock-vektor', usage: null };
   const prof = body.profile && typeof body.profile === 'object' && JSON.stringify(body.profile).length < 80000 ? `\n\n${profileBlock(body.profile, value.weekStart)}` : '';
-  const user = `Week beginning ${value.weekStart} (Europe/London).${prof}\n\n${V.promptBlock(tv.tone, tv.voice, body.profile?.data?.cta?.main)}\n\nBrief from the Nexai team:\n"""\n${value.brief}\n"""\n\nDays to plan, in order:\n${value.days.map((d, i) => `${i + 1}. ${d.dayName} ${d.date}: ${d.platform}`).join('\n')}`;
+  const user = `Week beginning ${value.weekStart} (Europe/London).${prof}\n\n${catalogueBlock(body.catalogue)}\n\n${V.promptBlock(tv.tone, tv.voice, body.profile?.data?.cta?.main)}\n\nBrief from the Nexai team:\n"""\n${value.brief}\n"""\n\nDays to plan, in order:\n${value.days.map((d, i) => `${i + 1}. ${d.dayName} ${d.date}: ${d.platform}`).join('\n')}`;
   const out = await liveText({ instructions: PLAN_SYSTEM, input: user, schemaName: 'vektor_week_plan', schema: PLAN_SCHEMA, maxOutputTokens: 8000 });
   const parsed = out.data;
   if (!Array.isArray(parsed.days) || parsed.days.length !== value.days.length) throw new QuillError('The plan came back with the wrong number of days. Try again.', { code: 'shape' });
@@ -264,7 +281,7 @@ function validateScript(body) {
   if (!PLATFORMS.includes(body.platform)) return { error: 'Unknown platform.' };
   const d = Number(body.clipDuration);
   if (!(d > 0 && d < 3600)) return { error: 'Clip length is missing.' };
-  return { value: { brief: body.brief.trim(), platform: body.platform, clipDuration: d, profile: body.profile && typeof body.profile === 'object' ? body.profile : null, ...toneAndVoice(body) } };
+  return { value: { brief: body.brief.trim(), platform: body.platform, clipDuration: d, profile: body.profile && typeof body.profile === 'object' ? body.profile : null, catalogue: cleanCatalogue(body.catalogue), ...toneAndVoice(body) } };
 }
 /** Keep Cue's timings honest: inside the clip, 1–15 s per scene, 15–30 s in total. */
 function tidyScenes(scenes, clipDuration) {
@@ -281,7 +298,7 @@ async function videoScript(body) {
   if (PROVIDER === 'demo') throw new QuillError('No AI provider is configured on the server.', { status: 503, retryable: false, code: 'not_configured' });
   const { value, error } = validateScript(body);
   if (error) throw new QuillError(error, { status: 400, retryable: false, code: 'invalid' });
-  const user = [`Platform: ${value.platform}`, `Clip length: ${value.clipDuration} seconds`, `Job brief:\n"""\n${value.brief}\n"""`, value.profile ? profileBlock(value.profile, '') : '', V.promptBlock(value.tone, value.voice, value.profile?.data?.cta?.main)].filter(Boolean).join('\n\n');
+  const user = [`Platform: ${value.platform}`, `Clip length: ${value.clipDuration} seconds`, `Job brief:\n"""\n${value.brief}\n"""`, value.profile ? profileBlock(value.profile, '') : '', catalogueBlock(value.catalogue), V.promptBlock(value.tone, value.voice, value.profile?.data?.cta?.main)].filter(Boolean).join('\n\n');
   if (PROVIDER === 'mock') { const m = await mock.videoScript(value); return { scenes: tidyScenes(m.scenes, value.clipDuration), notes: m.notes, provider: 'mock', model: 'mock-cue', usage: null }; }
   const out = await liveText({ instructions: SCRIPT_SYSTEM, input: user, schemaName: 'cue_storyboard', schema: SCRIPT_SCHEMA, maxOutputTokens: 4000 });
   if (!Array.isArray(out.data.scenes) || !out.data.scenes.length) throw new QuillError('The storyboard came back empty. Try again.', { code: 'empty' });
@@ -306,7 +323,7 @@ async function wordingReview(body) {
   if (!PLATFORMS.includes(body.platform)) throw new QuillError('Unknown platform.', { status: 400, retryable: false, code: 'invalid' });
   const tv = toneAndVoice({ ...body, brief: body.brief || '' });
   const prof = body.profile && typeof body.profile === 'object' ? body.profile : null;
-  const user = [`Platform: ${body.platform}`, prof ? profileBlock(prof, '') : '', V.promptBlock(tv.tone, tv.voice, prof?.data?.cta?.main), `Caption to review:\n"""\n${body.caption}\n"""`].filter(Boolean).join('\n\n');
+  const user = [`Platform: ${body.platform}`, prof ? profileBlock(prof, '') : '', catalogueBlock(body.catalogue), V.promptBlock(tv.tone, tv.voice, prof?.data?.cta?.main), `Caption to review:\n"""\n${body.caption}\n"""`].filter(Boolean).join('\n\n');
   let out;
   if (PROVIDER === 'mock') out = { data: mock.wordingReview(body.caption, tv.tone), model: 'mock-calibre', usage: null };
   else out = await liveText({ instructions: WORDING_SYSTEM, input: user, schemaName: 'calibre_wording', schema: WORDING_SCHEMA, maxOutputTokens: 3000 });

@@ -12,6 +12,8 @@
 //                                    visitors, the demo note and Prism's Upload photo, no paid button (Milestone 11A+)
 //   EXPECT_SCHEDULING=1              also check the demo destinations (Kieran’s personal LinkedIn profile) and that the
 //                                    preview schedules in this browser only, never the hosted worker (Milestone 12+)
+//   EXPECT_CATALOGUE=1               also check the Business profile's service catalogue: 7 records, Database Reactivation
+//                                    described without naming, the family and planned modules internal (Milestone 13+)
 //   REQUIRE_SHA_MATCH=1              block unless the deployment itself reports EXPECT_SHA (a URL you passed in)
 //   EXPECT_SHA=<commit>              refuse a deployment that reports a different commit (/api/version)
 //   SMOKE_RESULT=path.json           where to write { status: pass|fail|blocked, summary, steps }
@@ -35,6 +37,7 @@ const EXPECT_ANALYST = process.env.EXPECT_ANALYST === '1';
 const EXPECT_VIDEO = process.env.EXPECT_VIDEO === '1';
 const EXPECT_OPENAI = process.env.EXPECT_OPENAI === '1';
 const EXPECT_SCHEDULING = process.env.EXPECT_SCHEDULING === '1';
+const EXPECT_CATALOGUE = process.env.EXPECT_CATALOGUE === '1';
 const REQUIRE_SHA_MATCH = process.env.REQUIRE_SHA_MATCH === '1';
 const EXPECT_SHA = (process.env.EXPECT_SHA || '').trim();
 const RESULT = process.env.SMOKE_RESULT || '';
@@ -178,6 +181,19 @@ try {
     if (!/Version \d+ · pv\d+-/.test(meta) || !fields.includes('Request a Free Workflow Review')) throw new Failed(`Business profile opened but looks wrong (${meta.slice(0, 80)}).`);
     step(true, `Business profile opened (${meta.split(' · saved')[0]})`);
     if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'business-profile.png') });
+    if (EXPECT_CATALOGUE) {
+      const items = await page.locator('[data-testid="catalogue"] [data-testid="cat-item"]').evaluateAll((els) => els.map((el) => {
+        const i = [...el.parentElement.querySelectorAll('[data-testid="cat-item"]')].indexOf(el);
+        const v = (k) => el.querySelector(`[id$="-${k}"]`)?.value || '';
+        return { id: el.dataset.id, i, status: v('status'), disclosure: v('disclosure') };
+      }));
+      const by = Object.fromEntries(items.map((x) => [x.id, x]));
+      const ok = items.length === 7 && by.mod_reactivation?.disclosure === 'describe' && by.mod_reactivation?.status === 'in_development'
+        && ['fam_revenue', 'mod_quotes', 'mod_enquiries'].every((k) => by[k]?.disclosure === 'internal')
+        && ['svc_web', 'svc_software', 'svc_ai'].every((k) => by[k]?.status === 'available');
+      if (!ok) throw new Failed(`The service catalogue didn’t show the expected records (${items.map((x) => `${x.id}:${x.status}/${x.disclosure}`).join(', ').slice(0, 300)}).`);
+      step(true, 'Service catalogue shows 7 records: 3 available services, Database Reactivation in development and described without naming, the family and planned modules internal');
+    }
   }
 
   if (EXPECT_ANALYST) {

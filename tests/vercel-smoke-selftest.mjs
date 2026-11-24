@@ -75,7 +75,7 @@ const stubs = [
 ];
 try {
   console.log('\n== Smoke test verdicts against local stand-ins ==');
-  let r = await run('http://127.0.0.1:4197/', { EXPECT_REVIEWER: '1', EXPECT_PUBLISHING: '1', EXPECT_ANALYST: '1', EXPECT_VIDEO: '1', EXPECT_OPENAI: '1', EXPECT_SCHEDULING: '1', EXPECT_SHA: 'a'.repeat(40) });
+  let r = await run('http://127.0.0.1:4197/', { EXPECT_REVIEWER: '1', EXPECT_PUBLISHING: '1', EXPECT_ANALYST: '1', EXPECT_VIDEO: '1', EXPECT_OPENAI: '1', EXPECT_SCHEDULING: '1', EXPECT_CATALOGUE: '1', EXPECT_SHA: 'a'.repeat(40) });
   assert(r.code === 0 && /RESULT: PASS/.test(r.out) && /Vektor's workspace opened/.test(r.out) && /Business profile opened/.test(r.out) && /publishing controls rendered/.test(r.out) && /Marketing Analyst workspace opened/.test(r.out) && /Video Creator rendered and played a video/.test(r.out), 'Working app (preview conditions), including publishing, the Analyst and a video render → pass');
   r = await run('http://127.0.0.1:4197/', { EXPECT_SHA: 'a'.repeat(40), REQUIRE_SHA_MATCH: '1' });
   assert(r.code === 2 && /doesn’t report which commit/.test(r.out), 'A URL passed in that can’t prove its commit → blocked, not pass');

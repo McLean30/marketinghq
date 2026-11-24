@@ -876,3 +876,19 @@ html[data-motion="off"] .handoff path.pulse { stroke-dasharray: none; stroke-wid
 /* Hosted scheduling (Milestone 12) */
 .scheduler-note.warn { border-color: var(--warn); color: var(--text); }
 .published-demo strong { display: inline-block; padding: 2px 10px; border-radius: 999px; background: var(--ok); color: #03140d; }
+
+/* Service catalogue (Milestone 13) */
+.cat-h { font-size: 1rem; margin: 1rem 0 .4rem; }
+.cat-item { border: 1px solid var(--line); border-radius: 12px; padding: .5rem .75rem; margin: .5rem 0; background: rgba(255, 255, 255, .02); }
+.cat-item > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: .35rem .6rem; align-items: center; min-height: 44px; }
+.cat-item .cat-name { font-weight: 700; }
+.cat-fields { display: grid; gap: .35rem; padding: .5rem 0; }
+.cat-fields select, .cat-fields input, .cat-fields textarea { width: 100%; max-width: 100%; box-sizing: border-box; }
+.cat-modules { margin-left: 1rem; border-left: 2px solid var(--line); padding-left: .75rem; }
+.tag-st-available { background: rgba(87, 231, 177, .15); color: var(--ok); }
+.tag-st-in_development { background: rgba(46, 230, 255, .12); color: var(--cyan); }
+.tag-st-planned { background: rgba(157, 178, 209, .15); color: var(--muted); }
+.tag-dis-internal { background: rgba(255, 193, 94, .15); color: var(--warn); }
+.cat-chip blockquote { margin: .4rem 0; padding-left: .75rem; border-left: 3px solid var(--cyan); }
+@media (max-width: 480px) { .cat-modules { margin-left: .25rem; padding-left: .5rem; } }
+@media (max-width: 560px) { .cat-fields .pf-inline { display: grid; grid-template-columns: 1fr; gap: .35rem; } .cat-fields .pf-inline > * { width: 100%; } }

@@ -1,5 +1,46 @@
 import { activeOffers, norm } from './profile.js';
 import { toneFor, variant } from './voice.js';
+import { STATUS } from './catalogue.js';
+
+/* ---------- Posts about a service or product in the catalogue ----------
+   The job carries only the public context its brief needed (job.catalogue, from catalogue.js contextFor): the
+   approved wording, audience, problem, outcome and status. Never internal notes, internal names or prices. */
+const catItem = (job) => job?.catalogue?.items?.[0] || null;
+const lowerFirst = (s) => (s ? s.charAt(0).toLowerCase() + s.slice(1) : s);
+const firstSentence = (s, max = 110) => { const m = String(s || '').split(/(?<=[.!?])\s/)[0]; return m.length > max ? `${m.slice(0, max - 1)}…` : m; };
+const CAT_TAGS = [['#SmallBusiness', '#UKBusiness', '#CustomerRelationships', '#RepeatBusiness', '#LocalBusiness'], ['#UKSmallBusiness', '#CustomerExperience', '#BusinessGrowth', '#Relationships', '#Founders']];
+const SVC_TAGS = [['#CommercialMaintenance', '#FacilitiesManagement', '#BuildingServices', '#Operations', '#UKBusiness'], ['#FMIndustry', '#MaintenanceManagement', '#ServiceDelivery', '#Productivity', '#Leadership']];
+
+function composeCatalogue(it, platform, opts, ctx = {}) {
+  const { hookIdx = 0, ctaIdx = 0, tagIdx = 0, short = false, friendly = false, numberPrompt = false } = opts;
+  const isShort = short || platform === 'X';
+  const noTags = platform === 'Google Business Profile';
+  const live = it.status === 'available';
+  const intros = it.status === 'in_development'
+    ? ['A quick update from inside Nexai on something we’re building at the moment.', 'Something we’re working on at Nexai right now, and why.']
+    : it.status === 'planned' ? ['Something we’re thinking about at Nexai.', 'An idea we’re exploring at Nexai, and the problem behind it.']
+      : ['A quick note on something we do at Nexai.', 'One of the things we build at Nexai, and the problem behind it.'];
+  const parts = [friendly ? 'Quick one from inside Nexai this week.' : intros[hookIdx % intros.length]];
+  parts.push(it.name ? `${it.name}: ${it.wording}` : it.wording);
+  if (!isShort) {
+    if (it.problem) parts.push(`The everyday problem: ${lowerFirst(it.problem)}`);
+    if (it.outcome) parts.push(`What we’re aiming for: ${lowerFirst(it.outcome)}`);
+  }
+  if (it.status === 'in_development') parts.push('It’s still in development, so this is where we’re heading rather than a finished product or results we can point to yet.');
+  if (it.status === 'planned') parts.push('It’s an idea we’re exploring, not something you can use yet.');
+  if (numberPrompt) parts.push('[Add your own figure here, if you have one you can share.]');
+  if (ctx.mode === 'promo' && live) parts.push(`${ctx.cta || 'Request a Free Workflow Review'}: send us a message to book a time.`);
+  else {
+    const end = variant(`${ctx.seed || ''}:${ctaIdx}`, 3);
+    if (end === 0) parts.push('If you’re dealing with the same thing, tell us in the comments how you handle it.');
+    else if (end === 1) parts.push(live ? 'If this sounds familiar, send us a message. We’re always happy to compare notes.' : 'If you’d like to compare notes while we build it, send us a message.');
+    else parts.push('We’d like to hear how you handle this at the moment. Comments are open.');
+  }
+  const tags = (it.kind === 'service' ? SVC_TAGS : CAT_TAGS)[tagIdx % 2];
+  if (!noTags) parts.push((isShort ? tags.slice(0, 3) : tags).join(' '));
+  return { text: parts.join('\n\n'), opts: { hookIdx, ctaIdx, tagIdx, short, friendly, numberPrompt } };
+}
+const catNote = (job, it) => `Used the business profile’s approved public wording (${job.catalogue.profileVersion || 'profile'}): ${it.name ? `named as “${it.name}”` : 'described without naming it'}, ${STATUS[it.status].toLowerCase()}${job.catalogue.left?.length ? `; left out ${job.catalogue.left.length} internal item${job.catalogue.left.length === 1 ? '' : 's'}` : ''}`;
 // LOCAL DEMO GENERATORS. No live AI is called in milestone 1.
 // Captions are assembled from templates keyed off the brief; graphics are SVG specs
 // rendered by graphics.js. Every output is flagged `simulated` in the UI.
@@ -247,6 +288,13 @@ function removeQuoted(text, feedback) {
 }
 
 export function draftCaption(job, profile = null, date = null) {
+  const it = catItem(job);
+  if (it) {
+    const ctx = context(job, profile);
+    const composed = composeCatalogue(it, job.platform, {}, ctx);
+    const applied = applyProfile(composed.text, job, profile, date);
+    return { content: { text: applied.text, opts: composed.opts, audience: it.audience || audienceFrom(job.brief), offerId: applied.offerId, tone: ctx.mode }, notes: [`Drafted for ${it.audience || audienceFrom(job.brief)} on ${job.platform}`, catNote(job, it), 'Editorial voice: honest update → the everyday problem → the outcome we’re aiming for → a soft invitation'] };
+  }
   const theme = THEMES[themeFor(job.brief)];
   const ctx = context(job, profile);
   const composed = compose(theme, job.platform, {}, ctx);
@@ -274,12 +322,25 @@ export function reviseCaption(job, prev, feedback, n, profile = null, date = nul
     o.hookIdx = (o.hookIdx || 0) + 1;
     notes.push('Rewrote the opening line');
   }
-  const { text, opts } = compose(theme, job.platform, o, context(job, profile));
+  const it = catItem(job);
+  const { text, opts } = it ? composeCatalogue(it, job.platform, o, context(job, profile)) : compose(theme, job.platform, o, context(job, profile));
   const applied = applyProfile(text, job, profile, date, prev.offerId || null);
   return { content: { ...prev, text: applied.text, opts, offerId: applied.offerId }, notes: [`v${n}: ${notes.join('; ')}`] };
 }
 
 export function draftGraphic(job, profile = null) {
+  const it = catItem(job);
+  if (it) {
+    const base = THEMES.general;
+    return {
+      content: {
+        theme: 'general', scene: it.kind === 'service' ? 'plantroom' : 'office',
+        headline: it.headline?.length ? it.headline : base.headlines[0], sub: firstSentence(it.wording, 90),
+        chip: STATUS[it.status], tone: 'editorial', accent: 'cyan', logoScale: 1, platform: job.platform,
+      },
+      notes: [`Graphic from the approved public wording (${it.name ? it.name : 'described without naming'}); status chip: ${STATUS[it.status]}`],
+    };
+  }
   const key = themeFor(job.brief);
   const theme = THEMES[key];
   const promo = (job.tone?.mode || toneFor(job.brief).mode) === 'promo';

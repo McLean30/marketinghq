@@ -47,6 +47,14 @@ async function profileRecord() {
     await S.put('profile', 'main', cur.rev, { versions: [...cur.data.versions, { id: versionId(n, data), n, savedAt: Date.now(), savedBy: 'update: editorial voice added', data }] }, 'update');
     cur = await S.get('profile', 'main');
   }
+  // Profiles saved before the service catalogue existed get it as a new version: the owner's services carried over
+  // exactly, every other field untouched. A profile that already has a catalogue is never changed here.
+  const upgraded = require('../public/js/catalogue.js').upgradeProfile(cur.data.versions.at(-1).data);
+  if (upgraded) {
+    const n = cur.data.versions.length + 1;
+    await S.put('profile', 'main', cur.rev, { versions: [...cur.data.versions, { id: versionId(n, upgraded), n, savedAt: Date.now(), savedBy: 'update: service catalogue added', data: upgraded }] }, 'update');
+    cur = await S.get('profile', 'main');
+  }
   return cur;
 }
 const profileOut = (r) => ({ rev: r.rev, versions: r.data.versions });
@@ -203,6 +211,8 @@ function validateProfile(d) {
     for (const k of ['start', 'end']) if (o[k] && !/^\d{4}-\d{2}-\d{2}$/.test(o[k])) bad('offer dates');
   }
   if (!d.audience || !d.cta || !d.brand || !d.writing) bad('sections');
+  const c = require('../public/js/catalogue.js').validateCatalogue(d.catalogue);
+  if (c) bad(c);
 }
 async function putProfile(baseRev, data, device) {
   const S = store();

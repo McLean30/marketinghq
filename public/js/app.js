@@ -10,6 +10,7 @@ import * as AN from './analytics.js';
 import * as V from './video.js';
 import * as VO from './voice.js';
 import { BRAND, officialLogoAvailable, officialLogoKnown } from './brand.js';
+import * as CAT from './catalogue.js';
 
 const $main = document.getElementById('main');
 const $sheet = document.getElementById('sheet-root');
@@ -99,7 +100,7 @@ function aiImageBox(job, task) {
   const canLive = S.liveAi() && S.ws.mode === 'shared';
   const busy = S.isImaging(task.id);
   const req = task.imageRequest;
-  const scene = job.planDay?.visual || `Photo for this post: ${job.brief.slice(0, 400)}`;
+  const scene = job.planDay?.visual || job.catalogue?.items?.[0]?.visual || `Photo for this post: ${job.brief.slice(0, 400)}`;
   const canEdit = v?.content.mode === 'photo';
   const open = ui.aiImage?.[task.id];
   return `<div class="ai-image" data-testid="prism-image-tools">
@@ -271,6 +272,22 @@ function jobRow(job) {
       <span class="mini">Caption: ${esc(S.STATUS_LABEL[S.taskStatus(copy)])}</span>
       <span class="mini">Graphic: ${esc(S.STATUS_LABEL[S.taskStatus(graphic)])}</span></span>
   </a></li>`;
+}
+
+/* ---------- Service context: what Vektor passed on from the catalogue ---------- */
+function catalogueChip(job) {
+  const c = job.catalogue;
+  if (!c || (!c.items?.length && !c.left?.length)) return '';
+  const all = S.currentProfile()?.data?.catalogue?.items || [];
+  const nameOf = (id) => all.find((i) => i.id === id)?.name || id;
+  return `<details class="tone-chip cat-chip" data-key="cat-${job.id}" data-testid="job-catalogue">
+    <summary><span class="tone-k">Brief context</span> ${c.items.length ? c.items.map((i) => `${esc(i.name || 'Described without naming')} · ${esc(CAT.STATUS[i.status])}`).join('; ') : 'No public service information'}</summary>
+    ${c.items.map((i) => `<div class="cat-ctx" data-testid="catalogue-item" data-id="${esc(i.id)}"><p><strong>${i.name ? `Named: ${esc(i.name)}` : 'Described without naming it'}</strong> · ${esc(CAT.STATUS[i.status])}</p>
+      <blockquote data-testid="catalogue-wording">${esc(i.wording)}</blockquote>
+      <p class="mini">Audience: ${esc(i.audience || '—')}. Problem: ${esc(i.problem || '—')} Outcome: ${esc(i.outcome || '—')}</p></div>`).join('')}
+    ${c.left?.length ? `<p class="mini" data-testid="catalogue-left">Left out of the brief (${c.left.length}): ${c.left.map((l) => `${esc(nameOf(l.id))} (${esc(l.why)})`).join(', ')}. Only you see this.</p>` : ''}
+    <p class="mini">Taken from business profile ${esc(c.profileVersion || '')} when the post was created. Agents saw only this public information; internal notes, names marked internal and prices are never passed on. <a href="#/profile" data-profile-link>Edit the catalogue</a></p>
+  </details>`;
 }
 
 /* ---------- Tone: what the team is working to ---------- */
@@ -568,6 +585,7 @@ function renderJob(id) {
     ${job.planId ? `<p class="plan-link" data-testid="plan-link">Part of <a href="#/week/${job.planId}">${esc(PL.fmtWeek(S.getPlan(job.planId)?.weekStart || job.targetDate))}</a> · ${esc(job.planDay.dayName)} · ${esc(job.platform)}. Audience: ${esc(job.planDay.audience)}.</p>` : ''}
     <details class="brief-detail" data-key="brief-${job.id}"><summary>Your brief</summary><p>${esc(job.brief)}</p></details>
     ${toneChip(job.tone || VO.toneFor(job.brief), `tone-${job.id}`)}
+    ${catalogueChip(job)}
     <p class="profile-chip" data-testid="job-profile">Business profile: ${S.jobProfileRef(job) ? `<a href="#/profile" data-profile-link>${esc(S.jobProfileRef(job).id)}</a>${S.jobProfileRef(job).id !== S.currentProfile()?.id ? ` (current: ${esc(S.currentProfile()?.id || '')})` : ' (current)'}` : 'none recorded: this post was created before the business profile'}</p>
   </header>
   ${profileImpactNotice(job)}
@@ -1293,12 +1311,14 @@ function onProfileField(e) {
   const path = t.dataset.pf;
   let v = t.type === 'checkbox' ? t.checked : t.value;
   if (path === 'brand.linkedinHashtags.required') v = t.value.split(/\s+/).filter(Boolean);
+  if (/\.topics$/.test(path)) v = t.value.split(',').map((x) => x.trim()).filter(Boolean);
+  if (/\.headline$/.test(path)) v = t.value.split('/').map((x) => x.trim()).filter(Boolean).slice(0, 2);
   setPath(ui.profileDraft, path, v);
   ui.profileDirty = true;
   if (t.type === 'checkbox' || t.type === 'date') render(); // refresh the offer's live/expired note
 }
 document.addEventListener('input', (e) => { if (e.target.type !== 'checkbox' && e.target.type !== 'date') onProfileField(e); });
-document.addEventListener('change', (e) => { if (e.target.type === 'checkbox' || e.target.type === 'date') onProfileField(e); });
+document.addEventListener('change', (e) => { if (e.target.type === 'checkbox' || e.target.type === 'date') onProfileField(e); else if (e.target.tagName === 'SELECT' && e.target.dataset?.pf) render(); });
 // Remember the post you came from so the profile screen can take you straight back.
 document.addEventListener('click', (e) => {
   const a = e.target.closest?.('a[data-profile-link]');
@@ -1678,14 +1698,53 @@ function setPath(o, path, v) {
   const t = ks.reduce((x, k) => x[k], o);
   t[last] = v;
 }
-const field = (path, label, { type = 'text', area = false, rows = 3, placeholder = '' } = {}) => {
+const field = (path, label, { type = 'text', area = false, rows = 3, placeholder = '', options = null, join = ' ' } = {}) => {
   const id = `pf-${path.replace(/\./g, '-')}`;
-  const v = getPath(ui.profileDraft, path) ?? '';
+  let v = getPath(ui.profileDraft, path) ?? '';
   const dis = profileReadOnly() ? 'disabled' : '';
+  if (options) return `<label for="${id}">${label}</label><select id="${id}" data-pf="${path}" ${dis}>${Object.entries(options).map(([k, t]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+  if (Array.isArray(v)) v = v.join(join);
   if (type === 'checkbox') return `<label class="pf-check"><input type="checkbox" id="${id}" data-pf="${path}" ${v ? 'checked' : ''} ${dis}> ${label}</label>`;
   return `<label for="${id}">${label}</label>${area ? `<textarea id="${id}" data-pf="${path}" rows="${rows}" placeholder="${esc(placeholder)}" ${dis}>${esc(v)}</textarea>` : `<input id="${id}" type="${type}" data-pf="${path}" value="${esc(Array.isArray(v) ? v.join(' ') : v)}" placeholder="${esc(placeholder)}" ${dis}>`}`;
 };
 const profileReadOnly = () => S.ws.authConfigured && S.ws.mode !== 'shared';
+
+/** The service catalogue: services, product families and their modules, each owner-editable. */
+function catalogueEditor(d, ro) {
+  const its = d.catalogue.items;
+  const card = (it, i) => {
+    const p = `catalogue.items.${i}`;
+    const fam = it.kind === 'module' ? its.find((x) => x.id === it.family) : null;
+    return `<details class="cat-item kind-${it.kind}" data-key="cat-${it.id}" data-testid="cat-item" data-id="${esc(it.id)}">
+      <summary><span class="cat-name">${esc(it.name || 'Untitled')}</span>
+        <span class="mini">${esc(CAT.KINDS[it.kind])}${fam ? ` · part of ${esc(fam.name)}` : ''}</span>
+        <span class="tag tag-st-${it.status}" data-testid="cat-status">${esc(CAT.STATUS[it.status])}</span>
+        <span class="tag tag-dis-${it.disclosure}" data-testid="cat-disclosure">${esc(CAT.DISCLOSURE[it.disclosure])}</span></summary>
+      <div class="cat-fields">
+        ${field(`${p}.name`, 'Name')}
+        <div class="pf-inline">${field(`${p}.status`, 'Delivery status', { options: CAT.STATUS })}${field(`${p}.disclosure`, 'Public use', { options: CAT.DISCLOSURE })}</div>
+        ${field(`${p}.audience`, 'Audience', { area: true, rows: 2 })}
+        ${field(`${p}.problem`, 'Problem it solves', { area: true, rows: 2 })}
+        ${field(`${p}.outcome`, 'Intended outcome', { area: true, rows: 2 })}
+        ${field(`${p}.publicWording`, 'Approved public wording <span class="mini">(the only description agents may use)</span>', { area: true, rows: 3, placeholder: 'Not approved yet: agents leave it out' })}
+        ${field(`${p}.headline`, 'Graphic headline <span class="mini">(two short lines, separated by /)</span>', { join: ' / ' })}
+        ${field(`${p}.visual`, 'Visual idea for Prism', { area: true, rows: 2 })}
+        ${field(`${p}.topics`, 'Topics that bring it into a brief <span class="mini">(comma separated)</span>', { join: ', ' })}
+        ${field(`${p}.internalNotes`, 'Internal notes <span class="mini">(only you and Calibre see these; never sent to the agents that write posts)</span>', { area: true, rows: 3 })}
+        ${ro || it.kind === 'family' ? '' : `<button type="button" class="btn btn-ghost btn-small" data-pf-remove="catalogue.items|${i}">Remove ${it.kind === 'module' ? 'module' : 'service'}</button>`}
+      </div></details>`;
+  };
+  const families = its.map((it, i) => [it, i]).filter(([it]) => it.kind === 'family');
+  return `<fieldset data-testid="catalogue"><legend>Services and products</legend>
+    <p class="mini">Each record says whether agents may <strong>name it</strong>, <strong>describe it without naming it</strong>, or <strong>keep it internal</strong>. Agents only receive the approved public wording for the item a post is about; internal notes and internal names stay here. Calibre checks drafts against all of it. Client contact lists stay in your own systems: Marketing HQ never stores them.</p>
+    <h3 class="cat-h">Services</h3>
+    ${its.map((it, i) => (it.kind === 'service' ? card(it, i) : '')).join('')}
+    ${ro ? '' : '<button type="button" class="btn btn-small" data-pf-add="catalogue-service" data-testid="add-service">Add a service</button>'}
+    ${families.map(([f, fi]) => `<h3 class="cat-h">Product family</h3>${card(f, fi)}
+      <div class="cat-modules">${its.map((it, i) => (it.kind === 'module' && it.family === f.id ? card(it, i) : '')).join('')}
+      ${ro ? '' : `<button type="button" class="btn btn-small" data-pf-add="catalogue-module|${esc(f.id)}">Add a module</button>`}</div>`).join('')}
+  </fieldset>`;
+}
 
 function renderProfile() {
   const cur = S.currentProfile();
@@ -1714,10 +1773,10 @@ function renderProfile() {
   ${ui.profileSaved ? `<div class="sync-box update" role="status" data-testid="profile-saved"><p><strong>Saved as version ${ui.profileSaved.n} (${esc(ui.profileSaved.id)}).</strong> Changed: ${esc(ui.profileSaved.fields.map((f) => PF.FIELD_LABEL[f] || f).join(', ') || 'nothing')}.</p>
     ${affected.length ? `<p>Posts to review because of this change:</p><ul data-testid="affected-posts">${affected.map(({ j, impact }) => `<li><a href="#/job/${j.id}">${esc(jobTitle(j))}</a>: ${esc(impact.map((x) => x.text).join(' '))}</li>`).join('')}</ul>` : '<p data-testid="no-affected">No existing posts are affected by this change.</p>'}</div>` : ''}
   <form id="profile-form" class="profile-form" novalidate>
-    <fieldset><legend>Services</legend>
+    ${d.catalogue ? catalogueEditor(d, ro) : `<fieldset><legend>Services</legend>
       ${d.services.map((sv, i) => `<div class="pf-row">${field(`services.${i}.name`, 'Service')}${field(`services.${i}.description`, 'Description', { area: true, rows: 3 })}${ro ? '' : `<button type="button" class="btn btn-ghost btn-small" data-pf-remove="services|${i}">Remove service</button>`}</div>`).join('')}
       ${ro ? '' : '<button type="button" class="btn btn-small" data-pf-add="services">Add a service</button>'}
-    </fieldset>
+    </fieldset>`}
     <fieldset><legend>Audience</legend>${field('audience.summary', 'Who we serve')}${field('audience.size', 'Company size')}${field('audience.buyers', 'Buyers')}</fieldset>
     <fieldset><legend>Proof</legend><p class="mini">Quill and Calibre use product names only until you add approved claims or links.</p>
       ${d.proof.map((pr, i) => `<div class="pf-row">${field(`proof.${i}.name`, 'Product')}${field(`proof.${i}.claims`, 'Approved claims', { area: true, rows: 2, placeholder: 'None approved yet: posts use the product name only' })}${field(`proof.${i}.link`, 'Approved link', { type: 'url', placeholder: 'None yet' })}</div>`).join('')}
@@ -2063,13 +2122,15 @@ document.addEventListener('submit', (e) => {
     draft.brand.linkedinHashtags.min = Number(draft.brand.linkedinHashtags.min) || 0;
     draft.brand.linkedinHashtags.max = Number(draft.brand.linkedinHashtags.max) || 0;
     if (!Array.isArray(draft.brand.linkedinHashtags.required)) draft.brand.linkedinHashtags.required = String(draft.brand.linkedinHashtags.required || '').split(/\s+/).filter(Boolean);
+    CAT.syncServices(draft);
     ui.profileSaving = true;
     ui.profileConflict = false;
     render();
     S.saveProfile(draft).then((res) => {
       ui.profileSaving = false;
       if (res.ok) {
-        ui.profileSaved = { id: res.version.id, n: res.version.n, fields: PF.changedFields(before.data, res.version.data) };
+        const items = CAT.changedItems(before.data, res.version.data);
+        ui.profileSaved = { id: res.version.id, n: res.version.n, fields: [...PF.changedFields(before.data, res.version.data).filter((f) => f !== 'services' || !items.length), ...(items.length ? [`Services and products (${items.join(', ')})`] : [])] };
         ui.profileDirty = false;
         ui.profileDraft = null;
         toast(`Business profile saved as version ${res.version.n}.`);
@@ -2416,6 +2477,15 @@ document.addEventListener('click', (e) => {
     if (ta) { ta.value = f.fix; ta.focus(); ta.scrollIntoView({ block: 'center' }); }
     return;
   }
+  if (t.dataset.pfAdd && t.dataset.pfAdd.startsWith('catalogue-')) {
+    const [what, fam] = t.dataset.pfAdd.split('|');
+    const id = `${what === 'catalogue-module' ? 'mod' : 'svc'}_${Date.now().toString(36)}`;
+    ui.profileDraft.catalogue.items.push({ id, kind: what === 'catalogue-module' ? 'module' : 'service', ...(fam ? { family: fam } : {}), name: '', status: what === 'catalogue-module' ? 'planned' : 'available', disclosure: 'internal', audience: '', problem: '', outcome: '', publicWording: '', internalNotes: '', topics: [], headline: [], visual: '' });
+    ui.profileDirty = true;
+    render();
+    document.querySelector(`[data-id="${id}"]`)?.setAttribute('open', '');
+    return;
+  }
   if (t.dataset.pfAdd) {
     const k = t.dataset.pfAdd;
     if (k === 'offers') ui.profileDraft.offers.push({ id: `of_${Date.now().toString(36)}`, wording: '', start: S.today(), end: '', active: true });
@@ -2426,7 +2496,7 @@ document.addEventListener('click', (e) => {
   }
   if (t.dataset.pfRemove) {
     const [k, i] = t.dataset.pfRemove.split('|');
-    ui.profileDraft[k].splice(Number(i), 1);
+    getPath(ui.profileDraft, k).splice(Number(i), 1);
     ui.profileDirty = true;
     render();
     return;
