@@ -170,8 +170,9 @@ try {
   const anon = await browser.newContext();
   const ap = await anon.newPage();
   await ap.goto(jobUrl);
-  await ap.waitForSelector('text=Job not in this browser');
-  const anonText = await ap.locator('main').innerText();
+  // Milestone 14: signed out, the server shows only the owner sign-in screen, whatever the address.
+  await ap.waitForSelector('[data-testid="gate-signin"]');
+  const anonText = await ap.locator('body').innerText();
   assert(!anonText.includes('Report still waiting') && !anonText.includes(caption.slice(0, 30)), 'Signed-out browser sees a sign-in prompt, not the job');
   let res = await ap.request.get(`${BASE}api/workspace/jobs/${jobId}`);
   assert(res.status() === 401, 'Direct job URL refused (401)');
@@ -215,48 +216,27 @@ try {
   await dp.waitForSelector('.approve-bar[data-status="needs_reapproval"]');
   assert(true, 'Changed design needs fresh approval');
 
-  console.log('\n== Import this browser’s work (separate legacy browser) ==');
+  console.log('\n== A browser with old demo data (Milestone 14: never mixed into the private workspace) ==');
+  // Before Milestone 14 a signed-out browser could run HQ's local demo on this server and import that work. Now the
+  // server shows nothing but the sign-in screen until the owner signs in, and the private workspace never loads or
+  // imports browser demo data.
   const legacy = await browser.newContext({ viewport: { width: 1280, height: 860 } });
   const lp = await legacy.newPage();
   lp.on('pageerror', (e) => errors.push(`legacy: ${e.message}`));
   await lp.goto(BASE);
-  await lp.waitForSelector('#ws-pill:has-text("This browser only")');
-  await lp.fill('#brief', 'Create a LinkedIn post for FM directors about PPM visits where the certificate never reaches the client.');
-  await lp.click('button:has-text("Send brief to Vektor")');
-  await lp.locator('.job-row').first().click();
-  await lp.waitForSelector('[data-testid="panel-graphic"] .graphic-btn', { timeout: 15000 });
-  const localJobId = /#\/job\/([a-z0-9_]+)/.exec(lp.url())[1];
-  await lp.click('[data-testid="panel-graphic"] a:has-text("Open Photo layout")');
-  let l = await waitDraw(lp);
-  await lp.setInputFiles('[data-testid="photo-input"]', PHOTO);
-  l = await waitDraw(lp, l);
-  await lp.setInputFiles('[data-testid="logo-input"]', LOGO);
-  l = await waitDraw(lp, l);
-  await lp.click('#st-save');
-  await lp.waitForSelector('[data-testid="panel-graphic"] img[data-photo-version="2"]');
-  const localPhotoId = await lp.evaluate((id) => JSON.parse(localStorage.getItem('nexai-hq:v1')).tasks.find((t) => t.jobId === id && t.type === 'graphic').versions[1].content.photoId, localJobId);
-  // Simulate a photo that's gone from this browser.
-  await lp.evaluate((id) => new Promise((res) => { const q = indexedDB.open('nexai-hq-assets'); q.onsuccess = () => { const tx = q.result.transaction('assets', 'readwrite'); tx.objectStore('assets').delete(id); tx.oncomplete = res; }; }), localPhotoId);
+  await lp.waitForSelector('[data-testid="gate-signin"]');
+  await lp.evaluate(() => localStorage.setItem('nexai-hq:v1', JSON.stringify({ jobs: [{ id: 'job_oldbrowserdemo', brief: 'Old browser demo job about PPM visits', platform: 'LinkedIn', targetDate: '2026-12-04', createdAt: 1, delegatedAt: 1, taskIds: {}, approval: null }], tasks: [], log: [] })));
   await signIn(lp);
-  await lp.click('button:has-text("Preview import")');
-  await lp.waitForSelector('[data-testid="import-plan"]');
-  const planText = await lp.locator('[data-testid="import-plan"]').innerText();
-  assert(/Will import/.test(planText) && /PPM visits/.test(planText), 'Preview lists the local job to import');
-  assert(/Missing from this browser/.test(await lp.locator('[data-testid="import-missing"]').innerText()), 'Preview reports the missing photo');
-  await lp.screenshot({ path: `${OUT}/m4-import-preview.png` });
-  await lp.click('button:has-text("Import 1 job")');
-  await lp.waitForSelector('[data-testid="import-result"]');
-  const resText = await lp.locator('[data-testid="import-result"]').innerText();
-  assert(/1 job imported/.test(resText) && /Missing images/.test(resText), `Import result: ${resText.split('\n')[0]}`);
-  await lp.click('button:has-text("Preview import")');
-  await lp.waitForSelector('[data-testid="import-plan"]');
-  assert(/Already in workspace: skipped/.test(await lp.locator('[data-testid="import-plan"]').innerText()), 'Retrying the import skips the job');
-  assert(await lp.locator('button:has-text("Nothing new to import")').isDisabled(), 'Nothing new to import, so no duplicate');
+  await lp.goto(`${BASE}#/`);
+  await lp.waitForSelector('#brief-form');
+  await lp.waitForTimeout(800);
+  assert(!/Old browser demo job/.test(await lp.locator('main').innerText()), 'Demo data saved in a browser never appears in the private workspace');
+  assert(!(await lp.locator('[data-import-preview], [data-mode="local"]').count()), 'No “use this browser only” switch or browser import in the private workspace');
+  await lp.goto(`${BASE}#/workspace`);
+  await lp.waitForSelector('[data-testid="workspace-modes"]');
+  assert(!(await lp.locator('[data-import-preview], [data-mode="local"]').count()), 'The Workspace page offers no switch to browser demo data');
   const ws = await lp.evaluate(async () => (await fetch('api/workspace')).json());
-  assert(ws.jobs.filter((j) => j.id === localJobId).length === 1 && ws.jobs.length === 2, 'Workspace has exactly one copy of the imported job (2 jobs total)');
-  const imported = ws.jobs.find((j) => j.id === localJobId);
-  assert(imported.bundle.tasks.find((t) => t.type === 'graphic').versions.length === 2, 'Imported job keeps its graphic versions without duplicates');
-  assert((await lp.evaluate((id) => JSON.parse(localStorage.getItem('nexai-hq:v1')).jobs.some((j) => j.id === id), localJobId)), 'Browser original kept after import');
+  assert(!ws.jobs.some((j) => j.id === 'job_oldbrowserdemo'), 'Nothing from the browser was sent to the workspace');
   await legacy.close();
 
   assert(errors.length === 0, `No page errors${errors.length ? ': ' + errors.join(' | ') : ''}`);
