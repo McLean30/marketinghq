@@ -1550,8 +1550,9 @@ async function addCreativeChecks(result, job, cv, gv, profile) {
   hf.forEach(push);
   // 2. Was the graphic made for this caption?
   const pr = pairing(job);
-  result.checks.push({ id: 'pairing', label: 'Graphic was made for this caption version', kind: 'rule', basis: 'record', result: pr && !pr.ok ? 'owner' : 'pass', detail: pr ? (pr.ok ? `Made for caption v${pr.copyVersion}` : `Made for caption v${pr.madeFor}; caption is now v${pr.now}`) : 'No source caption recorded (made before Milestone 15)' });
-  if (pr && !pr.ok) push({ check: 'pairing', status: 'owner', title: `Graphic v${gv.n} was made for caption v${pr.madeFor}, not v${pr.now}`, why: 'The caption changed after the graphic was made, so its headline may no longer say the same thing as the post.', fixer: 'designer', fix: 'Read the headline against the new caption. Change it (same image, no new request) or keep it for this caption.' });
+  result.checks.push({ id: 'pairing', label: 'Graphic was made for this caption version', kind: 'rule', basis: 'record', result: pr && !pr.ok ? 'advisory' : 'pass', detail: pr ? (pr.ok ? `Made for caption v${pr.copyVersion}` : `Made for caption v${pr.madeFor}; caption is now v${pr.now}`) : 'No source caption recorded (made before Milestone 15)' });
+  // Advisory: the post itself asks you to review the pairing (keep it, or change the headline); it never blocks.
+  if (pr && !pr.ok) push({ check: 'pairing', status: 'advisory', title: `Graphic v${gv.n} was made for caption v${pr.madeFor}, not v${pr.now}`, why: 'The caption changed after the graphic was made, so its headline may no longer say the same thing as the post.', fixer: 'designer', fix: 'Read the headline against the new caption. Change it (same image, no new request) or keep it for this caption.' });
   // 3. The final render: what the exported PNG contains.
   let m = null;
   try {

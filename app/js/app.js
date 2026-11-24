@@ -1818,7 +1818,7 @@ function renderReview(job, r, rs) {
     ${group('human', 'Needs your judgement')}
     ${group('advisory', 'Suggestions (advisory, approval isn’t blocked)')}
     <details class="checks" data-key="rvc-${job.id}-${r.n}"><summary>Checks (${r.checks.filter((c) => c.kind === 'rule').length} ran automatically, ${r.checks.filter((c) => c.kind !== 'rule').length} need you)</summary>
-      <ul class="check-list">${r.checks.map((c) => `<li><span class="kind kind-${c.kind}" title="${KIND[c.kind][1]}">${KIND[c.kind][0]}</span> <strong>${esc(c.label)}</strong>: <span class="res res-${c.result}">${{ pass: 'Passed', fail: 'Problem found', na: 'Not applicable', owner: 'Needs owner review', human: 'Needs your judgement' }[c.result]}</span> <span class="mini">${esc(c.detail)}</span>${c.basis ? ` <span class="basis basis-${c.basis}" data-testid="check-basis" data-basis="${c.basis}">${esc(BASIS[c.basis] || c.basis)}</span>` : ''}</li>`).join('')}</ul></details>
+      <ul class="check-list">${r.checks.map((c) => `<li><span class="kind kind-${c.kind}" title="${KIND[c.kind][1]}">${KIND[c.kind][0]}</span> <strong>${esc(c.label)}</strong>: <span class="res res-${c.result}">${{ pass: 'Passed', fail: 'Problem found', na: 'Not applicable', owner: 'Needs owner review', human: 'Needs your judgement', advisory: 'Advisory' }[c.result]}</span> <span class="mini">${esc(c.detail)}</span>${c.basis ? ` <span class="basis basis-${c.basis}" data-testid="check-basis" data-basis="${c.basis}">${esc(BASIS[c.basis] || c.basis)}</span>` : ''}</li>`).join('')}</ul></details>
   </div>`;
 }
 
