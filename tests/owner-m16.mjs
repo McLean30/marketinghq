@@ -245,7 +245,7 @@ try {
   assert((cancelRes.status === 'cancelled' && !sent && pubOf(R).status === 'cancelled') || (cancelRes.status !== 'cancelled' && (sent || pubOf(R).status === 'publishing')), `Cancel racing the worker settled once: cancel said “${cancelRes.status}”, receipt ${sent ? 'exists' : 'none'}, record “${pubOf(R).status}”`);
 
   // Delivery already started (the worker claimed it first): the real status comes back and nothing is lost.
-  const S2 = weekJobs[3];
+  const S2 = weekJobs[0]; // Monday (deleted later in E)
   await storeCall(desk, 'restoreJob', S2);
   const sp = await schedule(desk, S2, Date.now() + 864e5);
   const r2 = rec(S2);
@@ -259,6 +259,8 @@ try {
   Object.assign(claimed.job.publications.at(-1), { status: 'cancelled', claim: null }); // tidy the test record for later steps
   claimed.job.publications.at(-1).events.push({ at: Date.now(), type: 'cancelled', text: 'Test reset', by: 'test' });
   Object.assign(r2, { data: claimed, rev: r2.rev + 1 });
+  await desk.reload(); // pick up the record as the stand-in now holds it
+  await desk.waitForSelector('main');
 
   /* ---------- D. Cancel and delete post ---------- */
   console.log('\n== D. Cancel and delete post (phone) ==');
