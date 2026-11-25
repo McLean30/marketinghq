@@ -222,7 +222,24 @@ async function handleApi(req, res, urlPath) {
   }
   if (urlPath === '/api/workspace' && method === 'GET') return sendJson(res, 200, await wsStore.snapshot());
   if (urlPath === '/api/workspace/rev' && method === 'GET') return sendJson(res, 200, { rev: await wsStore.wsRev(), now: scheduler.now() });
-  let m = /^\/api\/workspace\/jobs\/([a-z0-9_]+)$/.exec(urlPath);
+  /* --- Owner controls (Milestone 16): what deleting would remove, permanent deletion, cancelling a scheduled post --- */
+  let m = /^\/api\/workspace\/jobs\/([a-z0-9_]+)\/(delete-plan|delete|cancel-publication)$/.exec(urlPath);
+  if (m && m[2] === 'delete-plan' && method === 'GET') {
+    const plan = await wsStore.deletionPlan(m[1]);
+    return plan ? sendJson(res, 200, plan) : sendJson(res, 404, { error: 'Post not found.' });
+  }
+  if (m && m[2] === 'delete' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const out = await wsStore.deleteJob(m[1], body.baseRev, deviceOf(req));
+    console.log(`[workspace] post ${m[1]} deleted permanently from a ${deviceOf(req)} (${out.removed.length} media removed, ${out.kept.length} shared kept)`);
+    return sendJson(res, 200, out);
+  }
+  if (m && m[2] === 'cancel-publication' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const out = await wsStore.cancelPublication(m[1], String(body.pubId || ''), deviceOf(req), scheduler.now());
+    return sendJson(res, 200, out);
+  }
+  m = /^\/api\/workspace\/jobs\/([a-z0-9_]+)$/.exec(urlPath);
   if (m && method === 'GET') {
     const job = await wsStore.getJob(m[1]);
     return job ? sendJson(res, 200, job) : sendJson(res, 404, { error: 'Job not found.' });
