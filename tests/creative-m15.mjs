@@ -80,7 +80,7 @@ async function previewMatchesExport(id, n, file) {
   const t = task(id, 'graphic');
   await page.waitForSelector(`[data-testid="panel-graphic"] img[data-photo-version="${n}"]`);
   await page.locator(`[data-testid="panel-graphic"] [data-lightbox="${t.id}:${n}"]`).first().click();
-  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-download]')]);
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('.lightbox [data-download]')]);
   const path = await dl.path();
   fs.copyFileSync(path, file);
   const b64 = fs.readFileSync(path).toString('base64');
