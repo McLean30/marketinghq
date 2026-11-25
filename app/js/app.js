@@ -48,6 +48,15 @@ const platSlug = (p) => String(p).replace(/\s+/g, '');
 const jobTitle = (job) => job.title || briefTitle(job.brief);
 const photoTag = `<span class="demo-tag photo" title="Built by you in Prism from a supplied photo and logo">Photo layout</span>`;
 
+/**
+ * "Download image": the saved version exactly as laid out (crop, headline, logo), through the same PNG exporter as
+ * the full-size view. No approval needed, no image request. File: nexai-<post title>-graphic-v<n>-1080x1350.png.
+ */
+function downloadButton(task, v, { label = 'Download image', small = false } = {}) {
+  if (!task || !v || task.type !== 'graphic') return '';
+  return `<button type="button" class="btn${small ? ' btn-small' : ''} dl-btn" data-download="${task.id}:${v.n}" data-testid="download-image" data-version="${v.n}">${esc(label)}${v.content.mode === 'photo' ? '' : ' (SVG)'}</button>`;
+}
+
 /** Markup for any graphic version: inline SVG for simulated, a rendered PNG for Photo layout. */
 function graphicMarkup(task, v, { title } = {}) {
   if (v.content.mode === 'video') return videoPlayer(v.content.videoId, { label: title || `Video v${v.n}`, key: `${task.id}:${v.n}` });
@@ -225,6 +234,7 @@ function route() {
   if (a === 'job' && b && parts[3] === 'video') return { view: 'vstudio', id: b, base: `#/job/${b}` };
   if (a === 'job' && b) return { view: 'job', id: b, agent: parts[3] === 'agent' ? parts[4] : null, base: `#/job/${b}` };
   if (a === 'calendar') return { view: 'calendar' };
+  if (a === 'archived') return { view: 'archived' };
   if (a === 'workspace') return { view: 'workspace' };
   if (a === 'week' && b) return { view: 'week', id: b };
   if (a === 'profile') return { view: 'profile' };
@@ -268,7 +278,7 @@ function managerLine() {
 }
 
 function renderHQ() {
-  const jobs = S.getState().jobs.filter((j) => !j.sample); // sample posts live with the Analyst only
+  const jobs = S.activeJobs(); // sample posts live with the Analyst; archived posts in Archived
   return `
   <p id="open-ws-hint" class="visually-hidden">Opens the agent’s workspace</p>
   <section class="team stage" aria-label="Your AI marketing team">
@@ -321,15 +331,36 @@ function renderHQ() {
     </section>
 
     <section class="panel jobs-panel" aria-labelledby="jobs-h">
-      <h2 id="jobs-h">Jobs</h2>
-      ${jobs.length ? `<ul class="job-list">${jobs.map(jobRow).join('')}</ul>` : `<p class="empty">No jobs yet. Send Vektor a brief to start one.</p>`}
+      <div class="jobs-head"><h2 id="jobs-h">Jobs</h2>
+        <span class="row-actions">${jobs.length ? `<button class="btn btn-small${ui.selecting ? ' btn-primary' : ''}" data-select-toggle aria-pressed="${!!ui.selecting}" data-testid="select-toggle">${ui.selecting ? 'Done' : 'Select'}</button>` : ''}<a class="btn btn-small btn-ghost" href="#/archived" data-testid="archived-link">Archived${S.archivedJobs().length ? ` (${S.archivedJobs().length})` : ''}</a></span></div>
+      ${ui.selecting ? selectionBar(jobs) : ''}
+      ${jobs.length ? `<ul class="job-list${ui.selecting ? ' selecting' : ''}">${jobs.map(jobRow).join('')}</ul>` : `<p class="empty">No jobs yet. Send Vektor a brief to start one.</p>`}
     </section>
+  </div>`;
+}
+
+/** Select several posts and archive them (scheduled ones stay active and are counted). */
+function selectionBar(jobs) {
+  const picked = jobs.filter((j) => ui.picked?.[j.id]);
+  const active = picked.filter((j) => S.hasActiveDelivery(j));
+  const n = picked.length - active.length;
+  const c = ui.archiveConfirm;
+  return `<div class="select-bar" data-testid="select-bar" role="region" aria-label="Selected posts">
+    <p>${picked.length ? `${picked.length} selected.` : 'Tick the posts to archive.'}${active.length ? ` ${active.length} with a scheduled delivery will stay active.` : ''}</p>
+    ${c ? `<div class="confirm-box" data-testid="archive-confirm"><p><strong>${n} post${n === 1 ? '' : 's'} will move to Archived.</strong> Their versions, approvals, images and results are kept; you can restore them.${active.length ? ` ${active.length} scheduled post${active.length === 1 ? '' : 's'} will be skipped.` : ''}</p>
+      <div class="row-actions"><button class="btn btn-primary" data-archive-selected data-testid="archive-selected-confirm" ${n ? '' : 'disabled'}>Archive ${n}</button><button class="btn btn-ghost" data-archive-cancel>Back</button></div></div>`
+      : `<div class="row-actions"><button class="btn btn-primary" data-archive-ask ${picked.length ? '' : 'disabled'} data-testid="archive-selected">Archive selected${picked.length ? ` (${n})` : ''}</button></div>`}
   </div>`;
 }
 
 function jobRow(job) {
   const { copy, graphic } = S.jobTasks(job);
   const st = S.jobStatus(job);
+  if (ui.selecting) {
+    return `<li class="job-pick"><label class="job-row pickable" data-testid="job-pick"><input type="checkbox" data-pick="${job.id}" ${ui.picked?.[job.id] ? 'checked' : ''}>
+      <span class="job-top"><span class="plat plat-${platSlug(job.platform)}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate)}</span></span>
+      <span class="job-title">${esc(jobTitle(job))}</span><span class="job-sub">${pill(st)}${pubPill(job)}</span></label></li>`;
+  }
   return `<li><a class="job-row" href="#/job/${job.id}">
     <span class="job-top"><span class="plat plat-${platSlug(job.platform)}">${job.platform}</span><span class="job-date">${fmtDate(job.targetDate)}</span></span>
     <span class="job-title">${esc(jobTitle(job))}</span>
@@ -541,7 +572,8 @@ function outputBlock(task, v, { compact = false } = {}) {
   return `<div class="graphic-out">
     ${graphicTag(v)}
     <button class="graphic-btn${isPhoto ? ' portrait' : ''}" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${graphicMarkup(task, v, { title: `Graphic v${v.n}` })}</button>
-    <p class="mini">${isPhoto ? `Photo: ${esc(v.content.photoName)}. Logo: ${esc(v.content.logoName)}. 1080 × 1350.` : `Setting: ${esc(sceneLabel(v.content.scene))}.`} Tap to view full size.</p></div>`;
+    <p class="mini">${isPhoto ? `Photo: ${esc(v.content.photoName)}. Logo: ${esc(v.content.logoName)}. 1080 × 1350.` : `Setting: ${esc(sceneLabel(v.content.scene))}.`} Tap to view full size.</p>
+    ${compact ? '' : downloadButton(task, v)}</div>`;
 }
 
 function historyList(task, job) {
@@ -553,7 +585,7 @@ function historyList(task, job) {
           ${v.n === task.versions.length ? '<span class="tag">Current</span>' : ''}${v.n === approvedN ? '<span class="tag tag-ok">Approved</span>' : ''}${S.realOnly() && S.isSimulatedVersion(task, v) ? `<span class="tag tag-legacy" data-testid="hist-legacy">Legacy simulated · not usable</span>` : ''}</summary>
         ${v.feedback ? `<p class="feedback-quote">Your feedback: “${esc(v.feedback)}”</p>` : ''}
         ${v.notes?.length ? `<ul class="notes">${v.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
-        ${task.type === 'video' ? `<div class="video-hist" data-testid="video-history-item" data-version="${v.n}">${outputBlock(task, v)}<p class="mini">On-screen captions: ${v.content.storyboard.scenes.map((sc) => `“${esc(sc.caption)}”`).join(' · ')}</p></div>` : task.type === 'copy' ? `<div class="caption-text small">${esc(v.content.text)}</div>` : `<button class="graphic-btn small" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${graphicMarkup(task, v)}</button>`}
+        ${task.type === 'video' ? `<div class="video-hist" data-testid="video-history-item" data-version="${v.n}">${outputBlock(task, v)}<p class="mini">On-screen captions: ${v.content.storyboard.scenes.map((sc) => `“${esc(sc.caption)}”`).join(' · ')}</p></div>` : task.type === 'copy' ? `<div class="caption-text small">${esc(v.content.text)}</div>` : `<button class="graphic-btn small" data-lightbox="${task.id}:${v.n}" aria-label="View graphic v${v.n} full screen">${graphicMarkup(task, v)}</button>${downloadButton(task, v, { label: `Download v${v.n}`, small: true })}`}
       </details>
     </li>`).join('')}</ol>`;
 }
@@ -661,6 +693,7 @@ function renderJob(id) {
     ${catalogueChip(job)}
     <p class="profile-chip" data-testid="job-profile">Business profile: ${S.jobProfileRef(job) ? `<a href="#/profile" data-profile-link>${esc(S.jobProfileRef(job).id)}</a>${S.jobProfileRef(job).id !== S.currentProfile()?.id ? ` (current: ${esc(S.currentProfile()?.id || '')})` : ' (current)'}` : 'none recorded: this post was created before the business profile'}</p>
   </header>
+  ${jobMenu(job)}
   ${profileImpactNotice(job)}
   <div class="review-grid">
     ${assetPanel(job, copy)}
@@ -675,6 +708,78 @@ function renderJob(id) {
   </div>
   ${S.realOnly() ? destinationPanel(job) : publishPanel(job)}
   ${S.realOnly() ? '' : resultsPanel(job)}`;
+}
+
+/* ---------- Owner controls (Milestone 16): job menu, archive, delete ---------- */
+function jobMenu(job) {
+  const { graphic } = S.jobTasks(job);
+  const dlV = graphicForDownload(job);
+  const del = ui.del?.[job.id];
+  const active = S.hasActiveDelivery(job);
+  return `<details class="job-menu" data-key="menu-${job.id}" data-testid="job-menu" ${del ? 'open' : ''}><summary>Post options</summary>
+    <div class="row-actions">
+      ${dlV ? downloadButton(graphic, dlV, { label: `Download image (graphic v${dlV.n})` }) : ''}
+      ${job.archived ? `<button class="btn" data-restore="${job.id}" data-testid="restore">Restore from Archived</button>` : `<button class="btn" data-archive="${job.id}" data-testid="archive" ${active ? 'disabled title="A scheduled post stays active"' : ''}>Archive</button>`}
+      <button class="btn btn-danger" data-delete-open="${job.id}" data-testid="delete-open">Delete permanently</button>
+    </div>
+    ${active && !job.archived ? '<p class="mini">This post has a scheduled delivery, so it stays active. Cancel the schedule to archive or delete it.</p>' : ''}
+    ${del ? deleteConfirm(job, del) : ''}
+  </details>`;
+}
+/** The version a download defaults to: the one in the scheduled post's preview, else the approved one, else the latest. */
+function graphicForDownload(job) {
+  const { graphic } = S.jobTasks(job);
+  if (graphic.type !== 'graphic' || !graphic.versions.length) return null;
+  const p = PB.currentPub(job);
+  const n = p && ['scheduled', 'publishing', 'held'].includes(p.status) ? p.graphicVersion : job.approval?.graphicVersion || graphic.versions.length;
+  return graphic.versions[n - 1] || S.currentVersion(graphic);
+}
+function deleteConfirm(job, d) {
+  if (d.loading) return '<p class="working-note" role="status">Checking what this post holds…</p>';
+  if (d.error && !d.plan) return `<p class="form-error" role="alert">${esc(d.error)}</p>`;
+  const p = d.plan;
+  const c = p.counts;
+  const items = [`${c.caption} caption version${c.caption === 1 ? '' : 's'}`, `${c.graphic} ${S.visualLabel(job).toLowerCase()} version${c.graphic === 1 ? '' : 's'}`, c.approvals ? `${c.approvals} approval${c.approvals === 1 ? '' : 's'}` : '', c.reviews ? `${c.reviews} review${c.reviews === 1 ? '' : 's'}` : '', c.results ? `${c.results} results snapshot${c.results === 1 ? '' : 's'} (Vantage)` : '', c.publications ? `${c.publications} publishing record${c.publications === 1 ? '' : 's'}` : ''].filter(Boolean);
+  return `<div class="confirm-box danger" role="alertdialog" aria-labelledby="del-h-${job.id}" data-testid="delete-confirm">
+    <p id="del-h-${job.id}"><strong>Delete “${esc(jobTitle(job))}” permanently?</strong></p>
+    <p>This removes the post from HQ for good: ${esc(items.join(', '))}, its history and its place on the calendar${p.plans?.length ? ' and in its content week (the day stays, marked deleted, and is never recreated)' : ''}.</p>
+    ${!p.local ? `<p class="mini" data-testid="delete-media">${p.remove.length ? `${p.remove.length} image or video file${p.remove.length === 1 ? '' : 's'} used only by this post will be deleted.` : 'No media files are deleted.'}${p.keep.length ? ` ${p.keep.length} file${p.keep.length === 1 ? ' is' : 's are'} also used by another post or the brand logo and will be kept.` : ''} The official Nexai logo is never deleted.</p>` : ''}
+    ${p.published?.length ? `<p class="warn" data-testid="delete-published"><strong>This post was published</strong> (${p.published.map((x) => esc(x.platform)).join(', ')}). Deleting the HQ record doesn’t remove the post from ${p.published.length === 1 ? esc(p.published[0].platform) : 'those platforms'}; delete it there too if you need to.</p>` : ''}
+    ${p.active?.length ? '<p class="form-error" role="alert">It has a scheduled delivery. Use “Cancel and delete post” in Publishing, or cancel the schedule first.</p>' : ''}
+    ${d.error ? `<p class="form-error" role="alert">${esc(d.error)}</p>` : ''}
+    <div class="row-actions"><button class="btn btn-danger" data-delete-confirm="${job.id}" data-testid="delete-confirm-btn" ${d.busy || p.active?.length ? 'disabled' : ''}>${d.busy ? 'Deleting…' : 'Delete permanently'}</button><button class="btn btn-ghost" data-delete-cancel="${job.id}">Keep it</button></div>
+  </div>`;
+}
+
+/** Archived posts: kept with their images, approvals and results; restore or delete them here. */
+function renderArchived() {
+  const jobs = S.archivedJobs();
+  return `<nav class="crumbs"><a href="#/">← HQ</a></nav>
+  <header class="cal-head"><h1>Archived</h1><p class="mini">Out of the HQ list and the agents’ task lists. Versions, approvals, images and Vantage’s results are kept. Restore a post to work on it again.</p></header>
+  ${jobs.length ? `<ul class="job-list" data-testid="archived-list">${jobs.map((j) => `<li class="archived-row" data-testid="archived-row" data-job="${j.id}"><a class="job-row" href="#/job/${j.id}">
+      <span class="job-top"><span class="plat plat-${platSlug(j.platform)}">${j.platform}</span><span class="job-date">${fmtDate(j.targetDate)}</span></span>
+      <span class="job-title">${esc(jobTitle(j))}</span><span class="job-sub">${pill(S.jobStatus(j))}<span class="mini">Archived ${esc(fmtTime(j.archived.at))}</span></span></a>
+      <div class="row-actions"><button class="btn btn-small" data-restore="${j.id}" data-testid="restore">Restore</button><a class="btn btn-small btn-ghost" href="#/job/${j.id}">Open</a></div></li>`).join('')}</ul>` : '<p class="empty" data-testid="archived-empty">Nothing archived. Finished posts can be archived from HQ (Select), a content week, or a post’s options.</p>'}`;
+}
+
+/* ---------- Cancelling a scheduled post (Milestone 16) ---------- */
+function cancelControls(job, p) {
+  const c = ui.cancel?.[job.id];
+  if (c?.pubId === p.id && c.mode) {
+    const what = c.mode === 'delete' ? 'Cancel and delete post' : 'Cancel schedule';
+    return `<div class="confirm-box${c.mode === 'delete' ? ' danger' : ''}" role="alertdialog" aria-labelledby="cx-${job.id}" data-testid="cancel-confirm">
+      <p id="cx-${job.id}"><strong>${esc(what)}?</strong></p>
+      <dl class="confirm-list">
+        <div><dt>Destination</dt><dd data-testid="cancel-destination">${esc(job.platform)}: ${esc(PB.accountLabel(p.account))}</dd></div>
+        <div><dt>Scheduled for</dt><dd data-testid="cancel-when">${esc(PB.fmtLondon(p.scheduledFor))}</dd></div>
+        <div><dt>Content</dt><dd>Caption v${p.copyVersion} and ${PB.visualOf(p)} v${p.graphicVersion}</dd></div>
+      </dl>
+      <p class="mini">${c.mode === 'delete' ? 'Delivery is cancelled first; only then is the post deleted permanently.' : 'Nothing will be sent. The slot is freed and the post stays here to edit or schedule again.'} HQ confirms with the scheduler before saying it’s done.</p>
+      ${c.error ? `<p class="form-error" role="alert" data-testid="cancel-error">${esc(c.error)}</p>` : ''}
+      <div class="row-actions"><button class="btn ${c.mode === 'delete' ? 'btn-danger' : 'btn-primary'}" data-cancel-confirm="${job.id}" data-testid="cancel-confirm-btn" ${c.busy ? 'disabled' : ''}>${c.busy ? 'Checking with the scheduler…' : `Yes, ${what.toLowerCase()}`}</button><button class="btn btn-ghost" data-cancel-close="${job.id}">Keep it scheduled</button></div>
+    </div>`;
+  }
+  return `<div class="row-actions"><button class="btn" data-cancel-open="${job.id}|${p.id}|schedule" data-testid="cancel-schedule">Cancel schedule</button><button class="btn btn-danger" data-cancel-open="${job.id}|${p.id}|delete" data-testid="cancel-delete">Cancel and delete post</button></div>`;
 }
 
 /* ---------- Destinations (owner's private workspace) ---------- */
@@ -692,6 +797,8 @@ function destinationPanel(job) {
     <h2 id="dest-h-${job.id}">Publishing</h2>
     ${st === 'approved' ? `<p data-testid="calendar-note">${problems.length ? 'This approval contains simulated content, so it isn’t ready to send.' : `Caption v${job.approval.copyVersion} with ${S.visualLabel(job).toLowerCase()} v${job.approval.graphicVersion} is on your <a href="#/calendar">private calendar</a> for ${esc(fmtDate(job.targetDate, { weekday: 'long', day: 'numeric', month: 'long' }))}.`}</p>` : ''}
     <p class="dest-state" data-testid="destination-state" data-connected="${d.connected ? 'yes' : 'no'}"><strong>${esc(d.connected ? `${job.platform} is connected` : d.label || `${job.platform} isn’t connected`)}.</strong> ${d.connected ? '' : 'Nothing can be scheduled or sent there until the account is connected (a later milestone). Approving never publishes.'}</p>
+    ${PB.publications(job).filter((p) => ['scheduled', 'held'].includes(p.status)).map((p) => `<div class="pub-card pub-${p.status}" data-testid="pub-card" data-status="${p.status}"><p class="pub-card-head">${esc(PB.PUB_LABEL[p.status])} · ${esc(p.platform)} · ${esc(PB.fmtLondon(p.scheduledFor))}</p><p class="mini">An earlier demo schedule. Cancel it so it can never be sent.</p>${cancelControls(job, p)}</div>`).join('')}
+    ${ui.cancelResult?.[job.id] ? `<p class="${ui.cancelResult[job.id].ok ? 'ok-note' : 'form-error'}" role="status" data-testid="cancel-result">${esc(ui.cancelResult[job.id].text)}</p>` : ''}
     ${legacy ? `<p class="mini" data-testid="legacy-publishing">${legacy} earlier demo publishing record${legacy === 1 ? ' is' : 's are'} kept in this post’s data. ${legacy === 1 ? 'It was' : 'They were'} simulated: nothing was ever sent to ${esc(job.platform)}.</p>` : ''}
   </section>`;
 }
@@ -764,6 +871,7 @@ function pubPreview(job, copyN, graphicN, account, { heading = 'What will be pub
     <p class="pub-caption" data-testid="pub-caption">${esc(cv.content.text)}</p>
     <div class="pub-graphic" data-testid="pub-graphic">${graphicMarkup(graphic, gv, { title: `${S.visualLabel(graphic)} v${gv.n}` })}</div>
     <p class="pub-versions" data-testid="pub-versions">Caption v${copyN} · ${S.visualLabel(graphic)} v${graphicN}${job.approval && job.approval.copyVersion === copyN && job.approval.graphicVersion === graphicN ? ` · approved ${esc(fmtTime(job.approval.at))}` : ''}</p>
+    ${downloadButton(graphic, gv, { small: true })}
   </figure>`;
 }
 
@@ -821,8 +929,8 @@ function pubCard(job, p, u) {
   }[p.status]?.() || '';
   const actions = [];
   if (!u.step) {
-    if (p.status === 'scheduled' && p.action === 'schedule') actions.push(`<button class="btn" data-pub-step="reschedule" data-job="${job.id}">Reschedule</button>`, `<button class="btn btn-ghost" data-pub-step="cancel-confirm" data-job="${job.id}">Cancel scheduled post</button>`);
-    if (p.status === 'held') actions.push(`<button class="btn btn-primary" data-pub-step="release-confirm" data-job="${job.id}">Publish now anyway (demo)</button>`, `<button class="btn" data-pub-step="reschedule" data-job="${job.id}">Reschedule</button>`, `<button class="btn btn-ghost" data-pub-step="cancel-confirm" data-job="${job.id}">Cancel</button>`);
+    if (p.status === 'scheduled' && p.action === 'schedule') actions.push(`<button class="btn" data-pub-step="reschedule" data-job="${job.id}">Reschedule</button>`);
+    if (p.status === 'held') actions.push(`<button class="btn btn-primary" data-pub-step="release-confirm" data-job="${job.id}">Publish now anyway (demo)</button>`, `<button class="btn" data-pub-step="reschedule" data-job="${job.id}">Reschedule</button>`);
     if (p.status === 'attention') actions.push(`<button class="btn btn-ghost" data-pub-step="cancel-confirm" data-job="${job.id}">Dismiss: cancel this publication</button>`);
   }
   const versions = { copy: p.copyVersion, graphic: p.graphicVersion };
@@ -831,6 +939,8 @@ function pubCard(job, p, u) {
     ${body}
     <p class="mini" data-testid="pub-authorised">Authorised: caption v${p.copyVersion} and ${PB.visualOf(p)} v${p.graphicVersion} for ${esc(PB.accountLabel(p.account))}${p.action === 'schedule' ? ` at ${esc(when)}` : ''}.</p>
     ${actions.length ? `<div class="row-actions">${actions.join('')}</div>` : ''}
+    ${!u.step && ['scheduled', 'held'].includes(p.status) ? cancelControls(job, p) : ''}
+    ${ui.cancelResult?.[job.id] ? `<p class="${ui.cancelResult[job.id].ok ? 'ok-note' : 'form-error'}" role="status" data-testid="cancel-result">${esc(ui.cancelResult[job.id].text)}</p>` : ''}
     ${u.step === 'reschedule' ? timeForm(job, u) : ''}
     ${['reschedule-confirm', 'release-confirm', 'cancel-confirm'].includes(u.step) ? confirmBox(job, u, p.account, versions) : ''}
     <details class="pub-authorised" data-key="pa-${p.id}" ${p.status === 'scheduled' || p.status === 'held' ? 'open' : ''}><summary>What you authorised</summary>${pubPreview(job, p.copyVersion, p.graphicVersion, p.account, { heading: 'Authorised for publication' })}</details>
@@ -1235,7 +1345,7 @@ function renderCalendar() {
         const gp = PB.currentPub(j);
         const g = gt.versions[((!S.realOnly() && gp && gp.status !== 'replaced' ? gp.graphicVersion : j.approval?.graphicVersion) || gt.versions.length) - 1];
         const showThumb = g && !(S.realOnly() && S.isSimulatedVersion(gt, g)); // legacy artwork is never shown as the post's graphic
-        return `<div class="agenda-item">${showThumb ? `<span class="thumb">${graphicMarkup(gt, g)}</span>` : ''}${entry(j)}</div>`;
+        return `<div class="agenda-item">${showThumb ? `<span class="thumb">${graphicMarkup(gt, g)}</span>` : ''}${entry(j)}${showThumb ? downloadButton(gt, g, { small: true }) : ''}</div>`;
       }).join('')}</section>`).join('') : `<p class="empty">No approved posts in ${monthName}${ui.calPlatform !== 'All' ? ` for ${ui.calPlatform}` : ''}.</p>`}
   </div>`;
 }
@@ -1304,6 +1414,7 @@ function renderStudio(jobId) {
     <h1>Photo layout</h1>
     ${job.planDay?.visual ? `<p class="visual-brief"><strong>Visual brief from Vektor’s plan:</strong> ${esc(job.planDay.visual)}</p>` : ''}
     <p class="mini">Prism · ${esc(jobTitle(job))} · ${job.platform}, ${fmtDate(job.targetDate)}. Saving creates graphic v${next}. Earlier versions and Quill’s caption stay exactly as they are.</p>
+    ${(() => { const sv = [...task.versions].reverse().find((x) => x.content.mode === 'photo'); return sv ? `<p class="studio-dl">${downloadButton(task, sv, { label: `Download saved graphic v${sv.n}` })} <span class="mini">The last saved version, exactly as exported. Unsaved edits here aren’t included.</span></p>` : ''; })()}
   </header>
   <div class="studio">
     <div class="studio-preview">
@@ -1559,7 +1670,9 @@ async function downloadPhotoVersion(task, v, btn) {
       blob = await P.renderToPngBlob(v.content, { photo, logo });
     }
     const job = S.getJob(task.jobId);
-    const slug = jobTitle(job).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+    // A recognisable name: the post's title without a "LinkedIn post for…" preamble, cut at a word, then the version.
+    const title = (job.title || job.brief.split(/[.?!\n]/)[0]).replace(/^(?:please\s+)?(?:create|write|make)?\s*(?:a\s+)?(?:linkedin|facebook|instagram|x|google business profile)?\s*post\s+(?:for|about|on)\s+/i, '');
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60).replace(/-[^-]*$/, (m) => (title.length > 60 ? '' : m)).replace(/-$/, '') || 'post';
     const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `nexai-${slug}-graphic-v${v.n}-1080x1350.png` });
     document.body.appendChild(a);
     a.click();
@@ -1591,6 +1704,7 @@ function attentionFor(pl) {
   for (const d of pl.days) {
     if (!d.jobId) continue;
     const job = S.getJob(d.jobId);
+    if (d.deleted) continue; // deleted permanently: nothing to create or chase
     if (!job) { missing.push({ text: `${d.dayName}’s post hasn’t been created yet`, href: `#/week/${pl.id}` }); continue; }
     firstJob = firstJob || job;
     const { copy, graphic } = S.jobTasks(job);
@@ -1669,7 +1783,9 @@ function renderPlanEditor(pl) {
 function renderWeekOverview(pl) {
   const items = attentionFor(pl);
   const created = pl.days.filter((d) => d.jobId && S.getJob(d.jobId)).length;
-  const linked = pl.days.filter((d) => d.jobId).length;
+  const linked = pl.days.filter((d) => d.jobId && !d.deleted).length;
+  const ap = S.weekArchivePlan(pl.id);
+  const wa = ui.weekArchive?.[pl.id];
   return `<nav class="crumbs"><a href="#/">← HQ</a></nav>
   <header class="cal-head"><h1>${esc(PL.fmtWeek(pl.weekStart))}</h1>${planMethodNote(pl)}
     <details class="brief-detail"><summary>Brief for the week</summary><p>${esc(pl.brief)}</p></details></header>
@@ -1678,10 +1794,19 @@ function renderWeekOverview(pl) {
     <h2 id="att-h">Needs your attention</h2>
     ${items.length ? `<ul>${attentionMarkup(items)}</ul>` : '<p>Nothing right now. Every post is approved.</p>'}
   </section>
+  <section class="panel week-archive" aria-labelledby="wa-h-${pl.id}" data-testid="week-archive">
+    <h2 id="wa-h-${pl.id}">Clean up this week</h2>
+    <p>${ap.completed.length} completed post${ap.completed.length === 1 ? '' : 's'} can be archived.${ap.scheduled.length ? ` ${ap.scheduled.length} scheduled post${ap.scheduled.length === 1 ? '' : 's'} will stay active.` : ''}${ap.other.length ? ` ${ap.other.length} not yet approved will stay too.` : ''}</p>
+    ${wa?.done ? `<p class="ok-note" role="status" data-testid="week-archive-result">${esc(wa.done)}</p>` : ''}
+    ${wa?.confirm ? `<div class="confirm-box" data-testid="week-archive-confirm"><p><strong>${ap.completed.length} post${ap.completed.length === 1 ? '' : 's'} will move to Archived.</strong> Images, approvals and results are kept; you can restore them.${ap.scheduled.length ? ` Skipped: ${ap.scheduled.length} scheduled.` : ''}</p>
+      <div class="row-actions"><button class="btn btn-primary" data-archive-week="${pl.id}" data-testid="week-archive-confirm-btn">Archive ${ap.completed.length}</button><button class="btn btn-ghost" data-week-archive-cancel="${pl.id}">Back</button></div></div>`
+      : `<div class="row-actions"><button class="btn" data-week-archive-ask="${pl.id}" data-testid="week-archive-btn" ${ap.completed.length ? '' : 'disabled'}>Archive completed posts (${ap.completed.length})</button></div>`}
+  </section>
   ${conceptBoard(pl)}
   <ol class="week-days" data-testid="week-days">
   ${pl.days.map((d) => {
     const job = d.jobId ? S.getJob(d.jobId) : null;
+    if (d.deleted) return `<li class="week-day left-out" data-testid="week-day-${d.dayName}" data-deleted="1"><div class="plan-day-head"><span class="day-id"><strong>${esc(dayLabel(d))}</strong><span class="plat plat-${platSlug(d.platform)}">${esc(d.platform)}</span></span></div><p class="mini">Post deleted permanently${d.deleted.title ? ` (“${esc(d.deleted.title)}”)` : ''}. It won’t be recreated.</p></li>`;
     if (!d.jobId) return `<li class="week-day left-out" data-testid="week-day-${d.dayName}"><div class="plan-day-head"><span class="day-id"><strong>${esc(dayLabel(d))}</strong><span class="plat plat-${platSlug(d.platform)}">${esc(d.platform)}</span></span></div><p class="mini">Left out of this week.</p></li>`;
     if (!job) return `<li class="week-day" data-testid="week-day-${d.dayName}"><div class="plan-day-head"><span class="day-id"><strong>${esc(dayLabel(d))}</strong><span class="plat plat-${platSlug(d.platform)}">${esc(d.platform)}</span></span></div><p class="mini">Not created yet.</p></li>`;
     const { copy, graphic } = S.jobTasks(job);
@@ -1703,7 +1828,7 @@ function renderWeekOverview(pl) {
  * that post's own caption and plan day; near-duplicates are flagged so the owner can vary them first.
  */
 function conceptBoard(pl) {
-  const wc = S.weekConcepts(pl);
+  const wc = S.weekConcepts(pl).filter(({ job }) => !job.archived);
   const rows = wc.map(({ job, concept }) => ({ d: pl.days.find((x) => x.jobId === job.id), job, c: concept, b: S.creativeBrief(job), gv: S.currentVersion(S.jobTasks(job).graphic) }));
   if (!rows.length) return '';
   const dups = CR.nearDuplicates(rows.map((r) => ({ headline: r.c.noHeadline ? '' : r.c.headline, scene: r.c.scene })));
@@ -2213,6 +2338,7 @@ function restoreDrafts() {
 }
 document.addEventListener('change', (e) => {
   const t = e.target;
+  if (t.dataset?.pick) { ui.picked = { ...(ui.picked || {}), [t.dataset.pick]: t.checked }; ui.archiveConfirm = false; render(); return; }
   if (/^ainh-/.test(t.id || '')) { const h = document.getElementById(t.id.replace('ainh-', 'aih-')); if (h) h.disabled = t.checked; }
   if (/^hlnone-/.test(t.id || '')) { const h = document.getElementById(t.id.replace('hlnone-', 'hl-')); if (h) h.disabled = t.checked; }
 });
@@ -2243,7 +2369,7 @@ function render() {
   // The same video can appear more than once (output, history, publishing preview), so keys include the occurrence.
   const keepKeys = (els) => { const seen = {}; return els.map((el) => { const k = el.dataset.keep; seen[k] = (seen[k] || 0) + 1; return [`${k}#${seen[k]}`, el]; }); };
   const kept = new Map(keepKeys([...document.querySelectorAll('[data-keep]')]));
-  $main.innerHTML = statusBanner() + (r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'vstudio' ? renderVideoStudio(r.id) : r.view === 'calendar' ? renderCalendar() : r.view === 'workspace' ? renderWorkspace() : r.view === 'week' ? renderWeek(r.id) : r.view === 'profile' ? renderProfile() : renderHQ());
+  $main.innerHTML = statusBanner() + (r.view === 'job' ? renderJob(r.id) : r.view === 'studio' ? renderStudio(r.id) : r.view === 'vstudio' ? renderVideoStudio(r.id) : r.view === 'calendar' ? renderCalendar() : r.view === 'workspace' ? renderWorkspace() : r.view === 'week' ? renderWeek(r.id) : r.view === 'profile' ? renderProfile() : r.view === 'archived' ? renderArchived() : renderHQ());
   $sheet.innerHTML = (r.agent ? renderAgentSheet(r.agent) : '') + (ui.lightbox ? renderLightbox() : '');
   document.body.classList.toggle('no-scroll', !!(r.agent || ui.lightbox));
 
@@ -2760,6 +2886,81 @@ document.addEventListener('click', (e) => {
   }
   if (t.dataset.mode) { S.chooseMode(t.dataset.mode).then(() => { toast(t.dataset.mode === 'shared' ? 'Using the shared workspace.' : 'Using this browser only.'); render(); }); return; }
   if (t.matches('[data-reload]')) { location.reload(); return; }
+  /* --- Owner controls (Milestone 16) --- */
+  if (t.matches('[data-select-toggle]')) { ui.selecting = !ui.selecting; ui.picked = {}; ui.archiveConfirm = false; render(); return; }
+  if (t.matches('[data-archive-ask]')) { ui.archiveConfirm = true; render(); return; }
+  if (t.matches('[data-archive-cancel]')) { ui.archiveConfirm = false; render(); return; }
+  if (t.matches('[data-archive-selected]')) {
+    t.disabled = true;
+    const ids = Object.keys(ui.picked || {}).filter((k) => ui.picked[k]);
+    S.archiveJobs(ids).then((r) => {
+      ui.selecting = false; ui.picked = {}; ui.archiveConfirm = false;
+      toast(`Archived ${r.archived.length} post${r.archived.length === 1 ? '' : 's'}.${r.skipped.length ? ` ${r.skipped.length} scheduled post${r.skipped.length === 1 ? '' : 's'} stayed active.` : ''}${r.failed.length ? ` ${r.failed.length} couldn’t be archived.` : ''}`);
+      render();
+    });
+    return;
+  }
+  if (t.dataset.archive) { t.disabled = true; S.archiveJob(t.dataset.archive).then((r) => { toast(r.ok ? 'Archived. Restore it any time from Archived.' : r.error || 'Not archived.'); render(); }); return; }
+  if (t.dataset.restore) { t.disabled = true; S.restoreJob(t.dataset.restore).then((r) => { toast(r.ok ? 'Restored to HQ.' : r.error || 'Not restored.'); render(); }); return; }
+  if (t.dataset.deleteOpen) {
+    const id = t.dataset.deleteOpen;
+    ui.del = { ...(ui.del || {}), [id]: { loading: true } };
+    render();
+    S.deletionPlan(id).then((r) => { ui.del[id] = r.ok ? { plan: r.plan } : { error: r.error }; render(); });
+    return;
+  }
+  if (t.dataset.deleteCancel) { delete ui.del[t.dataset.deleteCancel]; render(); return; }
+  if (t.dataset.deleteConfirm) {
+    const id = t.dataset.deleteConfirm;
+    const title = jobTitle(S.getJob(id));
+    ui.del[id] = { ...ui.del[id], busy: true, error: null };
+    render();
+    S.deleteJobPermanently(id).then((r) => {
+      if (r.ok) { delete ui.del[id]; toast(`Deleted “${title}”.${r.kept?.length ? ` ${r.kept.length} shared file${r.kept.length === 1 ? '' : 's'} kept.` : ''}`); location.hash = '#/'; render(); return; }
+      ui.del[id] = { ...ui.del[id], busy: false, error: r.error };
+      render();
+    });
+    return;
+  }
+  if (t.dataset.weekArchiveAsk) { ui.weekArchive = { ...(ui.weekArchive || {}), [t.dataset.weekArchiveAsk]: { confirm: true } }; render(); return; }
+  if (t.dataset.weekArchiveCancel) { delete ui.weekArchive[t.dataset.weekArchiveCancel]; render(); return; }
+  if (t.dataset.archiveWeek) {
+    const pid = t.dataset.archiveWeek;
+    t.disabled = true;
+    const plan = S.weekArchivePlan(pid);
+    S.archiveJobs(plan.completed).then((r) => {
+      const skipped = plan.scheduled.length + r.skipped.length;
+      ui.weekArchive[pid] = { done: `Archived ${r.archived.length} completed post${r.archived.length === 1 ? '' : 's'}.${skipped ? ` Skipped ${skipped} scheduled post${skipped === 1 ? '' : 's'}: ${skipped === 1 ? 'it stays' : 'they stay'} active.` : ''}${r.failed.length ? ` ${r.failed.length} couldn’t be archived.` : ''}` };
+      render();
+    });
+    return;
+  }
+  if (t.dataset.cancelOpen) {
+    const [jid, pid, mode] = t.dataset.cancelOpen.split('|');
+    ui.cancel = { ...(ui.cancel || {}), [jid]: { pubId: pid, mode } };
+    if (ui.cancelResult) delete ui.cancelResult[jid];
+    render();
+    return;
+  }
+  if (t.dataset.cancelClose) { delete ui.cancel[t.dataset.cancelClose]; render(); return; }
+  if (t.dataset.cancelConfirm) {
+    const jid = t.dataset.cancelConfirm;
+    const c = ui.cancel[jid];
+    if (!c || c.busy) return; // a second tap is the same request
+    c.busy = true; c.error = null;
+    render();
+    const title = jobTitle(S.getJob(jid));
+    (c.mode === 'delete' ? S.cancelAndDelete(jid, c.pubId) : S.cancelSchedule(jid, c.pubId)).then((r) => {
+      ui.cancelResult = ui.cancelResult || {};
+      if (r.ok && c.mode === 'delete') { delete ui.cancel[jid]; toast(`Schedule cancelled and “${title}” deleted.`); location.hash = '#/calendar'; render(); return; }
+      if (r.ok) { delete ui.cancel[jid]; ui.cancelResult[jid] = { ok: true, text: `Schedule cancelled${r.already ? ' (it already was)' : ''}. Nothing will be sent; the post stays here to edit or schedule again.` }; toast('Schedule cancelled.'); render(); return; }
+      c.busy = false;
+      c.error = r.step === 'delete' ? `The schedule was cancelled, but the post wasn’t deleted: ${r.error}` : r.error || 'Not cancelled.';
+      if (r.status && r.status !== 'cancelled') { delete ui.cancel[jid]; ui.cancelResult[jid] = { ok: false, text: c.error }; }
+      render();
+    });
+    return;
+  }
   if (t.dataset.conceptSave) {
     const id = t.dataset.conceptSave;
     const noHeadline = !!document.getElementById(`ainh-${id}`)?.checked;

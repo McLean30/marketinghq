@@ -130,6 +130,7 @@ export function startFakeSupabase(port, { secretKey = 'test-secret-key', workerS
             return res.end(o.buf);
           }
           if (!kind && req.method === 'POST') { objects.set(p, { buf: body, type: req.headers['content-type'] || 'application/octet-stream' }); return send(200, { Key: `hq-assets/${p}` }); }
+          if (!kind && req.method === 'DELETE') { if (!objects.has(p)) return send(404, { message: 'not found' }); objects.delete(p); return send(200, [{ name: p }]); }
         }
         return send(404, { message: `not handled: ${req.method} ${u.pathname}` });
       } catch (e) {

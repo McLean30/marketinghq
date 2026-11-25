@@ -224,9 +224,9 @@ try {
   await schedule(desk, londonDate(n5 + 2 * DAY), '11:00');
   await desk.click('[data-testid="confirm-publish"]');
   await waitPub(desk, 'scheduled');
-  await desk.click('[data-pub-step="cancel-confirm"]');
-  assert(/won’t be published/.test(await desk.locator('[data-testid="publish-confirm"]').innerText()), 'Cancelling asks for confirmation');
-  await desk.click('[data-testid="confirm-publish"]');
+  await desk.click('[data-testid="cancel-schedule"]');
+  assert(/Nothing will be sent/.test(await desk.locator('[data-testid="cancel-confirm"]').innerText()) && /\d{1,2}:\d{2}/.test(await desk.locator('[data-testid="cancel-when"]').innerText()), 'Cancelling asks for confirmation, showing the destination and UK time (Milestone 16)');
+  await desk.click('[data-testid="cancel-confirm-btn"]');
   await waitPub(desk, 'cancelled');
   await desk.reload();
   await waitPub(desk, 'cancelled');
@@ -279,7 +279,7 @@ try {
   assert(/Calibre/.test(held) && /Free workflow review/.test(held) && /ended on/.test(held), 'Held: the Reviewer found the expired offer before dispatch');
   job = await jobOf(desk, off);
   assert(!(await receipts(desk)).some((r) => r.publicationId === job.publications[0].id), 'Nothing was sent while held');
-  assert(await desk.locator('[data-pub-step="release-confirm"]').count() && await desk.locator('[data-pub-step="cancel-confirm"]').count(), 'You decide: publish anyway, reschedule or cancel');
+  assert(await desk.locator('[data-pub-step="release-confirm"]').count() && await desk.locator('[data-testid="cancel-schedule"]').count(), 'You decide: publish anyway, reschedule or cancel');
   await desk.screenshot({ path: `${OUT}/m8-desktop-05-held-offer.png`, fullPage: true });
 
   console.log('\n== 8. Weekly plan: approving one post authorises nothing else ==');

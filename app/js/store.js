@@ -76,6 +76,7 @@ export const ws = {
   destinations: {}, // platform -> { connected, label }
   modes: null, // how sign-in, storage, captions, images and publishing run here (server/modes.js)
   unreachable: null, // { message } when HQ couldn't reach its server or workspace store at start-up
+  removed: {}, // jobId -> { at } : deleted permanently (here or on another device)
 };
 /** The owner's private workspace: real outputs only (no simulated graphics, template captions or demo publishing). */
 export const realOnly = () => ws.private && !ws.fixtures;
@@ -313,6 +314,7 @@ async function commitShared(jobId, mutate, background, action) {
       notify();
       return { ok: false, conflict: true };
     }
+    if (res.status === 410) { removeJob(jobId); delete ws.synced[jobId]; ws.removed[jobId] = { at: Date.now() }; notify(); return { ok: false, deleted: true, error: res.data.error }; }
     rollback(jobId, before);
     return { ok: false, error: res.data.error || `Save failed (${res.status}).` };
   }
@@ -444,6 +446,14 @@ async function pullWorkspace(initial = false, applyId = null) {
     }
     applyBundle(e.bundle);
     ws.synced[e.id] = { rev: e.rev, updatedAt: e.updatedAt, updatedBy: e.updatedBy };
+  }
+  // Posts deleted permanently (on any device) leave the workspace here too.
+  for (const d of snap.deleted || []) {
+    if (!getJob(d.id) && !ws.synced[d.id]) continue;
+    if (locks.has(d.id)) continue;
+    removeJob(d.id);
+    delete ws.synced[d.id]; delete ws.updates[d.id]; delete ws.conflicts[d.id];
+    ws.removed[d.id] = d;
   }
   state.brand = { ...(snap.brand.data || {}) };
   if (snap.profile) { state.profile = snap.profile; ws.profileRev = snap.profile.rev; }
@@ -728,7 +738,125 @@ export function agentState(agentId, now = Date.now()) {
   return 'idle';
 }
 
-export const agentTasks = (agentId) => state.tasks.filter((t) => t.agent === agentId).sort((a, b) => b.createdAt - a.createdAt);
+export const agentTasks = (agentId) => state.tasks.filter((t) => t.agent === agentId && !getJob(t.jobId)?.archived).sort((a, b) => b.createdAt - a.createdAt);
+/** Posts in the active HQ list (archived ones live in Archived). */
+export const activeJobs = () => state.jobs.filter((j) => !j.archived && !j.sample);
+export const archivedJobs = () => state.jobs.filter((j) => j.archived).sort((a, b) => (b.archived.at || 0) - (a.archived.at || 0));
+
+/* ---------- Owner controls (Milestone 16): archive, restore, delete, cancel ---------- */
+const ACTIVE_PUB = ['scheduled', 'publishing', 'held'];
+/** A post with a delivery waiting or under way stays active. */
+export const hasActiveDelivery = (job) => (job?.publications || []).some((p) => ACTIVE_PUB.includes(p.status));
+/** Finished: approved (or published) and nothing waiting to be sent. */
+export const isCompleted = (job) => !!job && !hasActiveDelivery(job) && (jobStatus(job) === 'approved' || (job.publications || []).some((p) => p.status === 'published'));
+export function archiveJob(jobId) {
+  const job = getJob(jobId);
+  if (!job) return Promise.resolve({ ok: false, error: 'Post not found.' });
+  if (hasActiveDelivery(job)) return Promise.resolve({ ok: false, skipped: true, error: 'This post has a scheduled or in-progress delivery, so it stays active.' });
+  return commit(jobId, () => {
+    const j = getJob(jobId);
+    if (!j || j.archived || hasActiveDelivery(j)) return false;
+    j.archived = { at: Date.now(), by: deviceKind() };
+    log(jobId, 'manager', 'Archived. Versions, approvals, images and results are kept; restore it any time.');
+    return true;
+  }, { action: 'archive' });
+}
+export function restoreJob(jobId) {
+  return commit(jobId, () => {
+    const j = getJob(jobId);
+    if (!j?.archived) return false;
+    delete j.archived;
+    log(jobId, 'manager', 'Restored from Archived.');
+    return true;
+  }, { action: 'restore' });
+}
+/** Archive several posts; scheduled ones are skipped and counted. */
+export async function archiveJobs(ids) {
+  const out = { archived: [], skipped: [], failed: [] };
+  for (const id of ids) {
+    const j = getJob(id);
+    if (!j || j.archived) continue;
+    if (hasActiveDelivery(j)) { out.skipped.push(id); continue; }
+    const r = await archiveJob(id);
+    if (r.ok && !r.noop) out.archived.push(id); else if (r.skipped) out.skipped.push(id); else if (!r.ok) out.failed.push({ id, error: r.error });
+  }
+  return out;
+}
+/** The completed posts of one week (approved or published, nothing waiting), and the scheduled ones that stay. */
+export function weekArchivePlan(planId) {
+  const pl = getPlan(planId);
+  const jobs = (pl?.days || []).map((d) => (d.jobId ? getJob(d.jobId) : null)).filter((j) => j && !j.archived);
+  return { completed: jobs.filter(isCompleted).map((j) => j.id), scheduled: jobs.filter(hasActiveDelivery).map((j) => j.id), other: jobs.filter((j) => !isCompleted(j) && !hasActiveDelivery(j)).map((j) => j.id) };
+}
+/** What deleting a post would remove (asked of the server, which can see every post's media). */
+export async function deletionPlan(jobId) {
+  const job = getJob(jobId);
+  if (!job) return { ok: false, error: 'Post not found.' };
+  if (ws.mode !== 'shared') {
+    const tasks = state.tasks.filter((t) => t.jobId === jobId);
+    return { ok: true, plan: { title: job.title || job.brief.slice(0, 80), counts: { caption: tasks.find((t) => t.type === 'copy')?.versions.length || 0, graphic: tasks.find((t) => t.type !== 'copy')?.versions.length || 0, approvals: (job.approvals || []).length, reviews: (job.reviews || []).length, results: (job.measurements || []).length, publications: (job.publications || []).length }, remove: [], keep: [], published: (job.publications || []).filter((p) => p.status === 'published').map((p) => ({ platform: p.platform, at: p.publishedAt })), active: (job.publications || []).filter((p) => ACTIVE_PUB.includes(p.status)).map((p) => ({ id: p.id, status: p.status })), local: true } };
+  }
+  const r = await api(`api/workspace/jobs/${jobId}/delete-plan`);
+  return r.ok ? { ok: true, plan: r.data } : { ok: false, error: r.data.error || 'Couldn’t check this post.' };
+}
+/** Delete a post permanently (server: tombstone, unshared media, plan days marked deleted). */
+export async function deleteJobPermanently(jobId) {
+  const job = getJob(jobId);
+  if (!job) return { ok: false, error: 'Post not found.' };
+  if (ws.mode !== 'shared') {
+    if (hasActiveDelivery(job)) return { ok: false, error: 'Cancel the schedule first.' };
+    const before = clone(state);
+    removeJob(jobId);
+    for (const pl of state.plans || []) for (const d of pl.days) if (d.jobId === jobId) d.deleted = { at: Date.now(), title: job.title || job.brief.slice(0, 80) };
+    try { saveLocal(true); } catch (e) { state = before; notify(); return { ok: false, error: e.message }; }
+    notify();
+    return { ok: true, removed: [], kept: [] };
+  }
+  const r = await api(`api/workspace/jobs/${jobId}/delete`, { method: 'POST', body: JSON.stringify({ baseRev: ws.synced[jobId]?.rev || 0 }) });
+  if (!r.ok) {
+    if (r.status === 409 && r.data.current) { applyBundle(r.data.current.bundle); ws.synced[jobId] = { rev: r.data.current.rev, updatedAt: r.data.current.updatedAt, updatedBy: r.data.current.updatedBy }; notify(); }
+    return { ok: false, error: r.data.error || `Delete failed (${r.status}).`, conflict: r.status === 409 };
+  }
+  removeJob(jobId);
+  delete ws.synced[jobId];
+  ws.removed[jobId] = { at: Date.now() };
+  await pullWorkspace(true);
+  return { ok: true, ...r.data };
+}
+/**
+ * Cancel a scheduled post. In the shared workspace the server settles it against the scheduler before this
+ * returns: { status: 'cancelled' } only if nothing will be sent; otherwise the real status ('publishing', 'published').
+ */
+export async function cancelSchedule(jobId, pubId) {
+  if (ws.mode !== 'shared') {
+    const r = await cancelPublication(jobId, pubId);
+    const p = (getJob(jobId)?.publications || []).find((x) => x.id === pubId);
+    return r.ok ? { ok: true, status: p?.status || 'cancelled' } : r;
+  }
+  if (pubBusy.has(jobId)) return { ok: false, busy: true };
+  pubBusy.add(jobId);
+  notify();
+  try {
+    const r = await api(`api/workspace/jobs/${jobId}/cancel-publication`, { method: 'POST', body: JSON.stringify({ pubId }) });
+    if (!r.ok) return { ok: false, error: r.data.error || `Cancelling failed (${r.status}).` };
+    delete ws.updates[jobId]; delete ws.conflicts[jobId];
+    await pullWorkspace(false, jobId);
+    const cur = await api(`api/workspace/jobs/${jobId}`);
+    if (cur.ok) { applyBundle(cur.data.bundle); ws.synced[jobId] = { rev: cur.data.rev, updatedAt: cur.data.updatedAt, updatedBy: cur.data.updatedBy }; notify(); }
+    if (r.data.status === 'cancelled') log(jobId, 'manager', 'Schedule cancelled. Nothing will be sent; the post stays here to edit or schedule again.');
+    return { ok: r.data.status === 'cancelled', status: r.data.status, pub: r.data.pub, already: !!r.data.already, error: r.data.status === 'cancelled' ? null : r.data.status === 'publishing' ? 'Delivery had already started, so it can’t be cancelled. Its outcome will show here.' : `This post was already ${r.data.status}.` };
+  } finally {
+    pubBusy.delete(jobId);
+    notify();
+  }
+}
+/** Cancel delivery first; only once that's settled, delete the post. */
+export async function cancelAndDelete(jobId, pubId) {
+  const c = await cancelSchedule(jobId, pubId);
+  if (!c.ok) return { ok: false, step: 'cancel', ...c };
+  const d = await deleteJobPermanently(jobId);
+  return d.ok ? { ok: true, cancelled: true, ...d } : { ok: false, step: 'delete', cancelled: true, error: d.error };
+}
 
 /* ---------- Live caption requests ---------- */
 // A request is "claimed" by saving requestedAt/requestedBy first, so two devices never pay for the same caption.
@@ -1097,7 +1225,7 @@ export async function confirmPlan(planId) {
     const plan = getPlan(planId);
     const failed = [];
     for (const d of plan.days) {
-      if (!d.jobId || getJob(d.jobId)) continue;
+      if (!d.jobId || d.deleted || ws.removed[d.jobId] || getJob(d.jobId)) continue; // a deleted post is never recreated
       const res = await createJob({
         id: d.jobId,
         brief: postBrief(plan, d),
@@ -1186,6 +1314,7 @@ export function reviewStatus(job) {
 export function reviewQueue() {
   const out = [];
   for (const job of state.jobs) {
+    if (job.archived) continue;
     const { copy, graphic } = jobTasks(job);
     if (!copy?.versions.length || !graphic?.versions.length || copy.pending || graphic.pending) continue;
     const st = jobStatus(job);

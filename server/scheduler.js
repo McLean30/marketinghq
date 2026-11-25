@@ -36,7 +36,12 @@ const takeFault = () => { const f = fault; fault = null; return f; };
 
 /* ---------- Running due posts ---------- */
 let chain = Promise.resolve();
-/** Run due publications (all jobs, or one job with force = an explicit retry). Serialised: one run at a time. */
+/**
+ * Run due publications (all jobs, or one job with force = an explicit retry). Serialised: one run at a time.
+ * Like the hosted worker (Milestone 16): 1. claim due posts on a fresh copy and save that claim atomically before
+ * anything is sent, so a cancellation saved first always wins; 2. deliver only what this run claimed; 3. record the
+ * outcomes on the latest copy.
+ */
 function runDue({ jobId = null, force = false } = {}) {
   const run = chain.then(async () => {
     const PB = await load();
@@ -49,10 +54,29 @@ function runDue({ jobId = null, force = false } = {}) {
       if (jobId && e.id !== jobId) continue;
       if (!(e.bundle.job.publications || []).length) continue;
       const bundle = JSON.parse(JSON.stringify(e.bundle));
-      if (PB.runDue(bundle, { now: now(), profileData, publisher, by: 'scheduler', force })) {
-        await store.flush();
-        await wsStore.putJob(e.id, e.rev, bundle, 'scheduler');
-        changed.push(e.id);
+      if (force) for (const p of PB.publications(bundle.job)) if (p.status === 'publishing' && p.claim) p.claim.at = -Infinity;
+      const t = now();
+      const claimId = `run_${t.toString(36)}`;
+      const { changed: c, claimed, checks } = PB.claimDue(bundle, { now: t, profileData, by: 'scheduler', claimId, limit: Infinity });
+      if (!c) continue;
+      try { await wsStore.putJob(e.id, e.rev, bundle, 'scheduler', { scheduler: true }); } catch (err) { if (err.status === 409 || err.status === 410) continue; throw err; } // a device saved first (e.g. a cancellation): nothing is sent
+      changed.push(e.id);
+      if (!claimed.length && !checks.length) continue;
+      const outcomes = [];
+      for (const p of [...claimed, ...checks]) {
+        let o;
+        try { o = publisher.accept(p.id, PB.payloadFor(bundle, p)); } catch (x) { o = x.lost ? { lost: true } : { refused: x.message }; }
+        outcomes.push([p.id, o]);
+      }
+      await store.flush();
+      for (let i = 0; i < 6; i++) {
+        const cur = await wsStore.getJob(e.id);
+        if (!cur) break;
+        const b2 = JSON.parse(JSON.stringify(cur.bundle));
+        let any = false;
+        for (const [pid, o] of outcomes) any = PB.applyOutcome(b2, pid, claimId, o, { now: now(), by: 'scheduler' }) || any;
+        if (!any) break;
+        try { await wsStore.putJob(e.id, cur.rev, b2, 'scheduler', { scheduler: true }); break; } catch (err) { if (err.status !== 409) throw err; }
       }
     }
     await store.flush();

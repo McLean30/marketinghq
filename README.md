@@ -1,4 +1,4 @@
-# Nexai AI Marketing HQ (milestone 15: copy, creative and review together; agents with presence)
+# Nexai AI Marketing HQ (milestone 16: owner controls for cleanup, downloads and cancelling schedules)
 
 Private internal dashboard for Nexai Digital. Give Vektor (the robotic scorpion Marketing Manager) a brief; it delegates the caption to Quill (Copywriter) and the graphic to Prism (Creative Designer), or a video to Cue. Review everything together, request revisions with feedback, approve the pair, and see it on the private content calendar.
 
@@ -85,6 +85,16 @@ Limits: images live only in this browser, so they don't sync between devices, an
 With no settings the server runs in **browser demo mode**: HQ opens, jobs live in the browser, and captions use local templates. It doesn't read or write its data folder at start-up, so a read-only serverless filesystem is fine. The shared workspace (owner sign-in, durable server saves) switches on only when `HQ_OWNER_PASSWORD_HASH` is set. That needs a persistent, writable `HQ_DATA_DIR`, which serverless functions don't provide, so run the shared workspace on a machine you control. `npm run test:preview` checks this boot path, including a bundled build.
 
 **Vercel build.** Vercel's zero-config `node` preset compiles `server.js` into one server function and routes `/` and every unmatched path to it, so the function needs `app/` beside it. `vercel.json` adds it with `includeFiles: "app/**"`. The app lives in `app/`, not `public/`, on purpose: the `node` preset publishes any `public/` folder as static files that Vercel serves without asking the server, which would let anyone fetch HQ's scripts and data without signing in. With no static copy, every request goes through the server and its sign-in check. `npm run test:vercel-build` runs the same build locally from Git-tracked files and checks the function's files and responses.
+
+## Owner controls (milestone 16)
+
+**Archive.** On HQ, *Select* lets you tick posts and *Archive selected*; a content week has *Archive completed posts*; every post has *Post options → Archive*. Each shows how many posts will move first. Archived posts leave the HQ list and the agents' task lists, and keep their versions, images, approvals and Vantage's results; *Archived* (from HQ) lists them with *Restore*. A post with a scheduled or in-progress delivery always stays active, and HQ says how many were skipped.
+
+**Delete permanently** (*Post options*). The confirmation names the post and lists what goes: its caption and graphic versions, approvals, reviews, results and publishing records, its place on the calendar, and the image or video files only it uses. Files another post still uses, and the official Nexai logo, are kept. On a published post it says plainly that deleting the HQ record doesn't remove the post from the platform. The server replaces the post with a tombstone in the same atomic save every other change uses, so no other device's stale save, import or week plan can recreate it; its week keeps the day, marked deleted. A post with a delivery waiting can't be deleted until the schedule is cancelled.
+
+**Download image.** Beside the full-size graphic on the post, on every saved version in its history, in Prism's Photo layout (the last saved version), on the calendar and on a scheduled post's preview. It's the same PNG exporter as the full-size view, so it's exactly the saved version (crop, headline, logo), named `nexai-<post>-graphic-v<n>-1080x1350.png`. A scheduled or approved post defaults to the version in its preview. No approval needed, and no image request is made.
+
+**Cancel a scheduled post.** Open it (from the calendar or the post): *Cancel schedule* or *Cancel and delete post*, each confirmed with the destination and the scheduled UK date and time. The server settles it against the scheduler before HQ says it's done: both the scheduler (the hosted worker, or this server's demo scheduler) and the cancellation change the post with the same atomic, revision-checked save, and the scheduler claims a post that way before sending it, so exactly one wins. Cancelled: nothing is sent, the calendar slot is freed and the post can be edited or scheduled again. If delivery had already started, HQ shows that status instead and keeps the record until the outcome is known. *Cancel and delete* cancels first and deletes only once that's settled. A second tap, a refresh or another device can't send or recreate a cancelled post.
 
 ## Copy, creative and review together (milestone 15)
 
@@ -282,6 +292,7 @@ npm run test:m8      # Milestone 8: demo publishing and scheduling with a test c
 npm run test:preview # Preview/serverless boot: no settings, read-only filesystem, source entry + esbuild bundle
 npm run test:vercel-build # Vercel CLI build (node preset) from tracked files: function includes app/, boots, serves / and /index.html
 npm run test:api     # OpenAI request formats, owner gate, one charge per key, usage and errors against a local stub (dummy key, no network, no cost)
+npm run test:m16     # Milestone 16 owner controls: week archive with a scheduled post, restore, older-version download on a phone (0 AI calls), cancel from a second device past the due time, cancel-and-delete, permanent deletion with shared media (:4301–4302, ~4 min)
 npm run test:m15     # Milestone 15 creative: screenshot-case regression, Prism's brief, headline-only changes, pairing, Calibre, week concepts (:4279–4282)
 npm run test:m15-motion # Milestone 15 agents on a phone: idle/work from real events, tap targets, focus, scroll, offscreen, reduced motion (:4295)
 npm run test:m14     # Milestone 14 private workspace on the Supabase stand-in (jsonb key order), Android phone: sign-in first, Graphic needed, legacy versions, calendar, outage, notices (:4261–4262)

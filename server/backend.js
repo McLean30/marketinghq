@@ -137,6 +137,7 @@ function fileStore() {
       }
     },
     async assetBuffer(id) { return fs.readFileSync(assetPath(id)); },
+    async assetDelete(id) { for (const f of [assetPath(id), metaPath(id)]) { try { fs.unlinkSync(f); } catch (e) { if (e.code !== 'ENOENT') throw e; } } },
     assetStream(id, opts) { return fs.createReadStream(assetPath(id), opts); },
     async assetUploadUrl() { return null; }, // uploads go through the HQ server
     async assetUploaded() { return null; },
@@ -163,7 +164,7 @@ function supabaseStore() {
       console.warn('[supabase] request failed:', e.cause?.code || e.message);
       throw new StoreError(503, 'Can’t reach the workspace database right now. Nothing was changed; try again.');
     }
-    if (r.status === 404 && method === 'GET') return null;
+    if (r.status === 404 && (method === 'GET' || method === 'DELETE')) return null; // already gone
     if (!r.ok) {
       let detail = '';
       try { detail = (await r.json()).message || ''; } catch { /* ignore */ }
@@ -277,6 +278,11 @@ function supabaseStore() {
     async assetRecord(id, meta) {
       const cur = await this.get('asset', id);
       if (!cur) await this.put('asset', id, 0, meta, 'upload');
+    },
+    /** Remove a stored file and its record (permanent deletion of a post's own media; Milestone 16). */
+    async assetDelete(id) {
+      await call(`/storage/v1/object/${BUCKET}/${objectPath(id)}`, { method: 'DELETE' });
+      await call(`/rest/v1/hq_records?workspace=eq.${q(ws)}&kind=eq.asset&id=eq.${q(id)}`, { method: 'DELETE' });
     },
     async assetBuffer(id) {
       const r = await call(`/storage/v1/object/authenticated/${BUCKET}/${objectPath(id)}`, { raw: true });

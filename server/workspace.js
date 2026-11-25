@@ -68,7 +68,8 @@ async function snapshot() {
   const [jobs, plans, brand, rev] = await Promise.all([S.list('job'), S.list('plan'), S.get('brand', 'main'), S.wsRev()]);
   return {
     rev,
-    jobs: jobs.map(entry).sort((a, b) => b.bundle.job.createdAt - a.bundle.job.createdAt),
+    jobs: jobs.filter((r) => !isTomb(r)).map(entry).sort((a, b) => b.bundle.job.createdAt - a.bundle.job.createdAt),
+    deleted: jobs.filter(isTomb).map((r) => ({ id: r.id, rev: r.rev, at: r.data.deletedAt })),
     brand: brandOut(brand),
     plans: plans.map(planEntry).sort((a, b) => b.plan.createdAt - a.plan.createdAt),
     profile: profileOut(profile),
@@ -79,8 +80,10 @@ const wsRev = () => store().wsRev();
 async function getJob(id) {
   if (!ID.test(id)) return null;
   const r = await store().get('job', id);
-  return r ? entry(r) : null;
+  return r && !isTomb(r) ? entry(r) : null;
 }
+/** A permanently deleted job leaves a tombstone (same record, atomic save), so no device can ever recreate it. */
+const isTomb = (r) => !!r?.data?.deleted;
 
 function validateBundle(id, b) {
   const bad = (m) => { throw new WsError(400, `Invalid job data: ${m}.`); };
@@ -167,9 +170,12 @@ async function putJob(id, baseRev, bundle, device, { connected = () => false } =
   const S = store();
   validateBundle(id, bundle);
   const cur = await S.get('job', id);
+  if (isTomb(cur)) throw new WsError(410, 'This post was deleted permanently, so it can’t be saved again.', { code: 'deleted' });
   const curRev = cur ? cur.rev : 0;
   if (Number(baseRev) !== curRev) throw new WsError(409, 'This job changed on another device.', { current: cur ? entry(cur) : null });
   if (cur) checkAppendOnly(cur.data, bundle);
+  // An archived post never has a delivery waiting (archiving skips scheduled posts).
+  if (bundle.job.archived && (bundle.job.publications || []).some((p) => ['scheduled', 'publishing', 'held'].includes(p.status))) throw new WsError(422, 'A post with a scheduled or in-progress delivery stays active. Cancel the schedule first, then archive it.', { code: 'scheduled' });
   // Nothing can be queued for a destination that isn't connected (the owner's workspace has none yet).
   const before = (cur?.data.job.publications || []).length;
   const added = (bundle.job.publications || []).slice(before);
@@ -189,6 +195,93 @@ async function putJob(id, baseRev, bundle, device, { connected = () => false } =
   return { rev: out.rev, wsRev: out.wsRev, updatedAt: out.updatedAt };
 }
 
+/* ---------- Permanent deletion (Milestone 16) ---------- */
+const MEDIA = /\b(?:photo|logo|clip|video)_[a-z0-9]{4,40}\b/g;
+const mediaOf = (bundle) => new Set(JSON.stringify(bundle).match(MEDIA) || []);
+/** What deleting this post would remove, and which of its media other posts (or the brand logo) still use. */
+async function deletionPlan(id) {
+  const S = store();
+  const cur = await S.get('job', id);
+  if (!cur || isTomb(cur)) return null;
+  const all = await S.list('job');
+  const brand = await S.get('brand', 'main');
+  const shared = new Set([brand?.data?.logoId].filter(Boolean));
+  for (const r of all) if (r.id !== id && !isTomb(r)) for (const m of mediaOf(r.data)) shared.add(m);
+  const mine = [...mediaOf(cur.data)];
+  const b = cur.data;
+  const pubs = b.job.publications || [];
+  return {
+    rev: cur.rev,
+    title: b.job.title || b.job.brief.slice(0, 80),
+    remove: mine.filter((m) => !shared.has(m)),
+    keep: mine.filter((m) => shared.has(m)),
+    counts: { caption: b.tasks.find((t) => t.type === 'copy')?.versions.length || 0, graphic: b.tasks.find((t) => t.type !== 'copy')?.versions.length || 0, approvals: (b.job.approvals || []).length, reviews: (b.job.reviews || []).length, results: (b.job.measurements || []).length, publications: pubs.length },
+    published: pubs.filter((p) => p.status === 'published').map((p) => ({ platform: p.platform, at: p.publishedAt, receipt: p.receipt?.id || null })),
+    active: pubs.filter((p) => ['scheduled', 'publishing', 'held'].includes(p.status)).map((p) => ({ id: p.id, status: p.status })),
+    plans: (await S.list('plan')).filter((r) => r.data.days.some((d) => d.jobId === id)).map((r) => r.id),
+  };
+}
+/**
+ * Delete a post permanently: a tombstone replaces its record (atomic, against the revision you saw), its media go
+ * unless another post or the brand logo uses them, and plan days linked to it are marked deleted so reopening the
+ * plan can't recreate it. A post with a scheduled or in-progress delivery is refused: cancel it first.
+ */
+async function deleteJob(id, baseRev, device) {
+  const S = store();
+  if (!ID.test(id)) throw new WsError(404, 'Post not found.');
+  const cur = await S.get('job', id);
+  if (!cur) throw new WsError(404, 'Post not found.');
+  if (isTomb(cur)) return { deleted: true, already: true, removed: [], kept: [] };
+  if (Number(baseRev) !== cur.rev) throw new WsError(409, 'This post changed on another device. Check it, then delete again.', { current: entry(cur) });
+  const plan = await deletionPlan(id);
+  if (plan.active.length) throw new WsError(422, plan.active.some((p) => p.status === 'publishing') ? 'Delivery of this post has already started, so it can’t be deleted until the outcome is known.' : 'This post has a scheduled delivery. Cancel the schedule first (or use Cancel and delete post).', { code: 'scheduled' });
+  const tomb = { deleted: true, deletedAt: Date.now(), deletedBy: device, title: plan.title, job: { id, publications: [] }, tasks: [], log: [] };
+  const out = await S.put('job', id, cur.rev, tomb, device);
+  if (!out) throw new WsError(409, 'This post changed on another device. Check it, then delete again.', { current: entry(await S.get('job', id)) });
+  // Plans: keep the day (the week's history), mark its post deleted so it's never recreated or linked to.
+  for (const pid of plan.plans) {
+    for (let i = 0; i < 5; i++) {
+      const pr = await S.get('plan', pid);
+      if (!pr) break;
+      const next = JSON.parse(JSON.stringify(pr.data));
+      let changed = false;
+      for (const d of next.days) if (d.jobId === id && !d.deleted) { d.deleted = { at: tomb.deletedAt, title: plan.title }; changed = true; }
+      if (!changed || await S.put('plan', pid, pr.rev, next, device)) break;
+    }
+  }
+  const removed = [];
+  for (const m of plan.remove) { try { await S.assetDelete(m); removed.push(m); } catch (e) { console.warn(`[workspace] media ${m} not removed: ${e.message}`); } }
+  return { deleted: true, rev: out.rev, wsRev: (await S.wsRev()), removed, kept: plan.keep };
+}
+
+/* ---------- Cancelling a scheduled post, settled against the scheduler (Milestone 16) ---------- */
+let PBlib = null;
+const PBload = async () => (PBlib ??= await import(require('url').pathToFileURL(path.join(APP_DIR, 'app', 'js', 'publishing.js')).href));
+/**
+ * Cancel a publication on the server, against the latest saved copy. The scheduler (local or the hosted worker)
+ * claims a post with the same atomic save before sending it, so exactly one of them wins: either this cancels it
+ * and nothing is sent, or delivery had already started and the real status comes back. Repeats are harmless.
+ */
+async function cancelPublication(id, pubId, device, now = Date.now()) {
+  const S = store();
+  const PB = await PBload();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const cur = await S.get('job', id);
+    if (!cur || isTomb(cur)) throw new WsError(404, 'Post not found.');
+    const bundle = JSON.parse(JSON.stringify(cur.data));
+    const p = (bundle.job.publications || []).find((x) => x.id === pubId);
+    if (!p) throw new WsError(404, 'That scheduled post wasn’t found.');
+    if (p.status === 'cancelled') return { status: 'cancelled', already: true, pub: p, rev: cur.rev };
+    if (['publishing', 'published', 'replaced'].includes(p.status)) return { status: p.status, pub: p, rev: cur.rev, settled: p.status !== 'publishing' };
+    const r = PB.cancel(p, { now, by: device });
+    if (r.error) throw new WsError(422, r.error);
+    const out = await S.put('job', id, cur.rev, bundle, device);
+    if (out) return { status: 'cancelled', pub: p, rev: out.rev, wsRev: out.wsRev };
+    // Someone saved first (the scheduler claiming it, or another device): look again.
+  }
+  throw new WsError(409, 'This post kept changing. Open it again to see its status.');
+}
+
 /* ---------- Weekly plans ---------- */
 const PLAN_ID = /^plan_[a-z0-9]{4,40}$/;
 function validatePlan(id, p) {
@@ -198,6 +291,7 @@ function validatePlan(id, p) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.weekStart || '') || typeof p.brief !== 'string') bad('week or brief');
   if (!Array.isArray(p.days) || p.days.length < 1 || p.days.length > 7) bad('days');
   for (const d of p.days) if (d.jobId != null && !ID.test(d.jobId)) bad('job link');
+  for (const d of p.days) if (d.deleted != null && typeof d.deleted !== 'object') bad('deleted day');
   if (Buffer.byteLength(JSON.stringify(p)) > 200 * 1024) bad('too large');
 }
 async function putPlan(id, baseRev, plan, device) {
@@ -264,7 +358,7 @@ async function importBundles(bundles, brand, device, dryRun) {
   for (const b of bundles) {
     const id = b?.job?.id;
     validateBundle(id, b);
-    if (await S.get('job', id)) { skipped.push(id); continue; }
+    if (await S.get('job', id)) { skipped.push(id); continue; } // includes deleted posts: their tombstone stays
     if (!dryRun && !(await S.put('job', id, 0, b, device))) { skipped.push(id); continue; } // created meanwhile: never overwritten
     imported.push(id);
   }
@@ -333,4 +427,4 @@ async function readAssetBuffer(id) {
 }
 async function hasAsset(id) { return ASSET_ID.test(id) && !!(await store().assetMeta(id)); }
 
-module.exports = { snapshot, wsRev, getJob, putJob, putPlan, putProfile, putBrand, importBundles, saveAsset, assetUploadUrl, assetUploadComplete, readAsset, readAssetBuffer, hasAsset, WsError, MAX_ASSET, MAX_VIDEO };
+module.exports = { deleteJob, deletionPlan, cancelPublication, snapshot, wsRev, getJob, putJob, putPlan, putProfile, putBrand, importBundles, saveAsset, assetUploadUrl, assetUploadComplete, readAsset, readAssetBuffer, hasAsset, WsError, MAX_ASSET, MAX_VIDEO };

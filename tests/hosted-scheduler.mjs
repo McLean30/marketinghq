@@ -134,8 +134,8 @@ try {
 
   console.log('\n== 3. Cancel and reschedule before dispatch ==');
   await lp.goto(`${BASE}#/job/${C}`);
-  await lp.click('[data-pub-step="cancel-confirm"]');
-  await lp.click('[data-testid="confirm-publish"]');
+  await lp.click('[data-testid="cancel-schedule"]');
+  await lp.click('[data-testid="cancel-confirm-btn"]');
   await lp.waitForSelector('[data-testid="pub-card"][data-status="cancelled"]');
   assert(jobRec(C).data.job.publications[0].status === 'cancelled' && jobRec(C).data.job.publications[0].events.length >= 2, 'Cancelled before dispatch; its history is kept');
   const D2 = day(2);
